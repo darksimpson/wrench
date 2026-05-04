@@ -118,6 +118,12 @@ lt6!
 ~*/
 
 
+var a = 0;
+var i;
+var j;
+var k;
+var tristan;
+
 label2:
 
 goto label;
@@ -157,7 +163,8 @@ function prime2()
 
 function prime(n)
 {
-	count = 0;
+	var count = 0;
+	var i;
 	for (i = 2; i <= n; ++i)
 		if (prime2())
 			++count;
@@ -369,4 +376,3 @@ function f3()
 		while(1);
 	} while(1);
 }
-

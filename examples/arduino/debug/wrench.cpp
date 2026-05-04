@@ -1802,6 +1802,7 @@ enum WROperationType
 	WR_OPER_BINARY,
 	WR_OPER_BINARY_COMMUTE, // binary but operation order doesn't matter
 	WR_OPER_POST,
+	WR_OPER_TERNARY, // conditional operator with embedded true/false expression bytecode
 };
 
 //------------------------------------------------------------------------------
@@ -1838,6 +1839,7 @@ const WROperation c_operations[] =
 	{ "<",    9, O_CompareLT,           true,  WR_OPER_BINARY, O_CompareGT },
 	{ "&&",  14, O_LogicalAnd,          true,  WR_OPER_BINARY_COMMUTE, O_LAST },
 	{ "||",  15, O_LogicalOr,           true,  WR_OPER_BINARY_COMMUTE, O_LAST },
+	{ "?",   16, O_LAST,               false,  WR_OPER_TERNARY, O_LAST },
 
 	{ "++",   3, O_PreIncrement,        true,  WR_OPER_PRE, O_LAST },
 	{ "++",   2, O_PostIncrement,       true,  WR_OPER_POST, O_LAST },
@@ -1864,18 +1866,18 @@ const WROperation c_operations[] =
 	{ ">>",   7, O_BinaryRightShift,    true,  WR_OPER_BINARY, O_LAST },
 	{ "<<",   7, O_BinaryLeftShift,     true,  WR_OPER_BINARY, O_LAST },
 
-	{ "+=",  16, O_AddAssign,           true,  WR_OPER_BINARY, O_LAST },
-	{ "-=",  16, O_SubtractAssign,      true,  WR_OPER_BINARY, O_LAST },
-	{ "%=",  16, O_ModAssign,           true,  WR_OPER_BINARY, O_LAST },
-	{ "*=",  16, O_MultiplyAssign,      true,  WR_OPER_BINARY, O_LAST },
-	{ "/=",  16, O_DivideAssign,        true,  WR_OPER_BINARY, O_LAST },
-	{ "|=",  16, O_ORAssign,            true,  WR_OPER_BINARY, O_LAST },
-	{ "&=",  16, O_ANDAssign,           true,  WR_OPER_BINARY, O_LAST },
-	{ "^=",  16, O_XORAssign,           true,  WR_OPER_BINARY, O_LAST },
-	{ ">>=", 16, O_RightShiftAssign,   false,  WR_OPER_BINARY, O_LAST },
-	{ "<<=", 16, O_LeftShiftAssign,    false,  WR_OPER_BINARY, O_LAST },
+	{ "+=",  17, O_AddAssign,           true,  WR_OPER_BINARY, O_LAST },
+	{ "-=",  17, O_SubtractAssign,      true,  WR_OPER_BINARY, O_LAST },
+	{ "%=",  17, O_ModAssign,           true,  WR_OPER_BINARY, O_LAST },
+	{ "*=",  17, O_MultiplyAssign,      true,  WR_OPER_BINARY, O_LAST },
+	{ "/=",  17, O_DivideAssign,        true,  WR_OPER_BINARY, O_LAST },
+	{ "|=",  17, O_ORAssign,            true,  WR_OPER_BINARY, O_LAST },
+	{ "&=",  17, O_ANDAssign,           true,  WR_OPER_BINARY, O_LAST },
+	{ "^=",  17, O_XORAssign,           true,  WR_OPER_BINARY, O_LAST },
+	{ ">>=", 17, O_RightShiftAssign,   false,  WR_OPER_BINARY, O_LAST },
+	{ "<<=", 17, O_LeftShiftAssign,    false,  WR_OPER_BINARY, O_LAST },
 
-	{ "=",   16, O_Assign,             false,  WR_OPER_BINARY, O_LAST },
+	{ "=",   17, O_Assign,             false,  WR_OPER_BINARY, O_LAST },
 
 	{ "@i",  3, O_ToInt,               false,  WR_OPER_PRE, O_LAST },
 	{ "@f",  3, O_ToFloat,             false,  WR_OPER_PRE, O_LAST },
@@ -1892,7 +1894,7 @@ const WROperation c_operations[] =
 	
 	{ 0, 0, O_LAST, false, WR_OPER_PRE, O_LAST },
 };
-const int c_highestPrecedence = 17; // one higher than the highest entry above, things that happen absolutely LAST
+const int c_highestPrecedence = 18;
 
 //------------------------------------------------------------------------------
 enum WRExpressionType
@@ -1992,6 +1994,7 @@ struct WRExpressionContext
 	int stackPosition;
 	
 	WRBytecode bytecode;
+	WRBytecode bytecode2;
 
 	WRExpressionContext() { reset(); }
 
@@ -2018,6 +2021,7 @@ struct WRExpressionContext
 		token.clear();
 		value.init();
 		bytecode.clear();
+		bytecode2.clear();
 		operation = 0;
 
 		return this;
@@ -2033,6 +2037,7 @@ public:
 	WRBytecode bytecode;
 	bool lValue;
 	bool allowFunctionNameHashLiteral;
+	bool allowLabelDeclarations;
 
 	//------------------------------------------------------------------------------
 	void pushToStack( int index )
@@ -2112,6 +2117,7 @@ public:
 		bytecode.clear();
 		lValue = false;
 		allowFunctionNameHashLiteral = false;
+		allowLabelDeclarations = true;
 	}
 };
 
@@ -2121,6 +2127,19 @@ struct ConstantValue
 	WRValue value;
 	WRstr label;
 	ConstantValue() { value.init(); }
+};
+
+//------------------------------------------------------------------------------
+struct WROverwriteStoreInfo
+{
+	bool valid;
+	bool global;
+	unsigned char index;
+	unsigned int offset;
+	unsigned int length;
+
+	WROverwriteStoreInfo()
+		: valid(false), global(false), index(0), offset(0), length(0) {}
 };
 
 //------------------------------------------------------------------------------
@@ -2140,6 +2159,7 @@ struct WRUnitContext
 	// the code that runs when it loads
 	// the locals it has
 	WRBytecode bytecode;
+	WROverwriteStoreInfo lastStatementOverwriteStore;
 
 	int parentUnitIndex;
 	
@@ -2154,6 +2174,7 @@ struct WRUnitContext
 		constantValues.clear();
 		offsetOfLocalHashMap = 0;
 		bytecode.clear();
+		lastStatementOverwriteStore.valid = false;
 		parentUnitIndex = 0;
 	}
 };
@@ -2180,6 +2201,7 @@ private:
 	static bool CheckFastLoad( WROpcode opcode, WRBytecode& bytecode, int a, int o );
 	static bool IsLiteralLoadOpcode( unsigned char opcode );
 	static bool CheckCompareReplace( WROpcode LS, WROpcode GS, WROpcode ILS, WROpcode IGS, WRBytecode& bytecode, unsigned int a, unsigned int o );
+	void FinalizeStatementBytecode( WRUnitContext& unit, WRBytecode& statementBytecode );
 
 	friend class WRExpression;
 	static void pushOpcode( WRBytecode& bytecode, WROpcode opcode );
@@ -4422,6 +4444,44 @@ unsigned int WRCompilationContext::resolveExpressionEx( WRExpression& expression
 
 			break;
 		}
+
+		case WR_OPER_TERNARY:
+		{
+			ret = 1;
+
+			if ( o == 0 )
+			{
+				m_err = WR_ERR_bad_expression;
+				return 0;
+			}
+
+			// ternary consumes the condition, branches with O_BZ, and leaves only the selected arm's value on the stack.
+			if ( expression.context[o - 1].stackPosition == -1 )
+			{
+				loadExpressionContext( expression, o - 1, o );
+			}
+			else if ( expression.context[o - 1].stackPosition != 0 )
+			{
+				expression.swapWithTop( expression.context[o - 1].stackPosition );
+			}
+
+			int conditionFalseMarker = addRelativeJumpTarget( expression.bytecode );
+			addRelativeJumpSource( expression.bytecode, O_BZ, conditionFalseMarker );
+
+			appendBytecode( expression.bytecode, expression.context[o].bytecode );
+
+			int conditionTrueMarker = addRelativeJumpTarget( expression.bytecode );
+			addRelativeJumpSource( expression.bytecode, O_RelativeJump, conditionTrueMarker );
+
+			setRelativeJumpTarget( expression.bytecode, conditionFalseMarker );
+			appendBytecode( expression.bytecode, expression.context[o].bytecode2 );
+			setRelativeJumpTarget( expression.bytecode, conditionTrueMarker );
+
+			expression.context.remove( o, 1 );
+			expression.pushToStack( o - 1 );
+
+			break;
+		}
 	}
 	
 	return ret;
@@ -4446,7 +4506,11 @@ bool WRCompilationContext::operatorFound( WRstr const& token, WRarray<WRExpressi
 			context[depth].operation = c_operations + i;
 			context[depth].type = EXTYPE_OPERATION;
 
-			pushOpcode( context[depth].bytecode, c_operations[i].opcode );
+			// ternary stores full branch bytecode on the node and does not emit a standalone opcode here.
+			if ( c_operations[i].opcode != O_LAST )
+			{
+				pushOpcode( context[depth].bytecode, c_operations[i].opcode );
+			}
 
 			return true;
 		}
@@ -6073,6 +6137,7 @@ bool WRCompilationContext::parseIf( WROpcode opcodeToReturn )
 //------------------------------------------------------------------------------
 bool WRCompilationContext::parseStatement( int unitIndex, char end, WROpcode opcodeToReturn )
 {
+	WRUnitContext& unit = m_units[unitIndex];
 	WRExpressionContext ex;
 	bool varSeen = false;
 	m_exportNextUnit = false;
@@ -6109,11 +6174,13 @@ bool WRCompilationContext::parseStatement( int unitIndex, char end, WROpcode opc
 		
 		if ( !m_quoted && token == "{" )
 		{
+			unit.lastStatementOverwriteStore.valid = false;
 			return parseStatement( unitIndex, '}', opcodeToReturn );
 		}
 
 		if ( !m_quoted && token == "return" )
 		{
+			unit.lastStatementOverwriteStore.valid = false;
 			if ( !getToken(ex) )
 			{
 				m_err = WR_ERR_unexpected_EOF;
@@ -6139,14 +6206,15 @@ bool WRCompilationContext::parseStatement( int unitIndex, char end, WROpcode opc
 					return false;
 				}
 
-				appendBytecode( m_units[unitIndex].bytecode, nex.bytecode );
+				appendBytecode( unit.bytecode, nex.bytecode );
 			}
 
 			pushDebug( WRD_LineNumber, m_units[m_unitTop].bytecode, getSourcePosition() );
-			pushOpcode( m_units[unitIndex].bytecode, opcodeToReturn );
+			pushOpcode( unit.bytecode, opcodeToReturn );
 		}
 		else if ( !m_quoted && token == "struct" )
 		{
+			unit.lastStatementOverwriteStore.valid = false;
 			m_exportNextUnit = true; // always export structs
 			
 			if ( unitIndex != 0 )
@@ -6162,6 +6230,7 @@ bool WRCompilationContext::parseStatement( int unitIndex, char end, WROpcode opc
 		}
 		else if ( !m_quoted && (token == "function" || token == "unit") )
 		{
+			unit.lastStatementOverwriteStore.valid = false;
 			if ( unitIndex != 0 )
 			{
 				m_err = WR_ERR_statement_expected;
@@ -6175,6 +6244,7 @@ bool WRCompilationContext::parseStatement( int unitIndex, char end, WROpcode opc
 		}
 		else if ( !m_quoted && token == "if" )
 		{
+			unit.lastStatementOverwriteStore.valid = false;
 			if ( !parseIf(opcodeToReturn) )
 			{
 				return false;
@@ -6182,6 +6252,7 @@ bool WRCompilationContext::parseStatement( int unitIndex, char end, WROpcode opc
 		}
 		else if ( !m_quoted && token == "while" )
 		{
+			unit.lastStatementOverwriteStore.valid = false;
 			if ( !parseWhile(opcodeToReturn) )
 			{
 				return false;
@@ -6189,6 +6260,7 @@ bool WRCompilationContext::parseStatement( int unitIndex, char end, WROpcode opc
 		}
 		else if ( !m_quoted && token == "for" )
 		{
+			unit.lastStatementOverwriteStore.valid = false;
 			if ( !parseForLoop(opcodeToReturn) )
 			{
 				return false;
@@ -6196,6 +6268,7 @@ bool WRCompilationContext::parseStatement( int unitIndex, char end, WROpcode opc
 		}
 		else if ( !m_quoted && token == "enum" )
 		{
+			unit.lastStatementOverwriteStore.valid = false;
 			if ( !parseEnum(unitIndex) )
 			{
 				return false;
@@ -6208,6 +6281,7 @@ bool WRCompilationContext::parseStatement( int unitIndex, char end, WROpcode opc
 		}
 		else if ( !m_quoted && token == "switch" )
 		{
+			unit.lastStatementOverwriteStore.valid = false;
 			if ( !parseSwitch(opcodeToReturn) )
 			{
 				return false;
@@ -6215,6 +6289,7 @@ bool WRCompilationContext::parseStatement( int unitIndex, char end, WROpcode opc
 		}
 		else if ( !m_quoted && token == "do" )
 		{
+			unit.lastStatementOverwriteStore.valid = false;
 			if ( !parseDoWhile(opcodeToReturn) )
 			{
 				return false;
@@ -6222,26 +6297,29 @@ bool WRCompilationContext::parseStatement( int unitIndex, char end, WROpcode opc
 		}
 		else if ( !m_quoted && token == "break" )
 		{
+			unit.lastStatementOverwriteStore.valid = false;
 			if ( !m_breakTargets.count() )
 			{
 				m_err = WR_ERR_break_keyword_not_in_looping_structure;
 				return false;
 			}
 
-			addRelativeJumpSource( m_units[unitIndex].bytecode, O_RelativeJump, *m_breakTargets.tail() );
+			addRelativeJumpSource( unit.bytecode, O_RelativeJump, *m_breakTargets.tail() );
 		}
 		else if ( !m_quoted && token == "continue" )
 		{
+			unit.lastStatementOverwriteStore.valid = false;
 			if ( !m_continueTargets.count() )
 			{
 				m_err = WR_ERR_continue_keyword_not_in_looping_structure;
 				return false;
 			}
 
-			addRelativeJumpSource( m_units[unitIndex].bytecode, O_RelativeJump, *m_continueTargets.tail() );
+			addRelativeJumpSource( unit.bytecode, O_RelativeJump, *m_continueTargets.tail() );
 		}
 		else if ( !m_quoted && token == "goto" )
 		{
+			unit.lastStatementOverwriteStore.valid = false;
 			if ( !getToken(ex) ) // if we run out of tokens that's fine as long as we were not waiting for a }
 			{
 				m_err = WR_ERR_unexpected_EOF;
@@ -6257,10 +6335,10 @@ bool WRCompilationContext::parseStatement( int unitIndex, char end, WROpcode opc
 				return false;
 			}
 
-			GotoSource& G = m_units[unitIndex].bytecode.gotoSource.append();
+			GotoSource& G = unit.bytecode.gotoSource.append();
 			G.hash = wr_hashStr( token );
-			G.offset = m_units[unitIndex].bytecode.all.size();
-			pushData( m_units[unitIndex].bytecode, "\0\0\0", 3 );
+			G.offset = unit.bytecode.all.size();
+			pushData( unit.bytecode, "\0\0\0", 3 );
 
 			if ( !getToken(ex, ";"))
 			{
@@ -6270,7 +6348,7 @@ bool WRCompilationContext::parseStatement( int unitIndex, char end, WROpcode opc
 		}
 		else
 		{
-			WRExpression nex( m_units[unitIndex].bytecode.localSpace, m_units[unitIndex].bytecode.isStructSpace );
+			WRExpression nex( unit.bytecode.localSpace, unit.bytecode.isStructSpace );
 			nex.context[0].varSeen = varSeen;
 			nex.context[0].token = token;
 			nex.context[0].value = ex.value;
@@ -6287,8 +6365,7 @@ bool WRCompilationContext::parseStatement( int unitIndex, char end, WROpcode opc
 				return false;
 			}
 
-			appendBytecode( m_units[unitIndex].bytecode, nex.bytecode );
-			pushOpcode( m_units[unitIndex].bytecode, O_PopOne );
+			FinalizeStatementBytecode( unit, nex.bytecode );
 		}
 
 		if ( end == ';' ) // single statement
@@ -6905,6 +6982,7 @@ char WRCompilationContext::parseExpression( WRExpression& expression )
 		WRstr& token = expression.context[depth].token;
 
 		expression.context[depth].bytecode.clear();
+		expression.context[depth].bytecode2.clear(); // reset stale ternary false-branch bytecode in this working slot
 		expression.context[depth].setLocalSpace( expression.bytecode.localSpace, expression.bytecode.isStructSpace );
 		if ( !getToken(expression.context[depth]) )
 		{
@@ -6970,6 +7048,86 @@ char WRCompilationContext::parseExpression( WRExpression& expression )
 		{
 			m_err = WR_ERR_blank_variables_cannot_be_initialized;
 			return 0;
+		}
+
+		if ( !m_quoted && token == "?" )
+		{
+			// ternary is parsed as a single operator node with recursive true/false expression branches.
+			if ( (depth == 0) || (expression.context[depth - 1].type == EXTYPE_OPERATION) )
+			{
+				m_err = WR_ERR_bad_expression;
+				return 0;
+			}
+
+			if ( !operatorFound(token, expression.context, depth) )
+			{
+				m_err = WR_ERR_bad_expression;
+				return 0;
+			}
+
+			WRstr& token2 = expression.context[depth].token;
+			WRValue& value2 = expression.context[depth].value;
+
+			if ( !getToken(expression.context[depth]) )
+			{
+				m_err = WR_ERR_unexpected_EOF;
+				return 0;
+			}
+
+			WRExpression ifTrue( expression.bytecode.localSpace, expression.bytecode.isStructSpace );
+			ifTrue.allowFunctionNameHashLiteral = expression.allowFunctionNameHashLiteral;
+			ifTrue.allowLabelDeclarations = false;
+			ifTrue.context[0].token = token2;
+			ifTrue.context[0].value = value2;
+			m_loadedToken = token2;
+			m_loadedValue = value2;
+			m_loadedQuoted = m_quoted;
+
+			if ( parseExpression(ifTrue) != ':' || m_err )
+			{
+				m_err = m_err ? m_err : WR_ERR_unexpected_token;
+				return 0;
+			}
+
+			if ( !ifTrue.bytecode.all.size() )
+			{
+				m_err = WR_ERR_bad_expression;
+				return 0;
+			}
+
+			expression.context[depth].bytecode = ifTrue.bytecode;
+
+			if ( !getToken(expression.context[depth]) )
+			{
+				m_err = WR_ERR_unexpected_EOF;
+				return 0;
+			}
+
+			WRExpression ifFalse( expression.bytecode.localSpace, expression.bytecode.isStructSpace );
+			ifFalse.allowFunctionNameHashLiteral = expression.allowFunctionNameHashLiteral;
+			ifFalse.allowLabelDeclarations = false;
+			ifFalse.context[0].token = token2;
+			ifFalse.context[0].value = value2;
+			m_loadedToken = token2;
+			m_loadedValue = value2;
+			m_loadedQuoted = m_quoted;
+
+			end = parseExpression(ifFalse);
+			if ( !end || m_err )
+			{
+				m_err = m_err ? m_err : WR_ERR_unexpected_EOF;
+				return 0;
+			}
+
+			if ( !ifFalse.bytecode.all.size() )
+			{
+				m_err = WR_ERR_bad_expression;
+				return 0;
+			}
+
+			expression.context[depth].bytecode2 = ifFalse.bytecode;
+			++depth;
+			break;
 		}
 		
 		if ( operatorFound(token, expression.context, depth) )
@@ -7333,7 +7491,7 @@ char WRCompilationContext::parseExpression( WRExpression& expression )
 
 			WRstr label = token;
 
-			if ( depth == 0 && !m_parsingFor )
+			if ( depth == 0 && !m_parsingFor && expression.allowLabelDeclarations )
 			{
 				if ( !getToken(expression.context[depth]) )
 				{
@@ -7398,7 +7556,8 @@ char WRCompilationContext::parseExpression( WRExpression& expression )
 		return 0;
 	}
 
-	expression.context.setCount( expression.context.count() - 1 );
+	// trim to the number of committed expression nodes, which also allows ternary to consume the outer delimiter cleanly.
+	expression.context.setCount( depth );
 
 	if ( depth == 2
 		 && expression.lValue
@@ -7477,6 +7636,136 @@ SOFTWARE.
 #ifndef WRENCH_WITHOUT_COMPILER
 
 #define KEYHOLE_OPTIMIZER
+
+int wr_operandSizeForOpcode( const uint8_t* opPtr, const uint8_t* end, const uint8_t op );
+
+//------------------------------------------------------------------------------
+static int wr_optimizerOperandSize( const uint8_t* opPtr, const uint8_t* end, const uint8_t op )
+{
+	return (op == O_FUNCTION_CALL_PLACEHOLDER) ? 5 : wr_operandSizeForOpcode( opPtr, end, op );
+}
+
+//------------------------------------------------------------------------------
+static bool wr_decodeOverwriteStore( const unsigned char* code, unsigned int offset, WROverwriteStoreInfo& info )
+{
+	info.valid = true;
+	info.offset = offset;
+
+	switch( code[offset] )
+	{
+		case O_AssignToGlobalAndPop:
+		case O_BinaryAdditionAndStoreGlobal:
+		case O_BinarySubtractionAndStoreGlobal:
+		case O_BinaryMultiplicationAndStoreGlobal:
+		case O_BinaryDivisionAndStoreGlobal:
+		{
+			info.global = true;
+			info.index = code[offset + 1];
+			info.length = 2;
+			return true;
+		}
+
+		case O_AssignToLocalAndPop:
+		case O_BinaryAdditionAndStoreLocal:
+		case O_BinarySubtractionAndStoreLocal:
+		case O_BinaryMultiplicationAndStoreLocal:
+		case O_BinaryDivisionAndStoreLocal:
+		{
+			info.global = false;
+			info.index = code[offset + 1];
+			info.length = 2;
+			return true;
+		}
+
+		case O_LiteralInt8ToGlobal:
+		{
+			info.global = true;
+			info.index = code[offset + 1];
+			info.length = 3;
+			return true;
+		}
+
+		case O_LiteralInt8ToLocal:
+		{
+			info.global = false;
+			info.index = code[offset + 1];
+			info.length = 3;
+			return true;
+		}
+
+		case O_LiteralInt16ToGlobal:
+		{
+			info.global = true;
+			info.index = code[offset + 1];
+			info.length = 4;
+			return true;
+		}
+
+		case O_LiteralInt16ToLocal:
+		{
+			info.global = false;
+			info.index = code[offset + 1];
+			info.length = 4;
+			return true;
+		}
+
+		case O_LiteralInt32ToGlobal:
+		case O_LiteralFloatToGlobal:
+		{
+			info.global = true;
+			info.index = code[offset + 1];
+			info.length = 6;
+			return true;
+		}
+
+		case O_LiteralInt32ToLocal:
+		case O_LiteralFloatToLocal:
+		{
+			info.global = false;
+			info.index = code[offset + 1];
+			info.length = 6;
+			return true;
+		}
+	}
+
+	info.valid = false;
+	return false;
+}
+
+//------------------------------------------------------------------------------
+static bool wr_findLastStatementOverwriteStore( WRBytecode& bytecode, WROverwriteStoreInfo& info )
+{
+	info.valid = false;
+	if ( bytecode.all.size() == 0 )
+	{
+		return false;
+	}
+
+	const unsigned char* code = bytecode.all;
+	const uint8_t* end = (const uint8_t*)(code + bytecode.all.size());
+	unsigned int offset = 0;
+	unsigned int lastOpcodeOffset = 0;
+
+	while ( offset < bytecode.all.size() )
+	{
+		lastOpcodeOffset = offset;
+
+		int operandSize = wr_optimizerOperandSize( code + offset + 1, end, code[offset] );
+		if ( operandSize < 0 )
+		{
+			return false;
+		}
+
+		offset += 1 + (unsigned int)operandSize;
+	}
+
+	if ( offset != bytecode.all.size() )
+	{
+		return false;
+	}
+
+	return wr_decodeOverwriteStore( code, lastOpcodeOffset, info );
+}
 
 //------------------------------------------------------------------------------
 bool WRCompilationContext::CheckSkipLoad( WROpcode opcode, WRBytecode& bytecode, int a, int o )
@@ -9044,6 +9333,39 @@ void WRCompilationContext::appendBytecode( WRBytecode& bytecode, WRBytecode& add
 
 	bytecode.all += addMe.all;
 	bytecode.opcodes += addMe.opcodes;
+}
+
+//------------------------------------------------------------------------------
+void WRCompilationContext::FinalizeStatementBytecode( WRUnitContext& unit, WRBytecode& statementBytecode )
+{
+	pushOpcode( statementBytecode, O_PopOne );
+
+	WROverwriteStoreInfo currentStore;
+	bool haveCurrentStore = wr_findLastStatementOverwriteStore( statementBytecode, currentStore );
+
+	if ( haveCurrentStore
+		 && unit.lastStatementOverwriteStore.valid
+		 && unit.lastStatementOverwriteStore.global == currentStore.global
+		 && unit.lastStatementOverwriteStore.index == currentStore.index
+		 && (unit.lastStatementOverwriteStore.offset + unit.lastStatementOverwriteStore.length) == unit.bytecode.all.size() )
+	{
+		unit.bytecode.all.shave( unit.lastStatementOverwriteStore.length );
+	}
+
+	unit.bytecode.opcodes.clear();
+
+	unsigned int statementOffset = unit.bytecode.all.size();
+	appendBytecode( unit.bytecode, statementBytecode );
+
+	if ( haveCurrentStore )
+	{
+		unit.lastStatementOverwriteStore = currentStore;
+		unit.lastStatementOverwriteStore.offset += statementOffset;
+	}
+	else
+	{
+		unit.lastStatementOverwriteStore.valid = false;
+	}
 }
 
 

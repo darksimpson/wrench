@@ -1,8 +1,17 @@
 /*~ ~*/
 
 
-sb[5] = { 3 };
-sa[sb[0]] = { 1 };
+var a;
+var b;
+var c;
+var d;
+var s;
+var gi;
+var ggi = 0;
+var grow;
+
+var sb[5] = { 3 };
+var sa[sb[0]] = { 1 };
 if(sa[0] != 1 ) println("rese size 3");
 
 
@@ -15,25 +24,25 @@ var s1000[1000];
 if ( s1000._count != 1000 ) println("size 0");
 var s10[10];
 if ( s10._count != 10 ) println("size 1");
-s2000[2000];
+var s2000[2000];
 if ( s2000._count != 2000 ) println("size 2000");
 
-s3[10];
+var s3[10];
 if ( s3._count != 10 ) println("size 2");
-s1[] = {};
+var s1[] = {};
 if ( s1._count != 0 ) println("size 3");
-s2[] = {0};
+var s2[] = {0};
 if ( s2._count != 1 ) println("size 4");
-s22[] = {0,1,2,3};
+var s22[] = {0,1,2,3};
 if ( s22._count != 4 ) println("size 5");
 
 function retCheck()
 {
-	a[] = { 1, 2, 3 };
+	var a[] = { 1, 2, 3 };
 	return a;
 }
 
-b = retCheck();
+var b = retCheck();
 if ( b[0] != 1 ) println( "rc 3");
 if ( b[1] != 2 ) println( "rc 4");
 if ( retCheck()[0] != 1 ) println("rc 0");
@@ -41,7 +50,7 @@ if ( retCheck()[1] != 2 ) println("rc 1");
 if ( retCheck()[2] != 3 ) println("rc 2");
 
 
-array = { 20 };
+var array = { 20 };
 if ( array[0] != 20 ) println("lk1");
 for( a : array )
 {
@@ -51,7 +60,7 @@ for( a : array )
 	if ( a != 20 ) println("lk2");
 }
 
-ff[] = { 1.2, 1.3, 1.4, 1.5 };
+var ff[] = { 1.2, 1.3, 1.4, 1.5 };
 if ( ff[0] != 1.2 ) { println("ff1"); }
 if ( ff[2] != 1.4 ) { println("ff2"); }
 ff[0] = 1.7;
@@ -65,14 +74,11 @@ ff[1] = a;
 if ( ff[1] != 7.8 ) { println("ff6"); }
 
 
-aa[10];
+var aa[10];
 if ( aa._count!= 10 ) println("bad size aa 10");
 a[500] = { aa };
 if ( a[0]._count != 10 ) println("bad size 10");
 if ( a._count!= 1 ) println("bad size 500");
-
-
-
 for( gi=0; gi<500; ++gi )
 {
 	allocArray();
@@ -81,9 +87,6 @@ for( gi=0; gi<500; ++gi )
 {
 	allocArray();
 }
-
-
-
 
 b[40000];
 b[1] = 10;
@@ -92,7 +95,6 @@ if ( b[1] != 10 || b[35000] != 20 )
 {
 	println("bad b");
 }
-
 c[2000000];
 c[1] = 11;
 c[1913500] = 21;
@@ -131,8 +133,6 @@ if ( a[400] != 4 )
 	println("bad a2");
 }
 
-ggi = 0;
-
 grow[1] = 10;
 grow[2] = 11;
 grow[3] = 12;
@@ -150,33 +150,33 @@ if ( grow[2] != 11 ) println("badref4");
 function allocArray()
 {
 
-	_a = { 4, 2, 3, 4, 5 };
+	var _a = { 4, 2, 3, 4, 5 };
 	if ( _a[2] != 3 )
 	{
 		println("F bad a1");
 	}
 
-	_b[] = { 4, 2, 3, 4, 5 };
+	var _b[] = { 4, 2, 3, 4, 5 };
 	if ( _b[2] != 3 )
 	{
 		println("F bad b1");
 	}
 
-	_c[100] = { 4, 2, 3, 4, 5 };
+	var _c[100] = { 4, 2, 3, 4, 5 };
 	if ( _c[2] != 3 )
 	{
 		println("F bad c1");
 	}
 
-	_d[1] = { 4, 2, 3, 4, 5 };
+	var _d[1] = { 4, 2, 3, 4, 5 };
 	if ( _d[2] != 3 )
 	{
 		println("F bad d1");
 	}
 
 
-	ab[500];
-	i = 2;
+	var ab[500];
+	var i = 2;
 	ab = { 0, 2, 3 };
 	if ( ab[2] != 3 )
 	{
@@ -193,7 +193,7 @@ function allocArray()
 	}
 
 
-	ac[50];
+	var ac[50];
 
 	for( i=0; i<50; ++i )
 	{
@@ -325,4 +325,3 @@ if ( n[1][1] != 16 ) println("err 23");
 var o = { n, m, l, "hello" };
 if ( o[0][1][1] != 16 ) println("err 24");
 if ( o[3] != "hello" ) println("err 25");
-

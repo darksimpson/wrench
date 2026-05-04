@@ -70,6 +70,7 @@ char WRCompilationContext::parseExpression( WRExpression& expression )
 		WRstr& token = expression.context[depth].token;
 
 		expression.context[depth].bytecode.clear();
+		expression.context[depth].bytecode2.clear(); // reset stale ternary false-branch bytecode in this working slot
 		expression.context[depth].setLocalSpace( expression.bytecode.localSpace, expression.bytecode.isStructSpace );
 		if ( !getToken(expression.context[depth]) )
 		{
@@ -135,6 +136,86 @@ char WRCompilationContext::parseExpression( WRExpression& expression )
 		{
 			m_err = WR_ERR_blank_variables_cannot_be_initialized;
 			return 0;
+		}
+
+		if ( !m_quoted && token == "?" )
+		{
+			// ternary is parsed as a single operator node with recursive true/false expression branches.
+			if ( (depth == 0) || (expression.context[depth - 1].type == EXTYPE_OPERATION) )
+			{
+				m_err = WR_ERR_bad_expression;
+				return 0;
+			}
+
+			if ( !operatorFound(token, expression.context, depth) )
+			{
+				m_err = WR_ERR_bad_expression;
+				return 0;
+			}
+
+			WRstr& token2 = expression.context[depth].token;
+			WRValue& value2 = expression.context[depth].value;
+
+			if ( !getToken(expression.context[depth]) )
+			{
+				m_err = WR_ERR_unexpected_EOF;
+				return 0;
+			}
+
+			WRExpression ifTrue( expression.bytecode.localSpace, expression.bytecode.isStructSpace );
+			ifTrue.allowFunctionNameHashLiteral = expression.allowFunctionNameHashLiteral;
+			ifTrue.allowLabelDeclarations = false;
+			ifTrue.context[0].token = token2;
+			ifTrue.context[0].value = value2;
+			m_loadedToken = token2;
+			m_loadedValue = value2;
+			m_loadedQuoted = m_quoted;
+
+			if ( parseExpression(ifTrue) != ':' || m_err )
+			{
+				m_err = m_err ? m_err : WR_ERR_unexpected_token;
+				return 0;
+			}
+
+			if ( !ifTrue.bytecode.all.size() )
+			{
+				m_err = WR_ERR_bad_expression;
+				return 0;
+			}
+
+			expression.context[depth].bytecode = ifTrue.bytecode;
+
+			if ( !getToken(expression.context[depth]) )
+			{
+				m_err = WR_ERR_unexpected_EOF;
+				return 0;
+			}
+
+			WRExpression ifFalse( expression.bytecode.localSpace, expression.bytecode.isStructSpace );
+			ifFalse.allowFunctionNameHashLiteral = expression.allowFunctionNameHashLiteral;
+			ifFalse.allowLabelDeclarations = false;
+			ifFalse.context[0].token = token2;
+			ifFalse.context[0].value = value2;
+			m_loadedToken = token2;
+			m_loadedValue = value2;
+			m_loadedQuoted = m_quoted;
+
+			end = parseExpression(ifFalse);
+			if ( !end || m_err )
+			{
+				m_err = m_err ? m_err : WR_ERR_unexpected_EOF;
+				return 0;
+			}
+
+			if ( !ifFalse.bytecode.all.size() )
+			{
+				m_err = WR_ERR_bad_expression;
+				return 0;
+			}
+
+			expression.context[depth].bytecode2 = ifFalse.bytecode;
+			++depth;
+			break;
 		}
 		
 		if ( operatorFound(token, expression.context, depth) )
@@ -498,7 +579,7 @@ char WRCompilationContext::parseExpression( WRExpression& expression )
 
 			WRstr label = token;
 
-			if ( depth == 0 && !m_parsingFor )
+			if ( depth == 0 && !m_parsingFor && expression.allowLabelDeclarations )
 			{
 				if ( !getToken(expression.context[depth]) )
 				{
@@ -563,7 +644,8 @@ char WRCompilationContext::parseExpression( WRExpression& expression )
 		return 0;
 	}
 
-	expression.context.setCount( expression.context.count() - 1 );
+	// trim to the number of committed expression nodes, which also allows ternary to consume the outer delimiter cleanly.
+	expression.context.setCount( depth );
 
 	if ( depth == 2
 		 && expression.lValue

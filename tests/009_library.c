@@ -8,7 +8,18 @@
 -4
 ~*/
 
-//var s;
+var a;
+var b;
+var c0;
+var c1;
+var c2;
+var f;
+var s;
+var s0;
+var s1;
+var s2;
+var s3;
+
 //str::sprintf( s, 			"%0d", 1 );if ( s != "1" ) println("bad 017");
 
 if ( io::O_RDWR != io::O_RDWR ) println( "c_err" );
@@ -295,4 +306,3 @@ if ( sys::isFunction("f2") != 2 ) println("sys3");
 if ( sys::isFunction() != 0 ) println("sys4");
 
 function f2() { }
-

@@ -26,3 +26,4 @@ tests/024_numbers.c
 tests/025_bug54.c
 tests/026_yield_state.c
 tests/027_arithmetic_corners.c
+tests/028_ternary.c

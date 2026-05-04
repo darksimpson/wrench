@@ -52,6 +52,7 @@ void testCallFunctionHashLibraryFallback();
 void testFunctionNameHashAsArgument();
 void testNamedEnumUnqualifiedError();
 void testBlankVariablesCannotBeInitialized();
+void testDropClobberedInitializerStores();
 void testDeepHashTableWithWrenchValue();
 void testStateContextOpaquePointer();
 void LEAKtest();
@@ -1027,6 +1028,45 @@ void testBlankVariablesCannotBeInitialized()
 }
 
 //------------------------------------------------------------------------------
+void testDropClobberedInitializerStores()
+{
+	printf( "test [-][drop initializer immediately clobbered by assign]:\n" );
+
+	const char* src = "var g = 1; g = 2;\n"
+					  "function f() { var a = 1; a = 2; return a + g; }\n";
+
+	unsigned char* out = 0;
+	int outLen = 0;
+	WRError result = wr_compile( src, (int)strlen(src), &out, &outLen, 0, WR_INCLUDE_GLOBALS );
+	if ( result != WR_ERR_None )
+	{
+		assert(0);
+		return;
+	}
+
+	WRstr listing;
+	wr_disassemble( out, outLen, listing );
+	assert( listing.find( "LiteralInt8ToGlobal            g[0x00] imm=0x01" ) == WRstr::npos );
+	assert( listing.find( "LiteralInt8ToLocal             l[0x00] imm=0x01" ) == WRstr::npos );
+	assert( listing.find( "LiteralInt8ToGlobal            g[0x00] imm=0x02" ) != WRstr::npos );
+	assert( listing.find( "LiteralInt8ToLocal             l[0x00] imm=0x02" ) != WRstr::npos );
+
+	WRState* w = wr_newState();
+	WRContext* context = wr_run( w, out, outLen, true );
+	if ( !context )
+	{
+		assert(0);
+		wr_destroyState( w );
+		return;
+	}
+
+	WRValue* ret = wr_callFunction( context, "f" );
+	assert( ret && ret->asInt() == 4 );
+
+	wr_destroyState( w );
+}
+
+//------------------------------------------------------------------------------
 void testDeepHashTableWithWrenchValue()
 {
 	WRState* w = wr_newState();
@@ -1414,6 +1454,7 @@ int runTests( int number )
 	testFunctionNameHashAsArgument();
 	testNamedEnumUnqualifiedError();
 	testBlankVariablesCannotBeInitialized();
+	testDropClobberedInitializerStores();
 	testDeepHashTableWithWrenchValue();
 	testStateContextOpaquePointer();
 #ifdef WRENCH_ENABLE_CROSS_MODULE_EXTERNAL_TEST

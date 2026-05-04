@@ -27,6 +27,136 @@ SOFTWARE.
 
 #define KEYHOLE_OPTIMIZER
 
+int wr_operandSizeForOpcode( const uint8_t* opPtr, const uint8_t* end, const uint8_t op );
+
+//------------------------------------------------------------------------------
+static int wr_optimizerOperandSize( const uint8_t* opPtr, const uint8_t* end, const uint8_t op )
+{
+	return (op == O_FUNCTION_CALL_PLACEHOLDER) ? 5 : wr_operandSizeForOpcode( opPtr, end, op );
+}
+
+//------------------------------------------------------------------------------
+static bool wr_decodeOverwriteStore( const unsigned char* code, unsigned int offset, WROverwriteStoreInfo& info )
+{
+	info.valid = true;
+	info.offset = offset;
+
+	switch( code[offset] )
+	{
+		case O_AssignToGlobalAndPop:
+		case O_BinaryAdditionAndStoreGlobal:
+		case O_BinarySubtractionAndStoreGlobal:
+		case O_BinaryMultiplicationAndStoreGlobal:
+		case O_BinaryDivisionAndStoreGlobal:
+		{
+			info.global = true;
+			info.index = code[offset + 1];
+			info.length = 2;
+			return true;
+		}
+
+		case O_AssignToLocalAndPop:
+		case O_BinaryAdditionAndStoreLocal:
+		case O_BinarySubtractionAndStoreLocal:
+		case O_BinaryMultiplicationAndStoreLocal:
+		case O_BinaryDivisionAndStoreLocal:
+		{
+			info.global = false;
+			info.index = code[offset + 1];
+			info.length = 2;
+			return true;
+		}
+
+		case O_LiteralInt8ToGlobal:
+		{
+			info.global = true;
+			info.index = code[offset + 1];
+			info.length = 3;
+			return true;
+		}
+
+		case O_LiteralInt8ToLocal:
+		{
+			info.global = false;
+			info.index = code[offset + 1];
+			info.length = 3;
+			return true;
+		}
+
+		case O_LiteralInt16ToGlobal:
+		{
+			info.global = true;
+			info.index = code[offset + 1];
+			info.length = 4;
+			return true;
+		}
+
+		case O_LiteralInt16ToLocal:
+		{
+			info.global = false;
+			info.index = code[offset + 1];
+			info.length = 4;
+			return true;
+		}
+
+		case O_LiteralInt32ToGlobal:
+		case O_LiteralFloatToGlobal:
+		{
+			info.global = true;
+			info.index = code[offset + 1];
+			info.length = 6;
+			return true;
+		}
+
+		case O_LiteralInt32ToLocal:
+		case O_LiteralFloatToLocal:
+		{
+			info.global = false;
+			info.index = code[offset + 1];
+			info.length = 6;
+			return true;
+		}
+	}
+
+	info.valid = false;
+	return false;
+}
+
+//------------------------------------------------------------------------------
+static bool wr_findLastStatementOverwriteStore( WRBytecode& bytecode, WROverwriteStoreInfo& info )
+{
+	info.valid = false;
+	if ( bytecode.all.size() == 0 )
+	{
+		return false;
+	}
+
+	const unsigned char* code = bytecode.all;
+	const uint8_t* end = (const uint8_t*)(code + bytecode.all.size());
+	unsigned int offset = 0;
+	unsigned int lastOpcodeOffset = 0;
+
+	while ( offset < bytecode.all.size() )
+	{
+		lastOpcodeOffset = offset;
+
+		int operandSize = wr_optimizerOperandSize( code + offset + 1, end, code[offset] );
+		if ( operandSize < 0 )
+		{
+			return false;
+		}
+
+		offset += 1 + (unsigned int)operandSize;
+	}
+
+	if ( offset != bytecode.all.size() )
+	{
+		return false;
+	}
+
+	return wr_decodeOverwriteStore( code, lastOpcodeOffset, info );
+}
+
 //------------------------------------------------------------------------------
 bool WRCompilationContext::CheckSkipLoad( WROpcode opcode, WRBytecode& bytecode, int a, int o )
 {
@@ -1593,6 +1723,39 @@ void WRCompilationContext::appendBytecode( WRBytecode& bytecode, WRBytecode& add
 
 	bytecode.all += addMe.all;
 	bytecode.opcodes += addMe.opcodes;
+}
+
+//------------------------------------------------------------------------------
+void WRCompilationContext::FinalizeStatementBytecode( WRUnitContext& unit, WRBytecode& statementBytecode )
+{
+	pushOpcode( statementBytecode, O_PopOne );
+
+	WROverwriteStoreInfo currentStore;
+	bool haveCurrentStore = wr_findLastStatementOverwriteStore( statementBytecode, currentStore );
+
+	if ( haveCurrentStore
+		 && unit.lastStatementOverwriteStore.valid
+		 && unit.lastStatementOverwriteStore.global == currentStore.global
+		 && unit.lastStatementOverwriteStore.index == currentStore.index
+		 && (unit.lastStatementOverwriteStore.offset + unit.lastStatementOverwriteStore.length) == unit.bytecode.all.size() )
+	{
+		unit.bytecode.all.shave( unit.lastStatementOverwriteStore.length );
+	}
+
+	unit.bytecode.opcodes.clear();
+
+	unsigned int statementOffset = unit.bytecode.all.size();
+	appendBytecode( unit.bytecode, statementBytecode );
+
+	if ( haveCurrentStore )
+	{
+		unit.lastStatementOverwriteStore = currentStore;
+		unit.lastStatementOverwriteStore.offset += statementOffset;
+	}
+	else
+	{
+		unit.lastStatementOverwriteStore.valid = false;
+	}
 }
 
 

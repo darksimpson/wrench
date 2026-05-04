@@ -673,7 +673,28 @@ a &gt= b
 a &lt= b
 a || b
 a && b
+
+// ternary:
+condition ? whenTrue : whenFalse
 </code></pre>
+
+<p>The ternary operator works like c: it evaluates the condition, then
+evaluates and returns only one branch.
+<code><pre>var a = 1 ? 10 : 20;      // a = 10
+var b = 0 ? 10 : 20;      // b = 20
+var c = ready ? foo() : bar();
+</code></pre>
+
+<p>Ternary precedence is lower than <code>||</code> and higher than
+assignment, so this:
+<code><pre>var next = 0 ? 111 : 150;
+</code></pre>
+behaves as:
+<code><pre>var next = (0 ? 111 : 150);
+</code></pre>
+
+<p>You can also nest ternaries or use them inside array and hash
+expressions. Parentheses are recommended when nesting them for clarity.
 
 <p><b>comments</b>
 <code><pre>var A = 10; // single-line c++ comments are supported

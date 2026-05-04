@@ -1384,6 +1384,44 @@ unsigned int WRCompilationContext::resolveExpressionEx( WRExpression& expression
 
 			break;
 		}
+
+		case WR_OPER_TERNARY:
+		{
+			ret = 1;
+
+			if ( o == 0 )
+			{
+				m_err = WR_ERR_bad_expression;
+				return 0;
+			}
+
+			// ternary consumes the condition, branches with O_BZ, and leaves only the selected arm's value on the stack.
+			if ( expression.context[o - 1].stackPosition == -1 )
+			{
+				loadExpressionContext( expression, o - 1, o );
+			}
+			else if ( expression.context[o - 1].stackPosition != 0 )
+			{
+				expression.swapWithTop( expression.context[o - 1].stackPosition );
+			}
+
+			int conditionFalseMarker = addRelativeJumpTarget( expression.bytecode );
+			addRelativeJumpSource( expression.bytecode, O_BZ, conditionFalseMarker );
+
+			appendBytecode( expression.bytecode, expression.context[o].bytecode );
+
+			int conditionTrueMarker = addRelativeJumpTarget( expression.bytecode );
+			addRelativeJumpSource( expression.bytecode, O_RelativeJump, conditionTrueMarker );
+
+			setRelativeJumpTarget( expression.bytecode, conditionFalseMarker );
+			appendBytecode( expression.bytecode, expression.context[o].bytecode2 );
+			setRelativeJumpTarget( expression.bytecode, conditionTrueMarker );
+
+			expression.context.remove( o, 1 );
+			expression.pushToStack( o - 1 );
+
+			break;
+		}
 	}
 	
 	return ret;
@@ -1408,7 +1446,11 @@ bool WRCompilationContext::operatorFound( WRstr const& token, WRarray<WRExpressi
 			context[depth].operation = c_operations + i;
 			context[depth].type = EXTYPE_OPERATION;
 
-			pushOpcode( context[depth].bytecode, c_operations[i].opcode );
+			// ternary stores full branch bytecode on the node and does not emit a standalone opcode here.
+			if ( c_operations[i].opcode != O_LAST )
+			{
+				pushOpcode( context[depth].bytecode, c_operations[i].opcode );
+			}
 
 			return true;
 		}
@@ -3035,6 +3077,7 @@ bool WRCompilationContext::parseIf( WROpcode opcodeToReturn )
 //------------------------------------------------------------------------------
 bool WRCompilationContext::parseStatement( int unitIndex, char end, WROpcode opcodeToReturn )
 {
+	WRUnitContext& unit = m_units[unitIndex];
 	WRExpressionContext ex;
 	bool varSeen = false;
 	m_exportNextUnit = false;
@@ -3071,11 +3114,13 @@ bool WRCompilationContext::parseStatement( int unitIndex, char end, WROpcode opc
 		
 		if ( !m_quoted && token == "{" )
 		{
+			unit.lastStatementOverwriteStore.valid = false;
 			return parseStatement( unitIndex, '}', opcodeToReturn );
 		}
 
 		if ( !m_quoted && token == "return" )
 		{
+			unit.lastStatementOverwriteStore.valid = false;
 			if ( !getToken(ex) )
 			{
 				m_err = WR_ERR_unexpected_EOF;
@@ -3101,14 +3146,15 @@ bool WRCompilationContext::parseStatement( int unitIndex, char end, WROpcode opc
 					return false;
 				}
 
-				appendBytecode( m_units[unitIndex].bytecode, nex.bytecode );
+				appendBytecode( unit.bytecode, nex.bytecode );
 			}
 
 			pushDebug( WRD_LineNumber, m_units[m_unitTop].bytecode, getSourcePosition() );
-			pushOpcode( m_units[unitIndex].bytecode, opcodeToReturn );
+			pushOpcode( unit.bytecode, opcodeToReturn );
 		}
 		else if ( !m_quoted && token == "struct" )
 		{
+			unit.lastStatementOverwriteStore.valid = false;
 			m_exportNextUnit = true; // always export structs
 			
 			if ( unitIndex != 0 )
@@ -3124,6 +3170,7 @@ bool WRCompilationContext::parseStatement( int unitIndex, char end, WROpcode opc
 		}
 		else if ( !m_quoted && (token == "function" || token == "unit") )
 		{
+			unit.lastStatementOverwriteStore.valid = false;
 			if ( unitIndex != 0 )
 			{
 				m_err = WR_ERR_statement_expected;
@@ -3137,6 +3184,7 @@ bool WRCompilationContext::parseStatement( int unitIndex, char end, WROpcode opc
 		}
 		else if ( !m_quoted && token == "if" )
 		{
+			unit.lastStatementOverwriteStore.valid = false;
 			if ( !parseIf(opcodeToReturn) )
 			{
 				return false;
@@ -3144,6 +3192,7 @@ bool WRCompilationContext::parseStatement( int unitIndex, char end, WROpcode opc
 		}
 		else if ( !m_quoted && token == "while" )
 		{
+			unit.lastStatementOverwriteStore.valid = false;
 			if ( !parseWhile(opcodeToReturn) )
 			{
 				return false;
@@ -3151,6 +3200,7 @@ bool WRCompilationContext::parseStatement( int unitIndex, char end, WROpcode opc
 		}
 		else if ( !m_quoted && token == "for" )
 		{
+			unit.lastStatementOverwriteStore.valid = false;
 			if ( !parseForLoop(opcodeToReturn) )
 			{
 				return false;
@@ -3158,6 +3208,7 @@ bool WRCompilationContext::parseStatement( int unitIndex, char end, WROpcode opc
 		}
 		else if ( !m_quoted && token == "enum" )
 		{
+			unit.lastStatementOverwriteStore.valid = false;
 			if ( !parseEnum(unitIndex) )
 			{
 				return false;
@@ -3170,6 +3221,7 @@ bool WRCompilationContext::parseStatement( int unitIndex, char end, WROpcode opc
 		}
 		else if ( !m_quoted && token == "switch" )
 		{
+			unit.lastStatementOverwriteStore.valid = false;
 			if ( !parseSwitch(opcodeToReturn) )
 			{
 				return false;
@@ -3177,6 +3229,7 @@ bool WRCompilationContext::parseStatement( int unitIndex, char end, WROpcode opc
 		}
 		else if ( !m_quoted && token == "do" )
 		{
+			unit.lastStatementOverwriteStore.valid = false;
 			if ( !parseDoWhile(opcodeToReturn) )
 			{
 				return false;
@@ -3184,26 +3237,29 @@ bool WRCompilationContext::parseStatement( int unitIndex, char end, WROpcode opc
 		}
 		else if ( !m_quoted && token == "break" )
 		{
+			unit.lastStatementOverwriteStore.valid = false;
 			if ( !m_breakTargets.count() )
 			{
 				m_err = WR_ERR_break_keyword_not_in_looping_structure;
 				return false;
 			}
 
-			addRelativeJumpSource( m_units[unitIndex].bytecode, O_RelativeJump, *m_breakTargets.tail() );
+			addRelativeJumpSource( unit.bytecode, O_RelativeJump, *m_breakTargets.tail() );
 		}
 		else if ( !m_quoted && token == "continue" )
 		{
+			unit.lastStatementOverwriteStore.valid = false;
 			if ( !m_continueTargets.count() )
 			{
 				m_err = WR_ERR_continue_keyword_not_in_looping_structure;
 				return false;
 			}
 
-			addRelativeJumpSource( m_units[unitIndex].bytecode, O_RelativeJump, *m_continueTargets.tail() );
+			addRelativeJumpSource( unit.bytecode, O_RelativeJump, *m_continueTargets.tail() );
 		}
 		else if ( !m_quoted && token == "goto" )
 		{
+			unit.lastStatementOverwriteStore.valid = false;
 			if ( !getToken(ex) ) // if we run out of tokens that's fine as long as we were not waiting for a }
 			{
 				m_err = WR_ERR_unexpected_EOF;
@@ -3219,10 +3275,10 @@ bool WRCompilationContext::parseStatement( int unitIndex, char end, WROpcode opc
 				return false;
 			}
 
-			GotoSource& G = m_units[unitIndex].bytecode.gotoSource.append();
+			GotoSource& G = unit.bytecode.gotoSource.append();
 			G.hash = wr_hashStr( token );
-			G.offset = m_units[unitIndex].bytecode.all.size();
-			pushData( m_units[unitIndex].bytecode, "\0\0\0", 3 );
+			G.offset = unit.bytecode.all.size();
+			pushData( unit.bytecode, "\0\0\0", 3 );
 
 			if ( !getToken(ex, ";"))
 			{
@@ -3232,7 +3288,7 @@ bool WRCompilationContext::parseStatement( int unitIndex, char end, WROpcode opc
 		}
 		else
 		{
-			WRExpression nex( m_units[unitIndex].bytecode.localSpace, m_units[unitIndex].bytecode.isStructSpace );
+			WRExpression nex( unit.bytecode.localSpace, unit.bytecode.isStructSpace );
 			nex.context[0].varSeen = varSeen;
 			nex.context[0].token = token;
 			nex.context[0].value = ex.value;
@@ -3249,8 +3305,7 @@ bool WRCompilationContext::parseStatement( int unitIndex, char end, WROpcode opc
 				return false;
 			}
 
-			appendBytecode( m_units[unitIndex].bytecode, nex.bytecode );
-			pushOpcode( m_units[unitIndex].bytecode, O_PopOne );
+			FinalizeStatementBytecode( unit, nex.bytecode );
 		}
 
 		if ( end == ';' ) // single statement

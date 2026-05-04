@@ -1,6 +1,13 @@
 /*~ ~*/
 
 
+var e;
+var f;
+var i;
+var k;
+var st;
+var t;
+
 switch( f )
 {
 	default: break;
@@ -208,7 +215,7 @@ if ( f != 25000 ) println("d5000");
 function InAFunc()
 {
 
-	f1 = 1000;
+	var f1 = 1000;
 
 
 	switch( f1 )
@@ -365,15 +372,15 @@ function InAFunc()
 	}
 	if ( f1 != 25000 ) println("d5000");
 
-	v = 1;
+	var v = 1;
 	switch( v )
 	{
 		case 1:
-			g = 2;
+			var g = 2;
 			switch( g )
 			{
 				case 2:
-					d = 20;
+					var d = 20;
 					break;
 			}
 			break;
@@ -741,4 +748,3 @@ for( k = 4000000000 ; k < 4000000009; ++k )
 	}
 }
 if ( t != 0x21111111 ) println ("t10");
-

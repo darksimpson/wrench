@@ -37,6 +37,7 @@ enum WROperationType
 	WR_OPER_BINARY,
 	WR_OPER_BINARY_COMMUTE, // binary but operation order doesn't matter
 	WR_OPER_POST,
+	WR_OPER_TERNARY, // conditional operator with embedded true/false expression bytecode
 };
 
 //------------------------------------------------------------------------------
@@ -73,6 +74,7 @@ const WROperation c_operations[] =
 	{ "<",    9, O_CompareLT,           true,  WR_OPER_BINARY, O_CompareGT },
 	{ "&&",  14, O_LogicalAnd,          true,  WR_OPER_BINARY_COMMUTE, O_LAST },
 	{ "||",  15, O_LogicalOr,           true,  WR_OPER_BINARY_COMMUTE, O_LAST },
+	{ "?",   16, O_LAST,               false,  WR_OPER_TERNARY, O_LAST },
 
 	{ "++",   3, O_PreIncrement,        true,  WR_OPER_PRE, O_LAST },
 	{ "++",   2, O_PostIncrement,       true,  WR_OPER_POST, O_LAST },
@@ -99,18 +101,18 @@ const WROperation c_operations[] =
 	{ ">>",   7, O_BinaryRightShift,    true,  WR_OPER_BINARY, O_LAST },
 	{ "<<",   7, O_BinaryLeftShift,     true,  WR_OPER_BINARY, O_LAST },
 
-	{ "+=",  16, O_AddAssign,           true,  WR_OPER_BINARY, O_LAST },
-	{ "-=",  16, O_SubtractAssign,      true,  WR_OPER_BINARY, O_LAST },
-	{ "%=",  16, O_ModAssign,           true,  WR_OPER_BINARY, O_LAST },
-	{ "*=",  16, O_MultiplyAssign,      true,  WR_OPER_BINARY, O_LAST },
-	{ "/=",  16, O_DivideAssign,        true,  WR_OPER_BINARY, O_LAST },
-	{ "|=",  16, O_ORAssign,            true,  WR_OPER_BINARY, O_LAST },
-	{ "&=",  16, O_ANDAssign,           true,  WR_OPER_BINARY, O_LAST },
-	{ "^=",  16, O_XORAssign,           true,  WR_OPER_BINARY, O_LAST },
-	{ ">>=", 16, O_RightShiftAssign,   false,  WR_OPER_BINARY, O_LAST },
-	{ "<<=", 16, O_LeftShiftAssign,    false,  WR_OPER_BINARY, O_LAST },
+	{ "+=",  17, O_AddAssign,           true,  WR_OPER_BINARY, O_LAST },
+	{ "-=",  17, O_SubtractAssign,      true,  WR_OPER_BINARY, O_LAST },
+	{ "%=",  17, O_ModAssign,           true,  WR_OPER_BINARY, O_LAST },
+	{ "*=",  17, O_MultiplyAssign,      true,  WR_OPER_BINARY, O_LAST },
+	{ "/=",  17, O_DivideAssign,        true,  WR_OPER_BINARY, O_LAST },
+	{ "|=",  17, O_ORAssign,            true,  WR_OPER_BINARY, O_LAST },
+	{ "&=",  17, O_ANDAssign,           true,  WR_OPER_BINARY, O_LAST },
+	{ "^=",  17, O_XORAssign,           true,  WR_OPER_BINARY, O_LAST },
+	{ ">>=", 17, O_RightShiftAssign,   false,  WR_OPER_BINARY, O_LAST },
+	{ "<<=", 17, O_LeftShiftAssign,    false,  WR_OPER_BINARY, O_LAST },
 
-	{ "=",   16, O_Assign,             false,  WR_OPER_BINARY, O_LAST },
+	{ "=",   17, O_Assign,             false,  WR_OPER_BINARY, O_LAST },
 
 	{ "@i",  3, O_ToInt,               false,  WR_OPER_PRE, O_LAST },
 	{ "@f",  3, O_ToFloat,             false,  WR_OPER_PRE, O_LAST },
@@ -127,7 +129,7 @@ const WROperation c_operations[] =
 	
 	{ 0, 0, O_LAST, false, WR_OPER_PRE, O_LAST },
 };
-const int c_highestPrecedence = 17; // one higher than the highest entry above, things that happen absolutely LAST
+const int c_highestPrecedence = 18;
 
 //------------------------------------------------------------------------------
 enum WRExpressionType
@@ -227,6 +229,7 @@ struct WRExpressionContext
 	int stackPosition;
 	
 	WRBytecode bytecode;
+	WRBytecode bytecode2;
 
 	WRExpressionContext() { reset(); }
 
@@ -253,6 +256,7 @@ struct WRExpressionContext
 		token.clear();
 		value.init();
 		bytecode.clear();
+		bytecode2.clear();
 		operation = 0;
 
 		return this;
@@ -268,6 +272,7 @@ public:
 	WRBytecode bytecode;
 	bool lValue;
 	bool allowFunctionNameHashLiteral;
+	bool allowLabelDeclarations;
 
 	//------------------------------------------------------------------------------
 	void pushToStack( int index )
@@ -347,6 +352,7 @@ public:
 		bytecode.clear();
 		lValue = false;
 		allowFunctionNameHashLiteral = false;
+		allowLabelDeclarations = true;
 	}
 };
 
@@ -356,6 +362,19 @@ struct ConstantValue
 	WRValue value;
 	WRstr label;
 	ConstantValue() { value.init(); }
+};
+
+//------------------------------------------------------------------------------
+struct WROverwriteStoreInfo
+{
+	bool valid;
+	bool global;
+	unsigned char index;
+	unsigned int offset;
+	unsigned int length;
+
+	WROverwriteStoreInfo()
+		: valid(false), global(false), index(0), offset(0), length(0) {}
 };
 
 //------------------------------------------------------------------------------
@@ -375,6 +394,7 @@ struct WRUnitContext
 	// the code that runs when it loads
 	// the locals it has
 	WRBytecode bytecode;
+	WROverwriteStoreInfo lastStatementOverwriteStore;
 
 	int parentUnitIndex;
 	
@@ -389,6 +409,7 @@ struct WRUnitContext
 		constantValues.clear();
 		offsetOfLocalHashMap = 0;
 		bytecode.clear();
+		lastStatementOverwriteStore.valid = false;
 		parentUnitIndex = 0;
 	}
 };
@@ -415,6 +436,7 @@ private:
 	static bool CheckFastLoad( WROpcode opcode, WRBytecode& bytecode, int a, int o );
 	static bool IsLiteralLoadOpcode( unsigned char opcode );
 	static bool CheckCompareReplace( WROpcode LS, WROpcode GS, WROpcode ILS, WROpcode IGS, WRBytecode& bytecode, unsigned int a, unsigned int o );
+	void FinalizeStatementBytecode( WRUnitContext& unit, WRBytecode& statementBytecode );
 
 	friend class WRExpression;
 	static void pushOpcode( WRBytecode& bytecode, WROpcode opcode );
