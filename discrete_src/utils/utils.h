@@ -139,53 +139,29 @@ public:
 	//------------------------------------------------------------------------------
 	unsigned int remove( unsigned int location, unsigned int count =1 )
 	{
-		if ( location >= m_elementsAllocated )
+		if ( location >= m_elementsAllocated || !count )
 		{
 			return m_elementsAllocated;
 		}
 
-		unsigned int newCount;
-		if ( count > m_elementsAllocated )
+		unsigned int available = m_elementsAllocated - location;
+		unsigned int removed = count > available ? available : count;
+		unsigned int newCount = m_elementsAllocated - removed;
+		if ( !newCount )
 		{
-			if ( location == 0 )
-			{
-				clear();
-				return 0;
-			}
-			else
-			{
-				newCount = location + 1;
-			}
-		}
-		else
-		{
-			newCount = m_elementsAllocated - count;
+			clear();
+			return 0;
 		}
 
 		T* na = newArray( newCount );
 
-		if ( location == 0 )
+		unsigned int j = 0;
+		unsigned int skipEnd = location + removed;
+		for( unsigned int i=0; i<m_elementsAllocated; ++i )
 		{
-			for( unsigned int i=0; i<(unsigned int)newCount; ++i )
+			if ( i < location || i >= skipEnd )
 			{
-				na[i] = m_list[i+count];
-			}
-		}
-		else
-		{
-			unsigned int j = 0;
-			
-			unsigned int skipEnd = location + count;
-			for( unsigned int i=0; i<m_elementsAllocated; ++i )
-			{
-				if ( i < location )
-				{
-					na[j++] = m_list[i];
-				}
-				else if ( i >= skipEnd )
-				{
-					na[j++] = m_list[i];
-				}
+				na[j++] = m_list[i];
 			}
 		}
 
@@ -247,7 +223,7 @@ public:
 		m_list = 0;
 		clear();
 		m_list = newArray( A.m_elementsAllocated );
-		m_elementsNewed = A.m_elementsNewed;
+		m_elementsNewed = A.m_elementsAllocated;
 		for( unsigned int i=0; i<A.m_elementsAllocated; ++i )
 		{
 			m_list[i] = A.m_list[i];
@@ -261,13 +237,13 @@ public:
 		if ( &A != this )
 		{
 			clear();
-			m_list = newArray( A.m_elementsNewed );
+			m_list = newArray( A.m_elementsAllocated );
 			for( unsigned int i=0; i<A.m_elementsAllocated; ++i )
 			{
 				m_list[i] = A.m_list[i];
 			}
 			m_elementsAllocated = A.m_elementsAllocated;
-			m_elementsNewed = A.m_elementsNewed;
+			m_elementsNewed = A.m_elementsAllocated;
 		}
 		return *this;
 	}
@@ -435,7 +411,7 @@ private:
 
 #endif
 
-void wr_growValueArray( WRGCObject* va, int newSize );
+bool wr_growValueArray( WRGCObject* va, uint32_t newSize );
 WRValue* wr_valueFromConfirmedStruct( WRValue* value, uint32_t hash );
 
 #define IS_SVA_VALUE_TYPE(V) ((V)->m_type & 0x1)

@@ -59,3 +59,24 @@ if ( r[2] != 50 ) println("array14" + r[2] );
 array::remove( r, 0, 100 ); // remove it all
 if ( array::count(r) != 0 ) println("array15" + array::count(r) );
 
+var append[] = { 10, 20 };
+array::insert( append, 100 );
+if ( append._count != 3 ) println("array16 " + append._count );
+if ( append[0] != 10 ) println("array17 " + append[0] );
+if ( append[1] != 20 ) println("array18 " + append[1] );
+if ( append[2] != 0 ) println("array19 " + append[2] );
+
+array::insert( append, 1, 0 );
+array::insert( append, 1, -1 );
+if ( append._count != 3 ) println("array20 " + append._count );
+
+array::remove( append, 1, 0 );
+array::remove( append, 1, -1 );
+if ( append._count != 3 ) println("array21 " + append._count );
+
+append._remove( 100 );
+if ( append._count != 3 ) println("array22 " + append._count );
+
+var empty[];
+empty._remove( 0 );
+if ( empty._count != 0 ) println("array23 " + empty._count );

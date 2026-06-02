@@ -181,7 +181,11 @@ boundsFailed:
 				return;
 			}
 
-			wr_growValueArray( value->va, index->ui );
+			if ( !wr_growValueArray(value->va, index->ui) )
+			{
+				target->init();
+				return;
+			}
 		}
 
 		arrayElementToTarget( index->ui, target, value );

@@ -3167,21 +3167,25 @@ bool WRCompilationContext::parseStatement( int unitIndex, char end, WROpcode opc
 			{
 				return false;
 			}
+
+			m_units[unitIndex].lastStatementOverwriteStore.valid = false;
 		}
-		else if ( !m_quoted && (token == "function" || token == "unit") )
-		{
-			unit.lastStatementOverwriteStore.valid = false;
-			if ( unitIndex != 0 )
+			else if ( !m_quoted && (token == "function" || token == "unit") )
 			{
-				m_err = WR_ERR_statement_expected;
+				m_units[unitIndex].lastStatementOverwriteStore.valid = false;
+				if ( unitIndex != 0 )
+				{
+					m_err = WR_ERR_statement_expected;
 				return false;
 			}
 			
-			if ( !parseUnit(false, unitIndex) )
-			{
-				return false;
+				if ( !parseUnit(false, unitIndex) )
+				{
+					return false;
+				}
+
+				m_units[unitIndex].lastStatementOverwriteStore.valid = false;
 			}
-		}
 		else if ( !m_quoted && token == "if" )
 		{
 			unit.lastStatementOverwriteStore.valid = false;
@@ -3189,6 +3193,8 @@ bool WRCompilationContext::parseStatement( int unitIndex, char end, WROpcode opc
 			{
 				return false;
 			}
+
+			unit.lastStatementOverwriteStore.valid = false;
 		}
 		else if ( !m_quoted && token == "while" )
 		{
@@ -3197,6 +3203,8 @@ bool WRCompilationContext::parseStatement( int unitIndex, char end, WROpcode opc
 			{
 				return false;
 			}
+
+			unit.lastStatementOverwriteStore.valid = false;
 		}
 		else if ( !m_quoted && token == "for" )
 		{
@@ -3205,6 +3213,8 @@ bool WRCompilationContext::parseStatement( int unitIndex, char end, WROpcode opc
 			{
 				return false;
 			}
+
+			unit.lastStatementOverwriteStore.valid = false;
 		}
 		else if ( !m_quoted && token == "enum" )
 		{
@@ -3213,6 +3223,8 @@ bool WRCompilationContext::parseStatement( int unitIndex, char end, WROpcode opc
 			{
 				return false;
 			}
+
+			unit.lastStatementOverwriteStore.valid = false;
 		}
 		else if ( !m_quoted && token == "export" )
 		{
@@ -3226,6 +3238,8 @@ bool WRCompilationContext::parseStatement( int unitIndex, char end, WROpcode opc
 			{
 				return false;
 			}
+
+			unit.lastStatementOverwriteStore.valid = false;
 		}
 		else if ( !m_quoted && token == "do" )
 		{
@@ -3234,6 +3248,8 @@ bool WRCompilationContext::parseStatement( int unitIndex, char end, WROpcode opc
 			{
 				return false;
 			}
+
+			unit.lastStatementOverwriteStore.valid = false;
 		}
 		else if ( !m_quoted && token == "break" )
 		{

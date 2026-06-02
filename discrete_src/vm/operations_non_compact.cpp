@@ -592,8 +592,11 @@ void wr_AdditionBinary_I_E(WRValue* to, WRValue* from, WRValue* target)
 
 void wr_AdditionBinary_E_F( WRValue* to, WRValue* from, WRValue* target )
 {
-	WRValue& V = to->singleValue();
-	wr_AdditionBinary[(V.type<<2)|WR_FLOAT](&V, from, target);
+	if ( !wr_concatStringCheck(to, from, target) )
+	{
+		WRValue& V = to->singleValue();
+		wr_AdditionBinary[(V.type<<2)|WR_FLOAT](&V, from, target);
+	}
 }
 void wr_AdditionBinary_E_E( WRValue* to, WRValue* from, WRValue* target )
 {
@@ -610,8 +613,11 @@ void wr_AdditionBinary_E_E( WRValue* to, WRValue* from, WRValue* target )
 }
 void wr_AdditionBinary_F_E( WRValue* to, WRValue* from, WRValue* target )
 {
-	WRValue& V = from->singleValue();
-	wr_AdditionBinary[(WR_FLOAT<<2)|V.type](to, &V, target);
+	if ( !wr_concatStringCheck(to, from, target) )
+	{
+		WRValue& V = from->singleValue();
+		wr_AdditionBinary[(WR_FLOAT<<2)|V.type](to, &V, target);
+	}
 }
 void wr_AdditionBinary_R_E( WRValue* to, WRValue* from, WRValue* target ) { wr_AdditionBinary[(to->r->type<<2)|WR_EX]( to->r, from, target); }
 void wr_AdditionBinary_E_R( WRValue* to, WRValue* from, WRValue* target ) { wr_AdditionBinary[(WR_EX<<2)+from->r->type](to, from->r, target); }

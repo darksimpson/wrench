@@ -2,6 +2,11 @@
 - adding ternary expressions
 - adding some more tests, fixing existing ones
 - fixed all tests to require 'var'
+- fixed non-compact string concatenation with float values
+- fixed array growth, insertion, and removal handling for allocation failures and invalid indexes
+- reduced compiler expression memory use and fixed WRarray copy/removal edge cases
+- fixed overwrite-store optimization removing assignments still read by the next expression
+- fixed empty strings and arrays reporting malloc failure with allocators that reject zero-byte requests
 
 7.2.1 ----------------------------------------------------------------------------------
 - added the blank keyword as a declaration modifier: blank X;, blank var X; and var blank X; are accepted

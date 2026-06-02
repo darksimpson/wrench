@@ -115,15 +115,16 @@ void wr_arrayPeekBack( WRValue* stackTop, const int argn, WRContext* c )
 //------------------------------------------------------------------------------
 void wr_arrayRemoveEx( WRValue* A, const unsigned int where, const int count, WRValue* stackTop, WRContext* c )
 {
-	if ( where < A->va->m_size )
+	if ( (count > 0) && (where < A->va->m_size) )
 	{
-		unsigned int from = where + count;
-		if ( from >= A->va->m_size )
+		unsigned int available = A->va->m_size - where;
+		if ( (unsigned int)count >= available )
 		{
 			A->va->m_size = where; // simple truncation
 		}
 		else
 		{
+			unsigned int from = where + count;
 			unsigned int elements = A->va->m_size - from;
 
 			memmove( (char*)(A->va->m_Vdata + where), // to here
@@ -184,28 +185,48 @@ void wr_arrayTruncate( WRValue* stackTop, const int argn, WRContext* c )
 }
 
 //------------------------------------------------------------------------------
-void wr_arrayInsertEx( WRValue* A, const unsigned int where, const unsigned int count, WRValue* stackTop, WRContext* c )
+bool wr_arrayInsertEx( WRValue* A, const unsigned int where, const unsigned int count, WRValue* stackTop, WRContext* c )
 {
 	unsigned int originalSize = A->va->m_size;
-	// accommodate new size (passed value is expected to be the highest accessible index)
-	wr_growValueArray( A->va, originalSize + (count - 1) );
-
-	// move tail of array UP "count" entries
-	unsigned int entries = originalSize - where;
-	if ( entries )
+	if ( !count )
 	{
-		unsigned int to = where + count;
-
-		memmove( (char*)(A->va->m_Vdata + to),
-				 (char*)(A->va->m_Vdata + where),
-				 entries * sizeof(WRValue) );
-
-		memset( (char*)(A->va->m_Vdata + where),
-				0,
-				count * sizeof(WRValue) );
+		return true;
 	}
 
+	if ( count > ((uint32_t)-1) - originalSize )
+	{
+#ifdef WRENCH_HANDLE_MALLOC_FAIL
+		g_mallocFailed = true;
+#endif
+		return false;
+	}
+
+	unsigned int insertAt = (where > originalSize) ? originalSize : where;
+
+	// accommodate new size (passed value is expected to be the highest accessible index)
+	if ( !wr_growValueArray(A->va, originalSize + (count - 1)) )
+	{
+		return false;
+	}
+
+	// move tail of array UP "count" entries
+	unsigned int entries = originalSize - insertAt;
+	if ( entries )
+	{
+		unsigned int to = insertAt + count;
+
+		memmove( (char*)(A->va->m_Vdata + to),
+				 (char*)(A->va->m_Vdata + insertAt),
+				 entries * sizeof(WRValue) );
+
+	}
+
+	memset( (char*)(A->va->m_Vdata + insertAt),
+			0,
+			count * sizeof(WRValue) );
+
 	c->gc( stackTop + 1 );
+	return true;
 }
 
 //------------------------------------------------------------------------------
@@ -219,7 +240,7 @@ void wr_arrayInsert( WRValue* stackTop, const int argn, WRContext* c )
 		return;
 	}
 
-	unsigned int where = (unsigned int)(args[1].asInt());
+	int where = args[1].asInt();
 
 	int count = 1;
 	if ( argn > 2 )
@@ -227,7 +248,10 @@ void wr_arrayInsert( WRValue* stackTop, const int argn, WRContext* c )
 		count = args[2].asInt();
 	}
 
-	wr_arrayInsertEx( A, where, count, stackTop, c );
+	if ( (where >= 0) && (count > 0) )
+	{
+		wr_arrayInsertEx( A, where, count, stackTop, c );
+	}
 
 	*stackTop = *A;
 }
@@ -282,7 +306,10 @@ void wr_arrayPushBack( WRValue* stackTop, const int argn, WRContext* c )
 
 	const unsigned int where = A->va->m_size;
 
-	wr_arrayInsertEx( A, where, 1, stackTop, c );
+	if ( !wr_arrayInsertEx(A, where, 1, stackTop, c) )
+	{
+		return;
+	}
 	A->va->m_Vdata[where] = args[1];
 }
 
@@ -297,7 +324,10 @@ void wr_arrayPush( WRValue* stackTop, const int argn, WRContext* c )
 		return;
 	}
 
-	wr_arrayInsertEx( A, 0, 1, stackTop, c );
+	if ( !wr_arrayInsertEx(A, 0, 1, stackTop, c) )
+	{
+		return;
+	}
 	A->va->m_Vdata[0] = args[1];
 }
 

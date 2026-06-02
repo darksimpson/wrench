@@ -154,6 +154,13 @@ void WRContext::gc( WRValue* stackTop )
 //------------------------------------------------------------------------------
 WRGCObject* WRContext::getSVA( int size, WRGCObjectType type, bool init )
 {
+#ifdef WRENCH_HANDLE_MALLOC_FAIL
+	if ( g_mallocFailed )
+	{
+		return 0;
+	}
+#endif
+
 	WRGCObject* ret = (WRGCObject*)g_malloc( sizeof(WRGCObject) );
 
 #ifdef WRENCH_HANDLE_MALLOC_FAIL
@@ -165,10 +172,24 @@ WRGCObject* WRContext::getSVA( int size, WRGCObjectType type, bool init )
 #endif
 
 	memset( (unsigned char*)ret, 0, sizeof(WRGCObject) );
+	int allocated = ret->init( size, type, init );
+
+#ifdef WRENCH_HANDLE_MALLOC_FAIL
+	if ( g_mallocFailed )
+	{
+		if ( ret->m_data )
+		{
+			ret->clear();
+		}
+		g_free( ret );
+		return 0;
+	}
+#endif
+
 	ret->m_nextGC = svAllocated;
 	svAllocated = ret;
 
-	allocatedMemoryHint += ret->init( size, type, init ) + sizeof(WRGCObject);
+	allocatedMemoryHint += allocated + sizeof(WRGCObject);
 
 	if ( (int)type >= SV_VALUE )
 	{
@@ -177,4 +198,3 @@ WRGCObject* WRContext::getSVA( int size, WRGCObjectType type, bool init )
 
 	return ret;
 }
-

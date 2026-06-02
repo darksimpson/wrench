@@ -10,6 +10,12 @@ if ( (s += 123) != "string123" ) println ( "st_err5" );
 var i = 123;
 if ( (i += "string") != "123string" ) println ( "st_err6" );
 if ( (123 + "string" + 34 + "hi") != "123string34hi" ) println ( "st_err7" );
+var f = 12.5;
+var fs = "string";
+if ( fs + f != "string12.5" ) println( "st_err8" );
+if ( "string" + f != "string12.5" ) println( "st_err9" );
+if ( f + "string" != "12.5string" ) println( "st_err10" );
+if ( f + fs != "12.5string" ) println( "st_err11" );
 
 	
 var h = "Hello " + "World";

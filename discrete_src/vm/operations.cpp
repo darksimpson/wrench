@@ -92,34 +92,51 @@ bool wr_concatStringCheck( WRValue* to, WRValue* from, WRValue* target )
 }
 
 //------------------------------------------------------------------------------
-void wr_growValueArray( WRGCObject* va, int newMinIndex )
+bool wr_growValueArray( WRGCObject* va, uint32_t newMinIndex )
 {
-	int size_of = (va->m_type == SV_CHAR) ? 1 : sizeof(WRValue);
+	const size_t size_of = (va->m_type == SV_CHAR) ? 1 : sizeof(WRValue);
+
+	if ( newMinIndex < va->m_size )
+	{
+		return true;
+	}
 
 	// increase size to accommodate new element
-	int size_el = va->m_size * size_of;
+	const size_t size_el = va->m_size * size_of;
+	const size_t elements = (size_t)newMinIndex + 1;
+
+	if ( (newMinIndex == (uint32_t)-1) || (elements > ((size_t)-1) / size_of) )
+	{
+#ifdef WRENCH_HANDLE_MALLOC_FAIL
+		g_mallocFailed = true;
+#endif
+		return false;
+	}
 
 	// create new array to hold the data, and g_free the existing one
-	uint8_t* old = va->m_Cdata;
-
-	va->m_Cdata = (uint8_t *)g_malloc( (newMinIndex + 1) * size_of );
+	uint8_t* grown = (uint8_t *)g_malloc( elements * size_of );
 
 #ifdef WRENCH_HANDLE_MALLOC_FAIL
-	if ( !va->m_Cdata )
+	if ( !grown )
 	{
-		va->m_Cdata = old;
 		g_mallocFailed = true;
-		return;
+		return false;
 	}
 #endif
 	
-	memcpy( va->m_Cdata, old, size_el );
-	g_free( old );
+	if ( size_el )
+	{
+		memcpy( grown, va->m_Cdata, size_el );
+	}
+	g_free( va->m_Cdata );
+	va->m_Cdata = grown;
 	
 	va->m_size = newMinIndex + 1;
 
 	// clear new entries
 	memset( va->m_Cdata + size_el, 0, (va->m_size * size_of) - size_el );
+
+	return true;
 }
 
 static WRValue s_temp1;
@@ -252,13 +269,10 @@ void wr_valueToEx( const WRValue* ex, WRValue* value )
 		{
 			if ( s >= ex->va->m_size )
 			{
-				wr_growValueArray( ex->va, s );
-#ifdef WRENCH_HANDLE_MALLOC_FAIL
-				if ( s >= ex->va->m_size )
+				if ( !wr_growValueArray(ex->va, s) )
 				{
 					return; // grow failed, don't write out of bounds
 				}
-#endif
 				ex->va->m_creatorContext->allocatedMemoryHint += s * ((ex->va->m_type == SV_CHAR) ? 1 : sizeof(WRValue));
 			}
 

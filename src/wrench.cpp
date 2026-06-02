@@ -145,53 +145,29 @@ public:
 	//------------------------------------------------------------------------------
 	unsigned int remove( unsigned int location, unsigned int count =1 )
 	{
-		if ( location >= m_elementsAllocated )
+		if ( location >= m_elementsAllocated || !count )
 		{
 			return m_elementsAllocated;
 		}
 
-		unsigned int newCount;
-		if ( count > m_elementsAllocated )
+		unsigned int available = m_elementsAllocated - location;
+		unsigned int removed = count > available ? available : count;
+		unsigned int newCount = m_elementsAllocated - removed;
+		if ( !newCount )
 		{
-			if ( location == 0 )
-			{
-				clear();
-				return 0;
-			}
-			else
-			{
-				newCount = location + 1;
-			}
-		}
-		else
-		{
-			newCount = m_elementsAllocated - count;
+			clear();
+			return 0;
 		}
 
 		T* na = newArray( newCount );
 
-		if ( location == 0 )
+		unsigned int j = 0;
+		unsigned int skipEnd = location + removed;
+		for( unsigned int i=0; i<m_elementsAllocated; ++i )
 		{
-			for( unsigned int i=0; i<(unsigned int)newCount; ++i )
+			if ( i < location || i >= skipEnd )
 			{
-				na[i] = m_list[i+count];
-			}
-		}
-		else
-		{
-			unsigned int j = 0;
-			
-			unsigned int skipEnd = location + count;
-			for( unsigned int i=0; i<m_elementsAllocated; ++i )
-			{
-				if ( i < location )
-				{
-					na[j++] = m_list[i];
-				}
-				else if ( i >= skipEnd )
-				{
-					na[j++] = m_list[i];
-				}
+				na[j++] = m_list[i];
 			}
 		}
 
@@ -253,7 +229,7 @@ public:
 		m_list = 0;
 		clear();
 		m_list = newArray( A.m_elementsAllocated );
-		m_elementsNewed = A.m_elementsNewed;
+		m_elementsNewed = A.m_elementsAllocated;
 		for( unsigned int i=0; i<A.m_elementsAllocated; ++i )
 		{
 			m_list[i] = A.m_list[i];
@@ -267,13 +243,13 @@ public:
 		if ( &A != this )
 		{
 			clear();
-			m_list = newArray( A.m_elementsNewed );
+			m_list = newArray( A.m_elementsAllocated );
 			for( unsigned int i=0; i<A.m_elementsAllocated; ++i )
 			{
 				m_list[i] = A.m_list[i];
 			}
 			m_elementsAllocated = A.m_elementsAllocated;
-			m_elementsNewed = A.m_elementsNewed;
+			m_elementsNewed = A.m_elementsAllocated;
 		}
 		return *this;
 	}
@@ -441,7 +417,7 @@ private:
 
 #endif
 
-void wr_growValueArray( WRGCObject* va, int newSize );
+bool wr_growValueArray( WRGCObject* va, uint32_t newSize );
 WRValue* wr_valueFromConfirmedStruct( WRValue* value, uint32_t hash );
 
 #define IS_SVA_VALUE_TYPE(V) ((V)->m_type & 0x1)
@@ -1998,14 +1974,10 @@ struct WRExpressionContext
 
 	WRExpressionContext() { reset(); }
 
-	void setLocalSpace( WRarray<WRNamespaceLookup>& localSpace, bool isStructSpace )
+	void setLocalSpace( WRarray<WRNamespaceLookup>&, bool isStructSpace )
 	{
 		bytecode.localSpace.clear();
 		bytecode.isStructSpace = isStructSpace;
-		for( unsigned int l=0; l<localSpace.count(); ++l )
-		{
-			bytecode.localSpace.append().hash = localSpace[l].hash;
-		}
 		type = EXTYPE_NONE;
 	}
 
@@ -2135,11 +2107,12 @@ struct WROverwriteStoreInfo
 	bool valid;
 	bool global;
 	unsigned char index;
+	unsigned char opcode;
 	unsigned int offset;
 	unsigned int length;
 
 	WROverwriteStoreInfo()
-		: valid(false), global(false), index(0), offset(0), length(0) {}
+		: valid(false), global(false), index(0), opcode(0), offset(0), length(0) {}
 };
 
 //------------------------------------------------------------------------------
@@ -2867,20 +2840,64 @@ public:
 };
 
 //------------------------------------------------------------------------------
-class WrenchDebugLoopbackInterface : public WrenchDebugCommInterface
+class WrenchDebugLoopbackInterface;
+
+class WrenchDebugLoopbackEndpoint : public WrenchDebugCommInterface
 {
 public:
-
-	bool send( WrenchPacket* packet ) { return (*m_queue.addHead() = WrenchPacket::alloc( *packet)) != 0; }
-	WrenchPacket* receive( const int timeoutMilliseconds )
+	WrenchDebugLoopbackEndpoint(SimpleLL<WrenchPacket*>& writeQueue,
+		SimpleLL<WrenchPacket*>& readQueue)
+		: m_writeQueue(writeQueue)
+		, m_readQueue(readQueue)
+		, m_server(nullptr)
 	{
-		WrenchPacket* p = 0;
-		m_queue.popTail( &p );
+	}
+
+	bool send(WrenchPacket* packet) override
+	{
+		WrenchPacket* p = (*m_writeQueue.addHead() = WrenchPacket::alloc(*packet));
+		if (m_server) m_server->tick();
+		return (p != nullptr);
+	}
+
+	WrenchPacket* receive(const int timeoutMilliseconds = 0) override
+	{
+		WrenchPacket* p = nullptr;
+		m_readQueue.popTail(&p);
 		return p;
 	}
 
+	void setServer(WRDebugServerInterface* server) { m_server = server; }
+
 private:
-	SimpleLL<WrenchPacket*> m_queue;
+	SimpleLL<WrenchPacket*>& m_writeQueue;
+	SimpleLL<WrenchPacket*>& m_readQueue;
+	WRDebugServerInterface* m_server;
+};
+
+class WrenchDebugLoopbackInterface : public WrenchDebugCommInterface
+{
+public:
+	WrenchDebugLoopbackInterface()
+		: m_clientEndpoint(m_c2s, m_s2c)
+		, m_serverEndpoint(m_s2c, m_c2s)
+	{
+	}
+
+	WrenchDebugCommInterface* clientInterface() { return &m_clientEndpoint; }
+
+	WrenchDebugCommInterface* serverInterface() { return &m_serverEndpoint; }
+
+	void setServer(WRDebugServerInterface* server)
+	{
+		m_clientEndpoint.setServer(server);
+	}
+
+private:
+	SimpleLL<WrenchPacket*> m_c2s;
+	SimpleLL<WrenchPacket*> m_s2c;
+	WrenchDebugLoopbackEndpoint m_clientEndpoint;
+	WrenchDebugLoopbackEndpoint m_serverEndpoint;
 };
 
 //------------------------------------------------------------------------------
@@ -6227,21 +6244,25 @@ bool WRCompilationContext::parseStatement( int unitIndex, char end, WROpcode opc
 			{
 				return false;
 			}
+
+			m_units[unitIndex].lastStatementOverwriteStore.valid = false;
 		}
-		else if ( !m_quoted && (token == "function" || token == "unit") )
-		{
-			unit.lastStatementOverwriteStore.valid = false;
-			if ( unitIndex != 0 )
+			else if ( !m_quoted && (token == "function" || token == "unit") )
 			{
-				m_err = WR_ERR_statement_expected;
+				m_units[unitIndex].lastStatementOverwriteStore.valid = false;
+				if ( unitIndex != 0 )
+				{
+					m_err = WR_ERR_statement_expected;
 				return false;
 			}
 			
-			if ( !parseUnit(false, unitIndex) )
-			{
-				return false;
+				if ( !parseUnit(false, unitIndex) )
+				{
+					return false;
+				}
+
+				m_units[unitIndex].lastStatementOverwriteStore.valid = false;
 			}
-		}
 		else if ( !m_quoted && token == "if" )
 		{
 			unit.lastStatementOverwriteStore.valid = false;
@@ -6249,6 +6270,8 @@ bool WRCompilationContext::parseStatement( int unitIndex, char end, WROpcode opc
 			{
 				return false;
 			}
+
+			unit.lastStatementOverwriteStore.valid = false;
 		}
 		else if ( !m_quoted && token == "while" )
 		{
@@ -6257,6 +6280,8 @@ bool WRCompilationContext::parseStatement( int unitIndex, char end, WROpcode opc
 			{
 				return false;
 			}
+
+			unit.lastStatementOverwriteStore.valid = false;
 		}
 		else if ( !m_quoted && token == "for" )
 		{
@@ -6265,6 +6290,8 @@ bool WRCompilationContext::parseStatement( int unitIndex, char end, WROpcode opc
 			{
 				return false;
 			}
+
+			unit.lastStatementOverwriteStore.valid = false;
 		}
 		else if ( !m_quoted && token == "enum" )
 		{
@@ -6273,6 +6300,8 @@ bool WRCompilationContext::parseStatement( int unitIndex, char end, WROpcode opc
 			{
 				return false;
 			}
+
+			unit.lastStatementOverwriteStore.valid = false;
 		}
 		else if ( !m_quoted && token == "export" )
 		{
@@ -6286,6 +6315,8 @@ bool WRCompilationContext::parseStatement( int unitIndex, char end, WROpcode opc
 			{
 				return false;
 			}
+
+			unit.lastStatementOverwriteStore.valid = false;
 		}
 		else if ( !m_quoted && token == "do" )
 		{
@@ -6294,6 +6325,8 @@ bool WRCompilationContext::parseStatement( int unitIndex, char end, WROpcode opc
 			{
 				return false;
 			}
+
+			unit.lastStatementOverwriteStore.valid = false;
 		}
 		else if ( !m_quoted && token == "break" )
 		{
@@ -7650,8 +7683,9 @@ static bool wr_decodeOverwriteStore( const unsigned char* code, unsigned int off
 {
 	info.valid = true;
 	info.offset = offset;
+	info.opcode = code[offset];
 
-	switch( code[offset] )
+	switch( info.opcode )
 	{
 		case O_AssignToGlobalAndPop:
 		case O_BinaryAdditionAndStoreGlobal:
@@ -7765,6 +7799,95 @@ static bool wr_findLastStatementOverwriteStore( WRBytecode& bytecode, WROverwrit
 	}
 
 	return wr_decodeOverwriteStore( code, lastOpcodeOffset, info );
+}
+
+//------------------------------------------------------------------------------
+static bool wr_statementIsLiteralClobber( WRBytecode& bytecode, const WROverwriteStoreInfo& info )
+{
+	if ( !info.valid )
+	{
+		return false;
+	}
+
+	switch( info.opcode )
+	{
+		case O_LiteralInt8ToGlobal:
+		case O_LiteralInt8ToLocal:
+		case O_LiteralInt16ToGlobal:
+		case O_LiteralInt16ToLocal:
+		case O_LiteralInt32ToGlobal:
+		case O_LiteralInt32ToLocal:
+		case O_LiteralFloatToGlobal:
+		case O_LiteralFloatToLocal:
+			return true;
+
+		case O_AssignToGlobalAndPop:
+		case O_AssignToLocalAndPop:
+		{
+			if ( bytecode.all.size() <= info.length
+				 || (info.offset + info.length) != bytecode.all.size() )
+			{
+				return false;
+			}
+
+			switch( bytecode.all[0] )
+			{
+				case O_LiteralZero:
+				case O_LiteralInt8:
+				case O_LiteralInt16:
+				case O_LiteralInt32:
+				case O_LiteralFloat:
+				case O_LiteralString:
+				{
+					const unsigned char* code = bytecode.all;
+					const uint8_t* end = (const uint8_t*)(code + bytecode.all.size());
+					int operandSize = wr_optimizerOperandSize( code + 1, end, code[0] );
+					return operandSize >= 0 && (1 + (unsigned int)operandSize) == info.offset;
+				}
+			}
+			return false;
+		}
+	}
+
+	return false;
+}
+
+//------------------------------------------------------------------------------
+static void wr_dropLastStatementOverwriteStore( WRBytecode& bytecode, const WROverwriteStoreInfo& info )
+{
+	bytecode.all.shave( info.length );
+
+	switch( info.opcode )
+	{
+		case O_AssignToGlobalAndPop:
+		case O_AssignToLocalAndPop:
+			bytecode.all += (unsigned char)O_PopOne;
+			return;
+
+		case O_BinaryAdditionAndStoreGlobal:
+		case O_BinaryAdditionAndStoreLocal:
+			bytecode.all += (unsigned char)O_BinaryAddition;
+			bytecode.all += (unsigned char)O_PopOne;
+			return;
+
+		case O_BinarySubtractionAndStoreGlobal:
+		case O_BinarySubtractionAndStoreLocal:
+			bytecode.all += (unsigned char)O_BinarySubtraction;
+			bytecode.all += (unsigned char)O_PopOne;
+			return;
+
+		case O_BinaryMultiplicationAndStoreGlobal:
+		case O_BinaryMultiplicationAndStoreLocal:
+			bytecode.all += (unsigned char)O_BinaryMultiplication;
+			bytecode.all += (unsigned char)O_PopOne;
+			return;
+
+		case O_BinaryDivisionAndStoreGlobal:
+		case O_BinaryDivisionAndStoreLocal:
+			bytecode.all += (unsigned char)O_BinaryDivision;
+			bytecode.all += (unsigned char)O_PopOne;
+			return;
+	}
 }
 
 //------------------------------------------------------------------------------
@@ -9342,14 +9465,15 @@ void WRCompilationContext::FinalizeStatementBytecode( WRUnitContext& unit, WRByt
 
 	WROverwriteStoreInfo currentStore;
 	bool haveCurrentStore = wr_findLastStatementOverwriteStore( statementBytecode, currentStore );
+	bool currentIsLiteralClobber = haveCurrentStore && wr_statementIsLiteralClobber( statementBytecode, currentStore );
 
-	if ( haveCurrentStore
+	if ( currentIsLiteralClobber
 		 && unit.lastStatementOverwriteStore.valid
 		 && unit.lastStatementOverwriteStore.global == currentStore.global
 		 && unit.lastStatementOverwriteStore.index == currentStore.index
 		 && (unit.lastStatementOverwriteStore.offset + unit.lastStatementOverwriteStore.length) == unit.bytecode.all.size() )
 	{
-		unit.bytecode.all.shave( unit.lastStatementOverwriteStore.length );
+		wr_dropLastStatementOverwriteStore( unit.bytecode, unit.lastStatementOverwriteStore );
 	}
 
 	unit.bytecode.opcodes.clear();
@@ -10017,7 +10141,8 @@ int WRGCObject::init( const unsigned int size, const WRGCObjectType type, bool c
 	if ( (m_type = type) == SV_VALUE )
 	{
 		ret *= sizeof(WRValue);
-		m_Vdata = (WRValue*)g_malloc( ret );
+		const unsigned int allocated = ret ? ret : sizeof(WRValue);
+		m_Vdata = (WRValue*)g_malloc( allocated );
 #ifdef WRENCH_HANDLE_MALLOC_FAIL
 		if ( !m_Vdata )
 		{
@@ -10029,12 +10154,15 @@ int WRGCObject::init( const unsigned int size, const WRGCObjectType type, bool c
 		
 		if ( clear )
 		{
-			memset( m_SCdata, 0, ret );
+			memset( m_SCdata, 0, allocated );
 		}
+
+		ret = allocated;
 	}
 	else if ( m_type == SV_CHAR )
 	{
-		m_Cdata = (unsigned char*)g_malloc( size );
+		const unsigned int allocated = size ? size : 1;
+		m_Cdata = (unsigned char*)g_malloc( allocated );
 #ifdef WRENCH_HANDLE_MALLOC_FAIL
 		if ( !m_Cdata )
 		{
@@ -10045,8 +10173,10 @@ int WRGCObject::init( const unsigned int size, const WRGCObjectType type, bool c
 #endif
 		if ( clear )
 		{
-			memset( m_SCdata, 0, size );
+			memset( m_SCdata, 0, allocated );
 		}
+
+		ret = allocated;
 	}
 	else
 	{
@@ -10462,6 +10592,13 @@ void WRContext::gc( WRValue* stackTop )
 //------------------------------------------------------------------------------
 WRGCObject* WRContext::getSVA( int size, WRGCObjectType type, bool init )
 {
+#ifdef WRENCH_HANDLE_MALLOC_FAIL
+	if ( g_mallocFailed )
+	{
+		return 0;
+	}
+#endif
+
 	WRGCObject* ret = (WRGCObject*)g_malloc( sizeof(WRGCObject) );
 
 #ifdef WRENCH_HANDLE_MALLOC_FAIL
@@ -10473,10 +10610,24 @@ WRGCObject* WRContext::getSVA( int size, WRGCObjectType type, bool init )
 #endif
 
 	memset( (unsigned char*)ret, 0, sizeof(WRGCObject) );
+	int allocated = ret->init( size, type, init );
+
+#ifdef WRENCH_HANDLE_MALLOC_FAIL
+	if ( g_mallocFailed )
+	{
+		if ( ret->m_data )
+		{
+			ret->clear();
+		}
+		g_free( ret );
+		return 0;
+	}
+#endif
+
 	ret->m_nextGC = svAllocated;
 	svAllocated = ret;
 
-	allocatedMemoryHint += ret->init( size, type, init ) + sizeof(WRGCObject);
+	allocatedMemoryHint += allocated + sizeof(WRGCObject);
 
 	if ( (int)type >= SV_VALUE )
 	{
@@ -10485,7 +10636,6 @@ WRGCObject* WRContext::getSVA( int size, WRGCObjectType type, bool init )
 
 	return ret;
 }
-
 /*******************************************************************************
 Copyright (c) 2026 Curt Hartung -- curt.hartung@gmail.com
 
@@ -11358,7 +11508,8 @@ debugReturn:
 
 				uint32_t fhash = READ_32_FROM_PC(pc);
 				pc += 4;
-				if ( ! ((register1 = w->globalRegistry.getAsRawValueHashTable(fhash))->ccb) )
+				register1 = w->globalRegistry.getAsRawValueHashTable(fhash);
+				if ( !register1 || !register1->ccb )
 				{
 					if ( (import = context->imported) ) // check imported code
 					{
@@ -11420,8 +11571,15 @@ debugReturn:
 						}
 					}
 
-					w->err = WR_ERR_function_not_found;
-					return 0;
+					if ( w->onCallbackNotFound )
+					{
+						w->onCallbackNotFound( fhash, context, stackTop - args, args, *stackTop, 0 );
+					}
+					else
+					{
+						w->err = WR_ERR_function_not_found;
+						return 0;
+					}
 				}
 				else
 				{
@@ -11453,38 +11611,46 @@ newObjOut:
 
 				uint32_t fhash = READ_32_FROM_PC(pc);
 				pc += 4;
-				if ( !((register1 = w->globalRegistry.getAsRawValueHashTable(fhash))->ccb) )
+				register1 = w->globalRegistry.getAsRawValueHashTable(fhash);
+				if ( !register1 || !register1->ccb )
 				{
 					// is in an imported context
 					if ( (import = context->imported) )
 					{
 						while( import != context )
 						{
-								if ( (register0 = import->registry.exists(fhash, false)) )
+							if ( (register0 = import->registry.exists(fhash, false)) )
+							{
+								// import shares our stack, tell it where to find it's args
+								uint16_t savedOffset = import->stackOffset;
+								import->stackOffset = (uint16_t)(stackTop - context->stack);
+								register0 = wr_callFunction( import, register0->wrf, stackTop - args, args );
+								import->stackOffset = savedOffset;
+								if ( import->yield_pc )
 								{
-									// import shares our stack, tell it where to find it's args
-									uint16_t savedOffset = import->stackOffset;
-									import->stackOffset = (uint16_t)(stackTop - context->stack);
-									register0 = wr_callFunction( import, register0->wrf, stackTop - args, args );
-									import->stackOffset = savedOffset;
-									if ( import->yield_pc )
-									{
-										w->err = WR_ERR_cannot_call_function_context_yielded;
-										return 0;
-									}
-									if ( !register0 )
-									{
-										return 0;
-									}
-									goto CallFunctionByHashAndPop_continue;
+									w->err = WR_ERR_cannot_call_function_context_yielded;
+									return 0;
 								}
+								if ( !register0 )
+								{
+									return 0;
+								}
+								goto CallFunctionByHashAndPop_continue;
+							}
 
 							import = import->imported;
 						}
 					}
 
-					w->err = WR_ERR_function_not_found;
-					return 0;
+					if ( w->onCallbackNotFound )
+					{
+						w->onCallbackNotFound( fhash, context, stackTop - args, args, *stackTop, 0 );
+					}
+					else
+					{
+						w->err = WR_ERR_function_not_found;
+						return 0;
+					}
 				}
 				else
 				{
@@ -11568,13 +11734,24 @@ callFunction:
 
 				args = READ_8_FROM_PC(pc++); // which have already been pushed
 
-				if ( ! ((register1 = w->globalRegistry.getAsRawValueHashTable(READ_32_FROM_PC(pc)))->lcb) )
+				uint32_t fhash = READ_32_FROM_PC(pc);
+				register1 = w->globalRegistry.getAsRawValueHashTable(fhash);
+				if ( !register1 || !register1->lcb )
 				{
-					w->err = WR_ERR_lib_function_not_found;
-					return 0;
+					if ( w->onLibCallbackNotFound )
+					{
+						w->onLibCallbackNotFound( fhash, stackTop, args, context );
+					}
+					else
+					{
+						w->err = WR_ERR_lib_function_not_found;
+						return 0;
+					}
 				}
-
-				register1->lcb( stackTop, args, context );
+				else
+				{
+					register1->lcb( stackTop, args, context );
+				}
 				
 				pc += 4;
 
@@ -11607,13 +11784,25 @@ callFunction:
 			{
 				args = READ_8_FROM_PC(pc++); // which have already been pushed
 
-				if ( ! ((register1 = w->globalRegistry.getAsRawValueHashTable(READ_32_FROM_PC(pc)))->lcb) )
+				uint32_t fhash = READ_32_FROM_PC(pc);
+				register1 = w->globalRegistry.getAsRawValueHashTable(fhash);
+				if ( !register1 || !register1->lcb )
 				{
-					w->err = WR_ERR_lib_function_not_found;
-					return 0;
+					if ( w->onLibCallbackNotFound )
+					{
+						w->onLibCallbackNotFound( fhash, stackTop, args, context );
+					}
+					else
+					{
+						w->err = WR_ERR_lib_function_not_found;
+						return 0;
+					}
 				}
-
-				register1->lcb( stackTop, args, context );
+				else
+				{
+					register1->lcb( stackTop, args, context );
+				}
+				
 				pc += 4;
 
 				stackTop -= args;
@@ -11695,7 +11884,11 @@ callFunction:
 				else if ( register0->xtype == WR_EX_ARRAY )
 				{
 					va = register0->va;
-					if (va->m_type == SV_VALUE )
+					if ( hash >= va->m_size )
+					{
+						FASTCONTINUE;
+					}
+					else if (va->m_type == SV_VALUE )
 					{
 						for( uint32_t move = hash; (move+1) < va->m_size; ++move )
 						{
@@ -13891,7 +14084,10 @@ WRValue* WrenchValue::asArrayMember( const int index )
 	}
 	else if ( index >= (int)m_value->va->m_size )
 	{
-		wr_growValueArray( m_value->va, index );
+		if ( !wr_growValueArray(m_value->va, index) )
+		{
+			return m_value;
+		}
 		m_context->allocatedMemoryHint += index * ((m_value->va->m_type == SV_CHAR) ? 1 : sizeof(WRValue));
 	}
 
@@ -14475,7 +14671,10 @@ WRValue* WRValue::indexArray( WRContext* context, const uint32_t index, const bo
 			return 0;
 		}
 		
-		wr_growValueArray( V.va, index );
+		if ( !wr_growValueArray(V.va, index) )
+		{
+			return 0;
+		}
 		context->allocatedMemoryHint += index * ((V.va->m_type == SV_CHAR) ? 1 : sizeof(WRValue));
 	}
 
@@ -15876,12 +16075,6 @@ void wr_formatStackEntry( const WRValue* v, WRstr& out )
 					break;
 				}
 
-				case WR_EX_DEBUG_BREAK:
-				{
-					out.appendFormat( "EX:DEBUG_BREAK\n" );
-					break;
-				}
-
 				case WR_EX_ITERATOR:
 				{
 					// todo- break out VA
@@ -16003,6 +16196,8 @@ void WRDebugClientInterface::load( const uint8_t* byteCode, const int size )
 	I->m_scratchContext->gc(0);
 
 	I->m_comm->send( WrenchPacketScoped(WRD_Load, size, byteCode) );
+
+	WrenchPacketScoped r( I->getPacket() );
 
 	// invalidate source block;
 	g_free( I->m_sourceBlock );
@@ -17144,6 +17339,7 @@ WrenchPacket::WrenchPacket( const WrenchDebugComm type, const uint32_t payloadSi
 WrenchPacket::WrenchPacket( const int32_t type )
 {
 	memset( (char*)this, 0, sizeof(WrenchPacket) );
+	size = sizeof(WrenchPacket);
 	t = type;
 }
 
@@ -18301,34 +18497,51 @@ bool wr_concatStringCheck( WRValue* to, WRValue* from, WRValue* target )
 }
 
 //------------------------------------------------------------------------------
-void wr_growValueArray( WRGCObject* va, int newMinIndex )
+bool wr_growValueArray( WRGCObject* va, uint32_t newMinIndex )
 {
-	int size_of = (va->m_type == SV_CHAR) ? 1 : sizeof(WRValue);
+	const size_t size_of = (va->m_type == SV_CHAR) ? 1 : sizeof(WRValue);
+
+	if ( newMinIndex < va->m_size )
+	{
+		return true;
+	}
 
 	// increase size to accommodate new element
-	int size_el = va->m_size * size_of;
+	const size_t size_el = va->m_size * size_of;
+	const size_t elements = (size_t)newMinIndex + 1;
+
+	if ( (newMinIndex == (uint32_t)-1) || (elements > ((size_t)-1) / size_of) )
+	{
+#ifdef WRENCH_HANDLE_MALLOC_FAIL
+		g_mallocFailed = true;
+#endif
+		return false;
+	}
 
 	// create new array to hold the data, and g_free the existing one
-	uint8_t* old = va->m_Cdata;
-
-	va->m_Cdata = (uint8_t *)g_malloc( (newMinIndex + 1) * size_of );
+	uint8_t* grown = (uint8_t *)g_malloc( elements * size_of );
 
 #ifdef WRENCH_HANDLE_MALLOC_FAIL
-	if ( !va->m_Cdata )
+	if ( !grown )
 	{
-		va->m_Cdata = old;
 		g_mallocFailed = true;
-		return;
+		return false;
 	}
 #endif
 	
-	memcpy( va->m_Cdata, old, size_el );
-	g_free( old );
+	if ( size_el )
+	{
+		memcpy( grown, va->m_Cdata, size_el );
+	}
+	g_free( va->m_Cdata );
+	va->m_Cdata = grown;
 	
 	va->m_size = newMinIndex + 1;
 
 	// clear new entries
 	memset( va->m_Cdata + size_el, 0, (va->m_size * size_of) - size_el );
+
+	return true;
 }
 
 static WRValue s_temp1;
@@ -18461,13 +18674,10 @@ void wr_valueToEx( const WRValue* ex, WRValue* value )
 		{
 			if ( s >= ex->va->m_size )
 			{
-				wr_growValueArray( ex->va, s );
-#ifdef WRENCH_HANDLE_MALLOC_FAIL
-				if ( s >= ex->va->m_size )
+				if ( !wr_growValueArray(ex->va, s) )
 				{
 					return; // grow failed, don't write out of bounds
 				}
-#endif
 				ex->va->m_creatorContext->allocatedMemoryHint += s * ((ex->va->m_type == SV_CHAR) ? 1 : sizeof(WRValue));
 			}
 
@@ -19526,8 +19736,11 @@ void wr_AdditionBinary_I_E(WRValue* to, WRValue* from, WRValue* target)
 
 void wr_AdditionBinary_E_F( WRValue* to, WRValue* from, WRValue* target )
 {
-	WRValue& V = to->singleValue();
-	wr_AdditionBinary[(V.type<<2)|WR_FLOAT](&V, from, target);
+	if ( !wr_concatStringCheck(to, from, target) )
+	{
+		WRValue& V = to->singleValue();
+		wr_AdditionBinary[(V.type<<2)|WR_FLOAT](&V, from, target);
+	}
 }
 void wr_AdditionBinary_E_E( WRValue* to, WRValue* from, WRValue* target )
 {
@@ -19544,8 +19757,11 @@ void wr_AdditionBinary_E_E( WRValue* to, WRValue* from, WRValue* target )
 }
 void wr_AdditionBinary_F_E( WRValue* to, WRValue* from, WRValue* target )
 {
-	WRValue& V = from->singleValue();
-	wr_AdditionBinary[(WR_FLOAT<<2)|V.type](to, &V, target);
+	if ( !wr_concatStringCheck(to, from, target) )
+	{
+		WRValue& V = from->singleValue();
+		wr_AdditionBinary[(WR_FLOAT<<2)|V.type](to, &V, target);
+	}
 }
 void wr_AdditionBinary_R_E( WRValue* to, WRValue* from, WRValue* target ) { wr_AdditionBinary[(to->r->type<<2)|WR_EX]( to->r, from, target); }
 void wr_AdditionBinary_E_R( WRValue* to, WRValue* from, WRValue* target ) { wr_AdditionBinary[(WR_EX<<2)+from->r->type](to, from->r, target); }
@@ -19995,7 +20211,11 @@ boundsFailed:
 				return;
 			}
 
-			wr_growValueArray( value->va, index->ui );
+			if ( !wr_growValueArray(value->va, index->ui) )
+			{
+				target->init();
+				return;
+			}
 		}
 
 		arrayElementToTarget( index->ui, target, value );
@@ -23298,15 +23518,16 @@ void wr_arrayPeekBack( WRValue* stackTop, const int argn, WRContext* c )
 //------------------------------------------------------------------------------
 void wr_arrayRemoveEx( WRValue* A, const unsigned int where, const int count, WRValue* stackTop, WRContext* c )
 {
-	if ( where < A->va->m_size )
+	if ( (count > 0) && (where < A->va->m_size) )
 	{
-		unsigned int from = where + count;
-		if ( from >= A->va->m_size )
+		unsigned int available = A->va->m_size - where;
+		if ( (unsigned int)count >= available )
 		{
 			A->va->m_size = where; // simple truncation
 		}
 		else
 		{
+			unsigned int from = where + count;
 			unsigned int elements = A->va->m_size - from;
 
 			memmove( (char*)(A->va->m_Vdata + where), // to here
@@ -23367,28 +23588,48 @@ void wr_arrayTruncate( WRValue* stackTop, const int argn, WRContext* c )
 }
 
 //------------------------------------------------------------------------------
-void wr_arrayInsertEx( WRValue* A, const unsigned int where, const unsigned int count, WRValue* stackTop, WRContext* c )
+bool wr_arrayInsertEx( WRValue* A, const unsigned int where, const unsigned int count, WRValue* stackTop, WRContext* c )
 {
 	unsigned int originalSize = A->va->m_size;
-	// accommodate new size (passed value is expected to be the highest accessible index)
-	wr_growValueArray( A->va, originalSize + (count - 1) );
-
-	// move tail of array UP "count" entries
-	unsigned int entries = originalSize - where;
-	if ( entries )
+	if ( !count )
 	{
-		unsigned int to = where + count;
-
-		memmove( (char*)(A->va->m_Vdata + to),
-				 (char*)(A->va->m_Vdata + where),
-				 entries * sizeof(WRValue) );
-
-		memset( (char*)(A->va->m_Vdata + where),
-				0,
-				count * sizeof(WRValue) );
+		return true;
 	}
 
+	if ( count > ((uint32_t)-1) - originalSize )
+	{
+#ifdef WRENCH_HANDLE_MALLOC_FAIL
+		g_mallocFailed = true;
+#endif
+		return false;
+	}
+
+	unsigned int insertAt = (where > originalSize) ? originalSize : where;
+
+	// accommodate new size (passed value is expected to be the highest accessible index)
+	if ( !wr_growValueArray(A->va, originalSize + (count - 1)) )
+	{
+		return false;
+	}
+
+	// move tail of array UP "count" entries
+	unsigned int entries = originalSize - insertAt;
+	if ( entries )
+	{
+		unsigned int to = insertAt + count;
+
+		memmove( (char*)(A->va->m_Vdata + to),
+				 (char*)(A->va->m_Vdata + insertAt),
+				 entries * sizeof(WRValue) );
+
+	}
+
+	memset( (char*)(A->va->m_Vdata + insertAt),
+			0,
+			count * sizeof(WRValue) );
+
 	c->gc( stackTop + 1 );
+	return true;
 }
 
 //------------------------------------------------------------------------------
@@ -23402,7 +23643,7 @@ void wr_arrayInsert( WRValue* stackTop, const int argn, WRContext* c )
 		return;
 	}
 
-	unsigned int where = (unsigned int)(args[1].asInt());
+	int where = args[1].asInt();
 
 	int count = 1;
 	if ( argn > 2 )
@@ -23410,7 +23651,10 @@ void wr_arrayInsert( WRValue* stackTop, const int argn, WRContext* c )
 		count = args[2].asInt();
 	}
 
-	wr_arrayInsertEx( A, where, count, stackTop, c );
+	if ( (where >= 0) && (count > 0) )
+	{
+		wr_arrayInsertEx( A, where, count, stackTop, c );
+	}
 
 	*stackTop = *A;
 }
@@ -23465,7 +23709,10 @@ void wr_arrayPushBack( WRValue* stackTop, const int argn, WRContext* c )
 
 	const unsigned int where = A->va->m_size;
 
-	wr_arrayInsertEx( A, where, 1, stackTop, c );
+	if ( !wr_arrayInsertEx(A, where, 1, stackTop, c) )
+	{
+		return;
+	}
 	A->va->m_Vdata[where] = args[1];
 }
 
@@ -23480,7 +23727,10 @@ void wr_arrayPush( WRValue* stackTop, const int argn, WRContext* c )
 		return;
 	}
 
-	wr_arrayInsertEx( A, 0, 1, stackTop, c );
+	if ( !wr_arrayInsertEx(A, 0, 1, stackTop, c) )
+	{
+		return;
+	}
 	A->va->m_Vdata[0] = args[1];
 }
 

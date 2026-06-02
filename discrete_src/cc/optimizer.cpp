@@ -40,8 +40,9 @@ static bool wr_decodeOverwriteStore( const unsigned char* code, unsigned int off
 {
 	info.valid = true;
 	info.offset = offset;
+	info.opcode = code[offset];
 
-	switch( code[offset] )
+	switch( info.opcode )
 	{
 		case O_AssignToGlobalAndPop:
 		case O_BinaryAdditionAndStoreGlobal:
@@ -155,6 +156,95 @@ static bool wr_findLastStatementOverwriteStore( WRBytecode& bytecode, WROverwrit
 	}
 
 	return wr_decodeOverwriteStore( code, lastOpcodeOffset, info );
+}
+
+//------------------------------------------------------------------------------
+static bool wr_statementIsLiteralClobber( WRBytecode& bytecode, const WROverwriteStoreInfo& info )
+{
+	if ( !info.valid )
+	{
+		return false;
+	}
+
+	switch( info.opcode )
+	{
+		case O_LiteralInt8ToGlobal:
+		case O_LiteralInt8ToLocal:
+		case O_LiteralInt16ToGlobal:
+		case O_LiteralInt16ToLocal:
+		case O_LiteralInt32ToGlobal:
+		case O_LiteralInt32ToLocal:
+		case O_LiteralFloatToGlobal:
+		case O_LiteralFloatToLocal:
+			return true;
+
+		case O_AssignToGlobalAndPop:
+		case O_AssignToLocalAndPop:
+		{
+			if ( bytecode.all.size() <= info.length
+				 || (info.offset + info.length) != bytecode.all.size() )
+			{
+				return false;
+			}
+
+			switch( bytecode.all[0] )
+			{
+				case O_LiteralZero:
+				case O_LiteralInt8:
+				case O_LiteralInt16:
+				case O_LiteralInt32:
+				case O_LiteralFloat:
+				case O_LiteralString:
+				{
+					const unsigned char* code = bytecode.all;
+					const uint8_t* end = (const uint8_t*)(code + bytecode.all.size());
+					int operandSize = wr_optimizerOperandSize( code + 1, end, code[0] );
+					return operandSize >= 0 && (1 + (unsigned int)operandSize) == info.offset;
+				}
+			}
+			return false;
+		}
+	}
+
+	return false;
+}
+
+//------------------------------------------------------------------------------
+static void wr_dropLastStatementOverwriteStore( WRBytecode& bytecode, const WROverwriteStoreInfo& info )
+{
+	bytecode.all.shave( info.length );
+
+	switch( info.opcode )
+	{
+		case O_AssignToGlobalAndPop:
+		case O_AssignToLocalAndPop:
+			bytecode.all += (unsigned char)O_PopOne;
+			return;
+
+		case O_BinaryAdditionAndStoreGlobal:
+		case O_BinaryAdditionAndStoreLocal:
+			bytecode.all += (unsigned char)O_BinaryAddition;
+			bytecode.all += (unsigned char)O_PopOne;
+			return;
+
+		case O_BinarySubtractionAndStoreGlobal:
+		case O_BinarySubtractionAndStoreLocal:
+			bytecode.all += (unsigned char)O_BinarySubtraction;
+			bytecode.all += (unsigned char)O_PopOne;
+			return;
+
+		case O_BinaryMultiplicationAndStoreGlobal:
+		case O_BinaryMultiplicationAndStoreLocal:
+			bytecode.all += (unsigned char)O_BinaryMultiplication;
+			bytecode.all += (unsigned char)O_PopOne;
+			return;
+
+		case O_BinaryDivisionAndStoreGlobal:
+		case O_BinaryDivisionAndStoreLocal:
+			bytecode.all += (unsigned char)O_BinaryDivision;
+			bytecode.all += (unsigned char)O_PopOne;
+			return;
+	}
 }
 
 //------------------------------------------------------------------------------
@@ -1732,14 +1822,15 @@ void WRCompilationContext::FinalizeStatementBytecode( WRUnitContext& unit, WRByt
 
 	WROverwriteStoreInfo currentStore;
 	bool haveCurrentStore = wr_findLastStatementOverwriteStore( statementBytecode, currentStore );
+	bool currentIsLiteralClobber = haveCurrentStore && wr_statementIsLiteralClobber( statementBytecode, currentStore );
 
-	if ( haveCurrentStore
+	if ( currentIsLiteralClobber
 		 && unit.lastStatementOverwriteStore.valid
 		 && unit.lastStatementOverwriteStore.global == currentStore.global
 		 && unit.lastStatementOverwriteStore.index == currentStore.index
 		 && (unit.lastStatementOverwriteStore.offset + unit.lastStatementOverwriteStore.length) == unit.bytecode.all.size() )
 	{
-		unit.bytecode.all.shave( unit.lastStatementOverwriteStore.length );
+		wr_dropLastStatementOverwriteStore( unit.bytecode, unit.lastStatementOverwriteStore );
 	}
 
 	unit.bytecode.opcodes.clear();

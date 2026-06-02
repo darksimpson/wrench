@@ -233,14 +233,10 @@ struct WRExpressionContext
 
 	WRExpressionContext() { reset(); }
 
-	void setLocalSpace( WRarray<WRNamespaceLookup>& localSpace, bool isStructSpace )
+	void setLocalSpace( WRarray<WRNamespaceLookup>&, bool isStructSpace )
 	{
 		bytecode.localSpace.clear();
 		bytecode.isStructSpace = isStructSpace;
-		for( unsigned int l=0; l<localSpace.count(); ++l )
-		{
-			bytecode.localSpace.append().hash = localSpace[l].hash;
-		}
 		type = EXTYPE_NONE;
 	}
 
@@ -370,11 +366,12 @@ struct WROverwriteStoreInfo
 	bool valid;
 	bool global;
 	unsigned char index;
+	unsigned char opcode;
 	unsigned int offset;
 	unsigned int length;
 
 	WROverwriteStoreInfo()
-		: valid(false), global(false), index(0), offset(0), length(0) {}
+		: valid(false), global(false), index(0), opcode(0), offset(0), length(0) {}
 };
 
 //------------------------------------------------------------------------------

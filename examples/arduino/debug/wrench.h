@@ -465,6 +465,13 @@ void wr_setAllocatedMemoryGCHint( WRState* w, const uint32_t bytes );
 // retVal:        this value will be passed back, default: integer zero
 // usr:           opaque pointer function was registered with
 typedef void (*WR_C_CALLBACK)(WRContext* c, const WRValue* argv, const int argn, WRValue& retVal, void* usr );
+typedef void (*WR_C_CALLBACK_NOT_FOUND)( const uint32_t Signature, WRContext* c, const WRValue* argv, const int argn, WRValue& retVal, void* usr );
+
+// if the callback is not found, wrench throws a
+// WR_ERR_function_not_found error, but if this is defined, it calls
+// this instead and continues executing
+inline void wr_setOnCallbackNotFound( WRState* w, WR_C_CALLBACK_NOT_FOUND onCallbackNotFound );
+
 
 // IMPORTANT: The values passed may be references (keepin' it real) so
 // always use the getters inside the WRValue class:
@@ -518,6 +525,12 @@ bool wr_deserialize( WRContext* context, WRValue& value, const char* buf, const 
 // stackTop - (N-1) : [arg2]
 // stackTop - N     : [arg1]
 typedef void (*WR_LIB_CALLBACK)( WRValue* stackTop, const int argn, WRContext* context );
+typedef void (*WR_LIB_CALLBACK_NOT_FOUND)( const uint32_t Signature, WRValue* stackTop, const int argn, WRContext* context );
+
+// if the library callback is not found, wrench throws a
+// WR_ERR_lib_function_not_found error, but if this is defined, it calls
+// this instead and continues executing
+inline void wr_setOnLibCallbackNotFound( WRState* w, WR_LIB_CALLBACK_NOT_FOUND onLibCallbackNotFound );
 
 // w:         state to register with (will be available to all contexts)
 // signature: library signature must be in the form of <lib>::<name>
@@ -1113,6 +1126,9 @@ private:
 	WRGCObject(WRGCObject& A);
 };
 
+
+class WRDebugServerInterface;
+
 //------------------------------------------------------------------------------
 struct WRContext
 {
@@ -1188,7 +1204,12 @@ struct WRState
 	uint16_t stackSize; // how much stack to give each context
 	uint8_t err;
 
+	WR_C_CALLBACK_NOT_FOUND onCallbackNotFound;
+	WR_LIB_CALLBACK_NOT_FOUND onLibCallbackNotFound;
 };
+
+inline void wr_setOnCallbackNotFound( WRState* w, WR_C_CALLBACK_NOT_FOUND onCallbackNotFound ) { w->onCallbackNotFound = onCallbackNotFound; }
+inline void wr_setOnLibCallbackNotFound( WRState* w, WR_LIB_CALLBACK_NOT_FOUND onLibCallbackNotFound ) { w->onLibCallbackNotFound = onLibCallbackNotFound; }
 
 #define WRENCH_NULL_HASH 0xABABABAB  // -1414812757 / -1.2197928214371934e-12, can't be zero since we use int/floats as their own hash
 
@@ -1198,9 +1219,8 @@ struct WRState
 #endif
 
 struct WrenchPacket;
-class WRDebugServerInterface;
-class WRDebugServerInterfacePrivate;
 class WRDebugClientInterfacePrivate;
+class WRDebugServerInterfacePrivate;
 class WrenchDebugCommInterface;
 template<class> class SimpleLL;
 
@@ -1370,7 +1390,6 @@ public:
 #endif
 
 	WRstr& clear() { m_str[m_len = 0] = 0; return *this; }
-
 #ifdef STR_COPY_ARG
 	WRstr& format( const char* format, ... ) { va_list arg; va_start( arg, format ); clear(); appendFormatVA( format, arg ); va_end( arg ); return *this; }
 	WRstr& formatVA( const char* format, va_list arg ) { clear(); return appendFormatVA(format, arg); }

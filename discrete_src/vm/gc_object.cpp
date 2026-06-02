@@ -32,7 +32,8 @@ int WRGCObject::init( const unsigned int size, const WRGCObjectType type, bool c
 	if ( (m_type = type) == SV_VALUE )
 	{
 		ret *= sizeof(WRValue);
-		m_Vdata = (WRValue*)g_malloc( ret );
+		const unsigned int allocated = ret ? ret : sizeof(WRValue);
+		m_Vdata = (WRValue*)g_malloc( allocated );
 #ifdef WRENCH_HANDLE_MALLOC_FAIL
 		if ( !m_Vdata )
 		{
@@ -44,12 +45,15 @@ int WRGCObject::init( const unsigned int size, const WRGCObjectType type, bool c
 		
 		if ( clear )
 		{
-			memset( m_SCdata, 0, ret );
+			memset( m_SCdata, 0, allocated );
 		}
+
+		ret = allocated;
 	}
 	else if ( m_type == SV_CHAR )
 	{
-		m_Cdata = (unsigned char*)g_malloc( size );
+		const unsigned int allocated = size ? size : 1;
+		m_Cdata = (unsigned char*)g_malloc( allocated );
 #ifdef WRENCH_HANDLE_MALLOC_FAIL
 		if ( !m_Cdata )
 		{
@@ -60,8 +64,10 @@ int WRGCObject::init( const unsigned int size, const WRGCObjectType type, bool c
 #endif
 		if ( clear )
 		{
-			memset( m_SCdata, 0, size );
+			memset( m_SCdata, 0, allocated );
 		}
+
+		ret = allocated;
 	}
 	else
 	{

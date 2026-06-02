@@ -138,7 +138,10 @@ WRValue* WrenchValue::asArrayMember( const int index )
 	}
 	else if ( index >= (int)m_value->va->m_size )
 	{
-		wr_growValueArray( m_value->va, index );
+		if ( !wr_growValueArray(m_value->va, index) )
+		{
+			return m_value;
+		}
 		m_context->allocatedMemoryHint += index * ((m_value->va->m_type == SV_CHAR) ? 1 : sizeof(WRValue));
 	}
 
@@ -722,7 +725,10 @@ WRValue* WRValue::indexArray( WRContext* context, const uint32_t index, const bo
 			return 0;
 		}
 		
-		wr_growValueArray( V.va, index );
+		if ( !wr_growValueArray(V.va, index) )
+		{
+			return 0;
+		}
 		context->allocatedMemoryHint += index * ((V.va->m_type == SV_CHAR) ? 1 : sizeof(WRValue));
 	}
 

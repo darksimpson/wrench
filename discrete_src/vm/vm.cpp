@@ -870,7 +870,8 @@ debugReturn:
 
 				uint32_t fhash = READ_32_FROM_PC(pc);
 				pc += 4;
-				if ( ! ((register1 = w->globalRegistry.getAsRawValueHashTable(fhash))->ccb) )
+				register1 = w->globalRegistry.getAsRawValueHashTable(fhash);
+				if ( !register1 || !register1->ccb )
 				{
 					if ( (import = context->imported) ) // check imported code
 					{
@@ -932,8 +933,15 @@ debugReturn:
 						}
 					}
 
-					w->err = WR_ERR_function_not_found;
-					return 0;
+					if ( w->onCallbackNotFound )
+					{
+						w->onCallbackNotFound( fhash, context, stackTop - args, args, *stackTop, 0 );
+					}
+					else
+					{
+						w->err = WR_ERR_function_not_found;
+						return 0;
+					}
 				}
 				else
 				{
@@ -965,38 +973,46 @@ newObjOut:
 
 				uint32_t fhash = READ_32_FROM_PC(pc);
 				pc += 4;
-				if ( !((register1 = w->globalRegistry.getAsRawValueHashTable(fhash))->ccb) )
+				register1 = w->globalRegistry.getAsRawValueHashTable(fhash);
+				if ( !register1 || !register1->ccb )
 				{
 					// is in an imported context
 					if ( (import = context->imported) )
 					{
 						while( import != context )
 						{
-								if ( (register0 = import->registry.exists(fhash, false)) )
+							if ( (register0 = import->registry.exists(fhash, false)) )
+							{
+								// import shares our stack, tell it where to find it's args
+								uint16_t savedOffset = import->stackOffset;
+								import->stackOffset = (uint16_t)(stackTop - context->stack);
+								register0 = wr_callFunction( import, register0->wrf, stackTop - args, args );
+								import->stackOffset = savedOffset;
+								if ( import->yield_pc )
 								{
-									// import shares our stack, tell it where to find it's args
-									uint16_t savedOffset = import->stackOffset;
-									import->stackOffset = (uint16_t)(stackTop - context->stack);
-									register0 = wr_callFunction( import, register0->wrf, stackTop - args, args );
-									import->stackOffset = savedOffset;
-									if ( import->yield_pc )
-									{
-										w->err = WR_ERR_cannot_call_function_context_yielded;
-										return 0;
-									}
-									if ( !register0 )
-									{
-										return 0;
-									}
-									goto CallFunctionByHashAndPop_continue;
+									w->err = WR_ERR_cannot_call_function_context_yielded;
+									return 0;
 								}
+								if ( !register0 )
+								{
+									return 0;
+								}
+								goto CallFunctionByHashAndPop_continue;
+							}
 
 							import = import->imported;
 						}
 					}
 
-					w->err = WR_ERR_function_not_found;
-					return 0;
+					if ( w->onCallbackNotFound )
+					{
+						w->onCallbackNotFound( fhash, context, stackTop - args, args, *stackTop, 0 );
+					}
+					else
+					{
+						w->err = WR_ERR_function_not_found;
+						return 0;
+					}
 				}
 				else
 				{
@@ -1080,13 +1096,24 @@ callFunction:
 
 				args = READ_8_FROM_PC(pc++); // which have already been pushed
 
-				if ( ! ((register1 = w->globalRegistry.getAsRawValueHashTable(READ_32_FROM_PC(pc)))->lcb) )
+				uint32_t fhash = READ_32_FROM_PC(pc);
+				register1 = w->globalRegistry.getAsRawValueHashTable(fhash);
+				if ( !register1 || !register1->lcb )
 				{
-					w->err = WR_ERR_lib_function_not_found;
-					return 0;
+					if ( w->onLibCallbackNotFound )
+					{
+						w->onLibCallbackNotFound( fhash, stackTop, args, context );
+					}
+					else
+					{
+						w->err = WR_ERR_lib_function_not_found;
+						return 0;
+					}
 				}
-
-				register1->lcb( stackTop, args, context );
+				else
+				{
+					register1->lcb( stackTop, args, context );
+				}
 				
 				pc += 4;
 
@@ -1119,13 +1146,25 @@ callFunction:
 			{
 				args = READ_8_FROM_PC(pc++); // which have already been pushed
 
-				if ( ! ((register1 = w->globalRegistry.getAsRawValueHashTable(READ_32_FROM_PC(pc)))->lcb) )
+				uint32_t fhash = READ_32_FROM_PC(pc);
+				register1 = w->globalRegistry.getAsRawValueHashTable(fhash);
+				if ( !register1 || !register1->lcb )
 				{
-					w->err = WR_ERR_lib_function_not_found;
-					return 0;
+					if ( w->onLibCallbackNotFound )
+					{
+						w->onLibCallbackNotFound( fhash, stackTop, args, context );
+					}
+					else
+					{
+						w->err = WR_ERR_lib_function_not_found;
+						return 0;
+					}
 				}
-
-				register1->lcb( stackTop, args, context );
+				else
+				{
+					register1->lcb( stackTop, args, context );
+				}
+				
 				pc += 4;
 
 				stackTop -= args;
@@ -1207,7 +1246,11 @@ callFunction:
 				else if ( register0->xtype == WR_EX_ARRAY )
 				{
 					va = register0->va;
-					if (va->m_type == SV_VALUE )
+					if ( hash >= va->m_size )
+					{
+						FASTCONTINUE;
+					}
+					else if (va->m_type == SV_VALUE )
 					{
 						for( uint32_t move = hash; (move+1) < va->m_size; ++move )
 						{
