@@ -31,9 +31,26 @@ SOFTWARE.
 #include <assert.h>
 #include <stdlib.h>
 
-#ifdef WRENCH_CLI_DEBUG
-WRContext* g_context = 0;
+#ifdef WRENCH_INCLUDE_DEBUG_CLIENT
+#include "debug/debugger.h"
+#include "utils/wrench_debug_host.h"
+int wr_dapMain( int argn, char* argv[] );
+int wr_lspMain( int argn, char* argv[] );
+bool testDebugger();
 #endif
+
+#ifdef WRENCH_INCLUDE_DEBUG_CODE
+// a link nobody is on, so the server only runs its hooks
+class WrenchDebugNullTransport : public WrenchDebugTransport
+{
+public:
+	bool write( const uint8_t* data, uint32_t len ) { return true; }
+	int read( uint8_t* data, uint32_t maxLen ) { return 0; }
+	uint32_t millis() { return 0; }
+};
+#endif
+
+WRContext* g_context = 0;
 
 int runTests( int number =0 );
 void testGlobalValues( WRState* w );
@@ -345,12 +362,10 @@ const char* sourceOrder[]=
 	"/utils/opcode.h",
 	"/cc/opcode_stream.h",
 	"/cc/cc.h",
-	"/debug/packet.h",
+	"/debug/debug_protocol.h",
 	"/debug/debug.h",
-	"/debug/debugger.h",
 	"/lib/std_serial.h",
 	"/lib/std_tcp.h",
-	"/debug/debug_comm.h",
 	"/lib/std_io_defs.h",
 	"/lib/std_tcp.h",
 	"/cc/cc.cpp",
@@ -364,14 +379,10 @@ const char* sourceOrder[]=
 	"/utils/utils.cpp",
 	"/utils/serializer.cpp",
 	"/debug/debug.cpp",
-	"/debug/client_debug.cpp",
-	"/debug/server_debug.cpp",
 	"/debug/disassemble.cpp",
-	"/debug/packet.cpp",
-	"/debug/server_interface_private.cpp",
-	"/debug/client_interface_private.cpp",
-	"/debug/tcp_debug_comm.cpp",
-	"/debug/serial_debug_comm.cpp",
+	"/debug/debug_protocol.cpp",
+	"/debug/debug_server.cpp",
+	"/debug/debug_transport.cpp",
 	"/vm/scheduler.cpp",
 	"/vm/operations.cpp",
 	"/vm/operations_compact.cpp",
@@ -424,8 +435,30 @@ int usage()
 			"                               [name]_bytecodeSize = $xxxx\n"
 */
 			"\n"
-#ifdef WRENCH_INCLUDE_DEBUG_CODE
-			"dbg [file]                     debugger client entry\n"
+#ifdef WRENCH_INCLUDE_DEBUG_CLIENT
+			"dbg [-target T] [-attach] [file]\n"
+			"                               interactive debugger, T is one of\n"
+			"                               local (default), tcp:<host>:<port>,\n"
+			"                               serial:<port>[:<baud>]. file is a .w or\n"
+			"                               a .bin compiled with -debugsource.\n"
+			"                               -attach debugs what the target already\n"
+			"                               runs, without file its program and\n"
+			"                               source are read from the target\n"
+			"dbgserver -target T [-v] [-noupload] [-hold] [file]\n"
+			"                               act as a debug target on T (tcp:<port>\n"
+			"                               or serial:<port>[:<baud>]), optionally\n"
+			"                               preloaded with file (source or bytecode).\n"
+			"                               -noupload refuses programs sent by a\n"
+			"                               debugger, like setAllowUpload(false).\n"
+			"                               -hold starts file at once, halted on its\n"
+			"                               first line until a debugger attaches,\n"
+			"                               like breakOnEntry()\n"
+			"                               dbg and dbgserver imitate the host\n"
+			"                               application described by the nearest\n"
+			"                               wrench.json, -project <file> names one,\n"
+			"                               -project none ignores it\n"
+			"dap                            Debug Adapter Protocol server on stdio\n"
+			"lsp                            Language Server Protocol server on stdio\n"
 			"\n"
 #endif
 			"t                              run internal tests\n"
@@ -501,9 +534,113 @@ int main( int argn, char* argv[] )
 	
 	WRstr command = SimpleArgs::get( argn, argv, 1 );
 
+	// globals are named in the bytecode unless -noglobals, -debugsource
+	// implies -debug as the help text promises
 	flags = (SimpleArgs::get(argn, argv, "-nostrict") ? WR_NON_STRICT_VAR : 0)
+			| (SimpleArgs::get(argn, argv, "-noglobals") ? 0 : WR_INCLUDE_GLOBALS)
 			| (SimpleArgs::get(argn, argv, "-debug") ? WR_EMBED_DEBUG_CODE : 0)
-			| (SimpleArgs::get(argn, argv, "-debugsource") ? WR_EMBED_SOURCE_CODE : 0);
+			| (SimpleArgs::get(argn, argv, "-debugsource") ? (WR_EMBED_DEBUG_CODE | WR_EMBED_SOURCE_CODE) : 0);
+
+#ifdef WRENCH_INCLUDE_DEBUG_CLIENT
+	// tool modes are matched on the command word only, their arguments may
+	// contain anything
+	if ( command == "dbg" || command == "dbgserver" )
+	{
+		// options in any order: -target and -project take a value, the other
+		// options are switches, the one remaining argument is the file
+		std::string target;
+		std::string projectPath;
+		std::string file;
+		bool attach = false;
+		bool verbose = false;
+		bool noUpload = false;
+		bool hold = false;
+		for ( int a = 2; a < argn; ++a )
+		{
+			std::string arg = argv[a];
+			if ( arg == "-target" || arg == "-project" )
+			{
+				if ( a + 1 >= argn )
+				{
+					printf( "%s needs a value\n", arg.c_str() );
+					return usage();
+				}
+				(arg == "-target" ? target : projectPath) = wr_utf8FromArg( argv[++a] );
+			}
+			else if ( arg == "-attach" )
+			{
+				attach = true;
+			}
+			else if ( arg == "-v" )
+			{
+				verbose = true;
+			}
+			else if ( arg == "-noupload" )
+			{
+				noUpload = true;
+			}
+			else if ( arg == "-hold" )
+			{
+				hold = true;
+			}
+			else if ( !arg.empty() && arg[0] == '-' )
+			{
+				printf( "unknown option %s\n", arg.c_str() );
+				return usage();
+			}
+			else if ( file.empty() )
+			{
+				file = wr_utf8FromArg( argv[a] );
+			}
+			else
+			{
+				printf( "more than one file given (%s and %s)\n", file.c_str(), arg.c_str() );
+				return usage();
+			}
+		}
+
+		if ( command == "dbg" )
+		{
+			// attaching needs no file: program and source come from the target
+			if ( file.empty() && !attach )
+			{
+				return usage();
+			}
+			return wr_debugCliMain( file.empty() ? 0 : file.c_str(), target.empty() ? "local" : target.c_str(), attach, 0,
+				projectPath.empty() ? 0 : projectPath.c_str() );
+		}
+
+		if ( target.empty() )
+		{
+			return usage();
+		}
+		WrenchTransportSpec spec;
+		std::string error;
+		if ( !spec.parse(target, error) )
+		{
+			printf( "%s\n", error.c_str() );
+			return -1;
+		}
+
+		// imitate the host application when there is a wrench.json for the
+		// program (or one is named), else stand in for any host
+		WrenchProject project;
+		if ( (!file.empty() || !projectPath.empty()) && !wr_projectForScript(file, projectPath, project, error) )
+		{
+			printf( "%s\n", error.c_str() );
+			return -1;
+		}
+		return wr_debugServerMain( spec, file.empty() ? 0 : file.c_str(), verbose, project.loaded() ? &project : 0, !noUpload, hold );
+	}
+	else if ( command == "dap" )
+	{
+		return wr_dapMain( argn, argv );
+	}
+	else if ( command == "lsp" )
+	{
+		return wr_lspMain( argn, argv );
+	}
+#endif
 
 	if ( SimpleArgs::get(argn, argv, "t") )
 	{
@@ -552,22 +689,6 @@ int main( int argn, char* argv[] )
 		printf( "%s\n", listing );
 		wr_free( listing );
 	}
-#ifdef WRENCH_INCLUDE_DEBUG_CODE
-	else if ( SimpleArgs::get(argn, argv, "dbg") )
-	{
-		WrenchDebugClient client;
-		int port = 0;
-		char address[64];
-		if (SimpleArgs::get(argn, argv, "-port", address, 64))
-		{
-			port = atoi(address);
-		}
-		address[0] = 0;
-		SimpleArgs::get(argn, argv, "-address", address, 64);
-		
-		client.enter( SimpleArgs::get(argn, argv, -1), address, port );
-	}
-#endif
 	else if ( SimpleArgs::get(argn, argv, "r") )
 	{
 #ifndef WRENCH_WITHOUT_COMPILER
@@ -665,7 +786,7 @@ int main( int argn, char* argv[] )
 		if ( err )
 		{
 			printf( "compile error [%s]\n", c_errStrings[err] );
-			return 0;
+			return -1;
 		}
 
 		WRstr str;
@@ -712,7 +833,7 @@ int main( int argn, char* argv[] )
 		if ( err )
 		{
 			printf( "compile error [%s]\n", c_errStrings[err] );
-			return 0;
+			return -1;
 		}
 
 		WRstr str;
@@ -1343,6 +1464,150 @@ void testFunctionNotFoundErrors()
 	}
 }
 
+static void failingNotFound( const uint32_t signature, WRContext* c, const WRValue* argv, const int argn, WRValue& retVal, void* usr )
+{
+	if ( signature == wr_hashStr("known") )
+	{
+		retVal.init( 5 );
+		return;
+	}
+	c->w->err = WR_ERR_function_not_found;
+}
+
+static void failingLibNotFound( const uint32_t signature, WRValue* stackTop, const int argn, WRContext* context )
+{
+	context->w->err = WR_ERR_lib_function_not_found;
+}
+
+// not-found handlers may answer some names and still fail others, the VM
+// remembers which name was missing
+bool testNotFoundHandlerCanFail()
+{
+	printf( "test [-][not-found handlers can fail the call]: " );
+	bool ok = true;
+	const char* sources[] =
+	{
+		"var a = known(); var b = unknownThing( a );",
+		"var a = known(); var b = app::open( a );",
+	};
+	uint32_t expectedHash[] = { wr_hashStr("unknownThing"), wr_hashStr("app::open") };
+	WRError expectedError[] = { WR_ERR_function_not_found, WR_ERR_lib_function_not_found };
+
+	for ( int i = 0; i < 2; ++i )
+	{
+		WRState* w = wr_newState( 64 );
+		wr_setOnCallbackNotFound( w, failingNotFound );
+		wr_setOnLibCallbackNotFound( w, failingLibNotFound );
+		unsigned char* out = 0;
+		int outLen = 0;
+		if ( wr_compile(sources[i], (int)strlen(sources[i]), &out, &outLen, 0, WR_INCLUDE_GLOBALS) != WR_ERR_None )
+		{
+			ok = false;
+			wr_destroyState( w );
+			continue;
+		}
+		WRContext* c = wr_run( w, out, outLen, true );
+		ok = ok && !c && wr_getLastError( w ) == expectedError[i] && wr_getMissingFunctionHash( w ) == expectedHash[i];
+		wr_destroyState( w );
+	}
+
+	// a handler that answers keeps the program running
+	{
+		WRState* w = wr_newState( 64 );
+		wr_setOnCallbackNotFound( w, failingNotFound );
+		const char* src = "var a = known() + 1;";
+		unsigned char* out = 0;
+		int outLen = 0;
+		WRContext* c = 0;
+		if ( wr_compile(src, (int)strlen(src), &out, &outLen, 0, WR_INCLUDE_GLOBALS) == WR_ERR_None )
+		{
+			c = wr_run( w, out, outLen, true );
+		}
+		WRValue* a = c ? wr_getGlobalRef( c, "a" ) : 0;
+		ok = ok && c && wr_getLastError( w ) == WR_ERR_None && a && a->asInt() == 6;
+		wr_destroyState( w );
+	}
+
+	printf( ok ? "PASS\n" : "FAIL\n" );
+	return ok;
+}
+
+static WRError compileOnly( WRstr const& src, uint8_t flags =WR_INCLUDE_GLOBALS, WRstr* listing =0 )
+{
+	unsigned char* out = 0;
+	int outLen = 0;
+	WRError err = wr_compile( src.c_str(), src.size(), &out, &outLen, 0, flags );
+	if ( listing && err == WR_ERR_None )
+	{
+		wr_disassemble( out, outLen, *listing );
+	}
+	free( out );
+	return err;
+}
+
+static WRstr joined( const char* a, WRstr const& b, const char* c )
+{
+	WRstr s( a );
+	s += b;
+	s += c;
+	return s;
+}
+
+static WRstr repeated( const char* open, int count, const char* middle, const char* close )
+{
+	WRstr s;
+	for( int i=0; i<count; ++i )
+	{
+		s += open;
+	}
+	s += middle;
+	for( int i=0; i<count; ++i )
+	{
+		s += close;
+	}
+	return s;
+}
+
+bool testCompilerLimits()
+{
+	printf( "test [-][compiler limits are errors, not crashes]:\n" );
+	printf( "     (the compile errors below are expected)\n" );
+	bool ok = true;
+
+	// the argument count is one byte
+	WRstr args;
+	for( int i=0; i<255; ++i )
+	{
+		args.appendFormat( "%s%d", i ? "," : "", i );
+	}
+	ok = ok && compileOnly( joined("function f() { return 0; } f(", args, ");") ) == WR_ERR_None;
+	ok = ok && compileOnly( joined("function f() { return 0; } f(", args, ",255);") ) == WR_ERR_too_many_arguments;
+
+	// so is a struct initializer position
+	WRstr values;
+	for( int i=0; i<256; ++i )
+	{
+		values.appendFormat( "%s%d", i ? "," : "", i );
+	}
+	ok = ok && compileOnly( joined("struct S { var a; } var s = new S { ", values, " };") ) == WR_ERR_too_many_locals;
+
+	// nesting is bounded
+	ok = ok && compileOnly( joined("var x = ", repeated("(", 100, "1", ")"), ";") ) == WR_ERR_None;
+	ok = ok && compileOnly( joined("var x = ", repeated("(", 5000, "1", ")"), ";") ) == WR_ERR_nesting_too_deep;
+	ok = ok && compileOnly( joined("var x = ", repeated("{", 5000, "1", "}"), ";") ) == WR_ERR_nesting_too_deep;
+	ok = ok && compileOnly( repeated("{", 5000, "x = 1;", "}") ) == WR_ERR_nesting_too_deep;
+	ok = ok && compileOnly( repeated("if(1)", 5000, "x = 1;", "") ) == WR_ERR_nesting_too_deep;
+
+	// with debug info a store that the next statement overwrites stays, so a
+	// stop between the two shows it
+	WRstr listing;
+	ok = ok && compileOnly( "function f() { var a = 1;\na = 2;\nreturn a; }", WR_INCLUDE_GLOBALS | WR_EMBED_DEBUG_CODE, &listing ) == WR_ERR_None;
+	ok = ok && listing.find( "imm=0x01" ) != WRstr::npos;
+
+	printf( ok ? "PASS\n" : "FAIL\n" );
+	return ok;
+}
+
 //------------------------------------------------------------------------------
 void testLibFunctionNotFoundErrors()
 {
@@ -1776,8 +2041,7 @@ void testStateContextOpaquePointer()
 	WRContext* importCtx = wr_import( mainCtx, importOut, importLen, true );
 	if ( !importCtx )
 	{
-		assert(0);
-		wr_free( importOut );
+		assert(0); // the import took the block, even though it failed
 		wr_destroyState( w );
 		return;
 	}
@@ -1799,38 +2063,54 @@ int runTests( int number )
 {
 	int err = 0;
 
+	// keep the log intact up to the last line if a test crashes
+	setvbuf( stdout, 0, _IONBF, 0 );
+
 #ifndef WRENCH_WITHOUT_COMPILER
 	WRstr code;
 	WRstr codeName;
 
 	WRValue container;
-	wr_makeContainer( &container );
-	
-	wr_addFloatToContainer( &container, "_f", 20.02f );
-
-	wr_addIntToContainer( &container, "_i", 1001 );
-	wr_addIntToContainer( &container, "_j", 1001 );
-	
 	WRValue integer;
-	wr_makeInt( &integer, 0 );
-	wr_addValueToContainer( &container, "integer", &integer );
-
-	char someArray[10] = "hello";
-	wr_addArrayToContainer( &container, "name", someArray, 10 );
-
+	char someArray[10];
+	char byte;
+	char byte2;
 	char* someBigArray = (char *)wr_malloc( 0x1FFFFF );
-	someBigArray[0] = 10;
-	someBigArray[0x99] = (char)0x88;
-	someBigArray[10000] = 20;
-	someBigArray[100000] = 30;
-	someBigArray[0x1FFFFE] = 40;
 
-	char byte = (char)0x99;
-	char byte2 = (char)0x99;
-	wr_addArrayToContainer( &container, "b", &byte, 1 );
-	wr_addArrayToContainer( &container, "c", &byte2, 1 );
-		
-	wr_addArrayToContainer( &container, "big", someBigArray, 0x1FFFFF );
+	// tests rewrite members of the container, so every run gets a fresh one
+	auto buildContainer = [&]( bool destroyOld )
+	{
+		if ( destroyOld )
+		{
+			wr_destroyContainer( &container );
+		}
+		wr_makeContainer( &container );
+
+		wr_addFloatToContainer( &container, "_f", 20.02f );
+
+		wr_addIntToContainer( &container, "_i", 1001 );
+		wr_addIntToContainer( &container, "_j", 1001 );
+
+		wr_makeInt( &integer, 0 );
+		wr_addValueToContainer( &container, "integer", &integer );
+
+		strcpy( someArray, "hello" );
+		wr_addArrayToContainer( &container, "name", someArray, 10 );
+
+		someBigArray[0] = 10;
+		someBigArray[0x99] = (char)0x88;
+		someBigArray[10000] = 20;
+		someBigArray[100000] = 30;
+		someBigArray[0x1FFFFE] = 40;
+
+		byte = (char)0x99;
+		byte2 = (char)0x99;
+		wr_addArrayToContainer( &container, "b", &byte, 1 );
+		wr_addArrayToContainer( &container, "c", &byte2, 1 );
+
+		wr_addArrayToContainer( &container, "big", someBigArray, 0x1FFFFF );
+	};
+	buildContainer( false );
 
 	FILE* tfile = fopen( "test_files.txt", "r" );
 
@@ -1846,7 +2126,16 @@ int runTests( int number )
 
 	char buf[256];
 	int fileNumber = 0;
+	int failures = 0;
 	WRstr errMsg;
+
+#ifdef WRENCH_INCLUDE_DEBUG_CODE
+	const int testPasses = 2;
+	WrenchDebugNullTransport nullLink;
+	WrenchDebugServer idleDebugger( w, &nullLink );
+#else
+	const int testPasses = 1;
+#endif
 
 	unsigned char* out;
 	int outLen;
@@ -1871,116 +2160,149 @@ int runTests( int number )
 					expect += code[t];
 				}
 
-				printf( "test [%d][%s]: ", fileNumber, codeName.c_str() );
-
-				err = wr_compile( code, code.size(), &out, &outLen, &errMsg, WR_INCLUDE_GLOBALS );
-				
-				if ( err )
+				// pass 1 repeats the test compiled with debug code under an
+				// attached (idle) debug server, which must not change results
+				for( int pass = 0; pass < testPasses && err == 0; ++pass )
 				{
-#ifdef WRENCH_WITHOUT_COMPILER
-					printf( "compile error [#%d]\n", err );
-#else
-					printf( "compile error [%s]\n", c_errStrings[err] );
-#endif
-					return -1;
-				}
+					printf( "test [%d][%s]%s: ", fileNumber, codeName.c_str(), pass ? "[debug]" : "" );
+					buildContainer( true );
 
-				WRstr logger;
-				wr_registerFunction( w, "print", emit, &logger );
-				wr_registerFunction( w, "println", emitln, &logger );
-				
-				wr_registerFunction( w, "checkIsWrenchArray", checkIsWrenchArray );
-				wr_registerFunction( w, "checkIsRawArray", checkIsRawArray );
-				wr_registerFunction( w, "checkIsString", checkIsString );
-				wr_registerFunction( w, "checkIsHashTable", checkIsHashTable );
-				wr_registerFunction( w, "checkIter", checkIter );
-				wr_registerFunction( w, "checkStruct", checkStruct );
-
-				WRContext* context = 0;
-				wr_destroyContext( context ); // make sure this doesn't crash
-				context = wr_run( w, out, outLen );
-
-				err = wr_getLastError( w );
-
-				int args;
-				WRValue* firstArg;
-				WRValue* returnValue;
-				while( wr_getYieldInfo(context, &firstArg, &args, &returnValue) )
-				{
-					if ( args > 0 )
+					uint8_t compileFlags = WR_INCLUDE_GLOBALS;
+					if ( pass )
 					{
-						*returnValue = *firstArg;
+						compileFlags |= WR_EMBED_DEBUG_CODE | WR_EMBED_SOURCE_CODE;
 					}
-					wr_continue( context );
-				}
-
-				if ( context && !(err = wr_getLastError(w)) )
-				{
-					integer.i = 2456;
-					someArray[1] = 'e';
-
-					WRValue* V = wr_callFunction( context, "userCheck", &container, 1 );
-					if ( V && V->i == 77 )
-					{
-						assert( integer.i == 56789 );
-						assert( someArray[1] == 'c' );
-					}
-
-					char testString[12] = "test string";
-					WRValue val;
-					wr_makeString( context, &val, testString, 11 );
-
-					assert( val.isString() );
+					err = wr_compile( code, code.size(), &out, &outLen, &errMsg, compileFlags );
 					
-					wr_callFunction( context, "stringCheck", &val, 1 );
-					wr_callFunction( context, "stringCheck", &val, 1 );
-					wr_callFunction( context, "stringCheck", &val, 1 );
-					wr_callFunction( context, "stringCheck", &val, 1 );
-
-					V = wr_callFunction( context, "arrayCheck" );
-					if ( V )
+					if ( err )
 					{
-						V->isWrenchArray();
-						assert( V->isWrenchArray() );
-						char someString[256] = { 0 };
-						someString[0] = someString[0]; // kill warning
-						assert( WRstr(V->indexArray(context, 0, false)->asString(someString)) == "some string" );
-						assert( V->indexArray(context, 1, false)->asFloat() == 0.0f );
-						assert( V->indexArray(context, 2, false)->asInt() == 0);
-						assert( !V->indexArray(context, 3, false)  );
-						assert( V->indexArray(context, 3, true)->asInt() == 0  );
-
-						assert( wr_getValueFromContainer(container, "_i")->asInt() == 1001 );
+	#ifdef WRENCH_WITHOUT_COMPILER
+						printf( "compile error [#%d]\n", err );
+	#else
+						printf( "compile error [%s]\n", c_errStrings[err] );
+	#endif
+						return -1;
+					}
+	
+					WRstr logger;
+					wr_registerFunction( w, "print", emit, &logger );
+					wr_registerFunction( w, "println", emitln, &logger );
+					
+					wr_registerFunction( w, "checkIsWrenchArray", checkIsWrenchArray );
+					wr_registerFunction( w, "checkIsRawArray", checkIsRawArray );
+					wr_registerFunction( w, "checkIsString", checkIsString );
+					wr_registerFunction( w, "checkIsHashTable", checkIsHashTable );
+					wr_registerFunction( w, "checkIter", checkIter );
+					wr_registerFunction( w, "checkStruct", checkStruct );
+	
+					WRContext* context = 0;
+					wr_destroyContext( context ); // make sure this doesn't crash
+#ifdef WRENCH_INCLUDE_DEBUG_CODE
+					// same as wr_run(), with a debugger attached on pass 1
+					context = wr_newContext( w, out, outLen );
+					if ( context )
+					{
+						if ( pass )
+						{
+							idleDebugger.attach( context );
+						}
+						if ( !wr_executeContext(context) && !context->yield_pc )
+						{
+							idleDebugger.detach();
+							wr_destroyContext( context );
+							context = 0;
+						}
+					}
+#else
+					context = wr_run( w, out, outLen );
+#endif
+	
+					err = wr_getLastError( w );
+	
+					int args;
+					WRValue* firstArg;
+					WRValue* returnValue;
+					while( wr_getYieldInfo(context, &firstArg, &args, &returnValue) )
+					{
+						if ( args > 0 )
+						{
+							*returnValue = *firstArg;
+						}
+						wr_continue( context );
+					}
+	
+					if ( context && !(err = wr_getLastError(w)) )
+					{
+						integer.i = 2456;
+						someArray[1] = 'e';
+	
+						WRValue* V = wr_callFunction( context, "userCheck", &container, 1 );
+						if ( V && V->i == 77 )
+						{
+							assert( integer.i == 56789 );
+							assert( someArray[1] == 'c' );
+						}
+	
+						char testString[12] = "test string";
+						WRValue val;
+						wr_makeString( context, &val, testString, 11 );
+	
+						assert( val.isString() );
+						
+						wr_callFunction( context, "stringCheck", &val, 1 );
+						wr_callFunction( context, "stringCheck", &val, 1 );
+						wr_callFunction( context, "stringCheck", &val, 1 );
+						wr_callFunction( context, "stringCheck", &val, 1 );
+	
+						V = wr_callFunction( context, "arrayCheck" );
+						if ( V )
+						{
+							V->isWrenchArray();
+							assert( V->isWrenchArray() );
+							char someString[256] = { 0 };
+							someString[0] = someString[0]; // kill warning
+							assert( WRstr(V->indexArray(context, 0, false)->asString(someString)) == "some string" );
+							assert( V->indexArray(context, 1, false)->asFloat() == 0.0f );
+							assert( V->indexArray(context, 2, false)->asInt() == 0);
+							assert( !V->indexArray(context, 3, false)  );
+							assert( V->indexArray(context, 3, true)->asInt() == 0  );
+	
+							assert( wr_getValueFromContainer(container, "_i")->asInt() == 1001 );
+						}
+	
+						WRValue s;
+						wr_makeString( context, &s, "test string" );
+						wr_callFunction( context, "stringCheck", &s, 1 );
+					}
+	
+					if ( err )
+					{
+						printf( "execute error [%s]\n", c_errStrings[err] );
+					}
+					else if ( logger != expect )
+					{
+						printf( "error: expected\n"
+								"-----------------------------\n"
+								"%s\n"
+								"saw:-------------------------\n"
+								"%s"
+								"\n"
+								"-----------------------------\n",
+								expect.c_str(),
+								logger.c_str() );
+						++failures;
+					}
+					else
+					{
+						printf( "PASS\n" );
 					}
 
-					WRValue s;
-					wr_makeString( context, &s, "test string" );
-					wr_callFunction( context, "stringCheck", &s, 1 );
+#ifdef WRENCH_INCLUDE_DEBUG_CODE
+					idleDebugger.detach();
+#endif
+					wr_free( out );
+					wr_destroyContext( context );
 				}
-
-				if ( err )
-				{
-					printf( "execute error [%s]\n", c_errStrings[err] );
-				}
-				else if ( logger != expect )
-				{
-					printf( "error: expected\n"
-							"-----------------------------\n"
-							"%s\n"
-							"saw:-------------------------\n"
-							"%s"
-							"\n"
-							"-----------------------------\n",
-							expect.c_str(),
-							logger.c_str() );
-				}
-				else
-				{
-					printf( "PASS\n" );
-				}
-
-				wr_free( out );
-				wr_destroyContext( context );
 			}
 			else if ( fileNumber != 0 )
 			{
@@ -2004,6 +2326,14 @@ int runTests( int number )
 	testLibFunctionNotFoundErrors();
 	testOnCallbackNotFound();
 	testOnLibCallbackNotFound();
+	if ( !testNotFoundHandlerCanFail() )
+	{
+		++failures;
+	}
+	if ( !testCompilerLimits() )
+	{
+		++failures;
+	}
 	testDropClobberedInitializerStores();
 	testDeepHashTableWithWrenchValue();
 	testStateContextOpaquePointer();
@@ -2047,9 +2377,21 @@ int runTests( int number )
 	testArrayMallocFailureHandling();
 #endif
 
-	fclose( tfile );
+#ifdef WRENCH_INCLUDE_DEBUG_CLIENT
+	if ( !number && !testDebugger() )
+	{
+		++failures;
+	}
 #endif
-	return err;
+
+	fclose( tfile );
+
+	if ( failures )
+	{
+		printf( "\n%d test(s) FAILED\n", failures );
+	}
+#endif
+	return err ? err : (failures ? -1 : 0);
 }
 
 //------------------------------------------------------------------------------

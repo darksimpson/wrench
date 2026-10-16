@@ -24,58 +24,17 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 *******************************************************************************/
 
-#ifdef WRENCH_INCLUDE_DEBUG_CODE
+#ifdef WRENCH_INCLUDE_DEBUG_CLIENT
 
-class WrenchDebugTcpInterface;
-class WrenchDebugSerialInterface;
-
-//------------------------------------------------------------------------------
-class WrenchDebugClient
-{
-public:
-
-	void enter( const char* sourceFileName, const char* address, const int port =0 );
-
-	WrenchDebugClient( WRState* w =0 ); // use provided state or make a new one
-	~WrenchDebugClient();
-
-private:
-
-	bool init( const char* name, const char* address, const int port =0 );
-	bool loadSource( const char* name );
-
-	bool printVariable( WRstr& str );
-	WrenchCallStackEntry* getCurrentFrame();
-
-	void showGlobals();
-	void showLocals();
-	void showCallStack();
-	void showCodePosition();
-
-	void showBreakpoint( int bp =-1 );
-
-	int splitArgs( const char* str, SimpleLL<WRstr>& args );
-	void splitNL( const char* str );
-
-	bool m_printInHex;
-	int m_currentDepth;
-
-	SimpleLL<WRstr> m_listing;
-	SimpleLL<int> m_breakpoints;
-	SimpleLL<WRstr> m_displayPerStep;
-
-	WRState* m_w;
-	WRContext* m_context;
-	bool m_ownState;
-
-	unsigned char* m_code;
-	int m_codeLen;
-
-	WRDebugClientInterface* m_client;
-	WRDebugServerInterface* m_server;
-
-	WrenchDebugCommInterface* m_comm;
-};
+// "wrench dbg": interactive console debugger.
+// sourcePath: a .w file, or a .bin compiled with -debugsource (its source is
+// embedded). Null with attach reads program and source from the target
+// target: "local", "tcp:<host>:<port>", "serial:<port>[:<baud>]"
+// attach: do not upload or launch, debug what the target already runs
+// commands come from 'in' (stdin normally, a script for tests)
+// projectPath: wrench.json describing the host application, null to use
+// the nearest one, "none" for no project
+int wr_debugCliMain( const char* sourcePath, const char* target, bool attach, FILE* in = 0, const char* projectPath = 0 );
 
 #endif
 
