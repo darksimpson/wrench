@@ -502,7 +502,7 @@ int usage()
 	"\n"
 	"release <fromdir> <todir>\n"
 	"  write the single file build (wrench.h, wrench.cpp) into the existing\n"
-	"  folder todir, made from the sources in fromdir (discrete_src)\n"
+	"  folder todir, made from the sources in fromdir (src)\n"
 	"\n",
 	(int)WRENCH_VERSION_MAJOR, (int)WRENCH_VERSION_MINOR );
 	return -1;
@@ -2365,7 +2365,7 @@ int runTests( int number )
 	testStateContextOpaquePointer();
 	testCompilerArrayCopiesAndRemoval();
 #ifdef WRENCH_ENABLE_CROSS_MODULE_EXTERNAL_TEST
-	printf( "test [x][discrete_src/utils/test_wrench_cross_module_globals.cpp]: " );
+	printf( "test [x][src/utils/test_wrench_cross_module_globals.cpp]: " );
 #ifdef _WIN32
 	int crossModuleResult = system( ".\\test_wrench_cross_module_globals.exe > _cross_module_test.log 2>&1" );
 #else

@@ -100,7 +100,7 @@ about 2 x WRENCH_DEBUG_MAX_PAYLOAD bytes of RAM per server; code that is
 not compiled with WR_EMBED_DEBUG_CODE runs at full speed regardless.
 
 WRENCH_INCLUDE_DEBUG_CLIENT builds the host side (only for PCs, it needs
-the C++ standard library). That works in builds from discrete_src; the
+the C++ standard library). That works in builds from the sources in src/; the
 single file build (wrench.cpp) leaves the client out by design and only
 gets the protocol and transports from it.
 
@@ -176,14 +176,12 @@ decent code-size penalty. Without this %f/%g is ignored.
 File operations: define ONE of these. If you use "Custom" then you
 need to link in a source file with the functions defined in:
 
-  /discrete_src/std_io_defs.h
+  /src/lib/std_io_defs.h
 
 examples are in
 
-  /discrete_src/std_io_linux.cpp
-  /discrete_src/std_io_win32.cpp
-  /discrete_src/std_io_spiffs.cpp
-  /discrete_src/std_io_littlefs.cpp
+  /src/lib/std_io.cpp (Windows and Linux)
+  /src/lib/std_io_little_spiffs.cpp (SPIFFS and LittleFS)
 
 */
 //#define WRENCH_WIN32_FILE_IO

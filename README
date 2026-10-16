@@ -47,10 +47,14 @@ Highlights:
 ----- Step 1: The entire library comes as two files, wrench.h and wrench.cpp.
               Download them from the assets of a release on the repository's
               Releases page (CI builds and checks them for every release), or
-              generate them from discrete_src yourself:
+              generate them from the sources in src/ into dist/ yourself,
+              on Linux with
 
-                  make dist                             (Linux, writes dist/)
-                  wrench release discrete_src dist      (any platform)
+                  make dist
+
+              or with a wrench executable on any platform:
+
+                  wrench release src dist
 
               Add both to your build and you have everything.
 
@@ -122,6 +126,6 @@ Build a device as a debug target by defining WRENCH_INCLUDE_DEBUG_CODE and
 running a WrenchDebugServer next to the VM (examples/debug_targets); the
 debug server is part of the single file build. The host side
 (WRENCH_INCLUDE_DEBUG_CLIENT, the dbg / dap / lsp tools) builds from
-discrete_src only. The VS Code extension in tools/vscode-wrench adds
+src/ only. The VS Code extension in tools/vscode-wrench adds
 highlighting, live compiler errors, completion, navigation and a debugger
 for local, TCP and serial targets. Details in docs/debugging.md.

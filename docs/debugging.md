@@ -27,19 +27,19 @@ Debug support is controlled by two defines:
 | Define | What it builds | Where |
 |---|---|---|
 | `WRENCH_INCLUDE_DEBUG_CODE` | VM hooks and `WrenchDebugServer` | targets, any compiler |
-| `WRENCH_INCLUDE_DEBUG_CLIENT` | client, evaluator, host tools | PCs (C++17, standard library), `discrete_src` builds only |
+| `WRENCH_INCLUDE_DEBUG_CLIENT` | client, evaluator, host tools | PCs (C++17, standard library), builds from `src/` only |
 
 The `win32/wrench.sln` project and the GNU makefile define both. Embedded
 projects only need the first, typically through a `wrench_config.h` next to
 `wrench.h`.
 
-The host side exists only in the `discrete_src` build: the single-file
+The host side exists only in builds from the sources in `src/`: the single-file
 build (`wrench.h` and `wrench.cpp` from a release, or `make dist`)
 leaves `debug/debug_client.h`, `debug/debug_client.cpp` and the host tools
 out by design. It carries the server, the transports and the protocol code;
 defining `WRENCH_INCLUDE_DEBUG_CLIENT` with it only switches on the
 transports and the protocol, there is no `WrenchDebugClient` in it. Build
-host tools from `discrete_src`.
+host tools from `src/`.
 
 Scripts are debuggable when compiled with debug information:
 

@@ -24,195 +24,195 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="..\discrete_src\cc\cc.cpp">
+    <ClCompile Include="..\src\cc\cc.cpp">
       <Filter>Source Files\cc</Filter>
     </ClCompile>
-    <ClCompile Include="..\discrete_src\cc\expression.cpp">
+    <ClCompile Include="..\src\cc\expression.cpp">
       <Filter>Source Files\cc</Filter>
     </ClCompile>
-    <ClCompile Include="..\discrete_src\cc\link.cpp">
+    <ClCompile Include="..\src\cc\link.cpp">
       <Filter>Source Files\cc</Filter>
     </ClCompile>
-    <ClCompile Include="..\discrete_src\cc\optimizer.cpp">
+    <ClCompile Include="..\src\cc\optimizer.cpp">
       <Filter>Source Files\cc</Filter>
     </ClCompile>
-    <ClCompile Include="..\discrete_src\cc\token.cpp">
+    <ClCompile Include="..\src\cc\token.cpp">
       <Filter>Source Files\cc</Filter>
     </ClCompile>
-    <ClCompile Include="..\discrete_src\debug\debug.cpp">
+    <ClCompile Include="..\src\debug\debug.cpp">
       <Filter>Source Files\debug</Filter>
     </ClCompile>
-    <ClCompile Include="..\discrete_src\debug\debug_client.cpp">
+    <ClCompile Include="..\src\debug\debug_client.cpp">
       <Filter>Source Files\debug</Filter>
     </ClCompile>
-    <ClCompile Include="..\discrete_src\debug\debug_protocol.cpp">
+    <ClCompile Include="..\src\debug\debug_protocol.cpp">
       <Filter>Source Files\debug</Filter>
     </ClCompile>
-    <ClCompile Include="..\discrete_src\debug\debug_server.cpp">
+    <ClCompile Include="..\src\debug\debug_server.cpp">
       <Filter>Source Files\debug</Filter>
     </ClCompile>
-    <ClCompile Include="..\discrete_src\debug\debug_transport.cpp">
+    <ClCompile Include="..\src\debug\debug_transport.cpp">
       <Filter>Source Files\debug</Filter>
     </ClCompile>
-    <ClCompile Include="..\discrete_src\debug\debugger.cpp">
+    <ClCompile Include="..\src\debug\debugger.cpp">
       <Filter>Source Files\debug</Filter>
     </ClCompile>
-    <ClCompile Include="..\discrete_src\debug\disassemble.cpp">
+    <ClCompile Include="..\src\debug\disassemble.cpp">
       <Filter>Source Files\debug</Filter>
     </ClCompile>
-    <ClCompile Include="..\discrete_src\lib\debug_lib.cpp">
+    <ClCompile Include="..\src\lib\debug_lib.cpp">
       <Filter>Source Files\lib</Filter>
     </ClCompile>
-    <ClCompile Include="..\discrete_src\lib\std.cpp">
+    <ClCompile Include="..\src\lib\std.cpp">
       <Filter>Source Files\lib</Filter>
     </ClCompile>
-    <ClCompile Include="..\discrete_src\lib\std_container.cpp">
+    <ClCompile Include="..\src\lib\std_container.cpp">
       <Filter>Source Files\lib</Filter>
     </ClCompile>
-    <ClCompile Include="..\discrete_src\lib\std_io.cpp">
+    <ClCompile Include="..\src\lib\std_io.cpp">
       <Filter>Source Files\lib</Filter>
     </ClCompile>
-    <ClCompile Include="..\discrete_src\lib\std_math.cpp">
+    <ClCompile Include="..\src\lib\std_math.cpp">
       <Filter>Source Files\lib</Filter>
     </ClCompile>
-    <ClCompile Include="..\discrete_src\lib\std_msg.cpp">
+    <ClCompile Include="..\src\lib\std_msg.cpp">
       <Filter>Source Files\lib</Filter>
     </ClCompile>
-    <ClCompile Include="..\discrete_src\lib\std_serialize.cpp">
+    <ClCompile Include="..\src\lib\std_serialize.cpp">
       <Filter>Source Files\lib</Filter>
     </ClCompile>
-    <ClCompile Include="..\discrete_src\lib\std_string.cpp">
+    <ClCompile Include="..\src\lib\std_string.cpp">
       <Filter>Source Files\lib</Filter>
     </ClCompile>
-    <ClCompile Include="..\discrete_src\lib\std_sys.cpp">
+    <ClCompile Include="..\src\lib\std_sys.cpp">
       <Filter>Source Files\lib</Filter>
     </ClCompile>
-    <ClCompile Include="..\discrete_src\lib\std_tcp.cpp">
+    <ClCompile Include="..\src\lib\std_tcp.cpp">
       <Filter>Source Files\lib</Filter>
     </ClCompile>
-    <ClCompile Include="..\discrete_src\utils\json.cpp">
+    <ClCompile Include="..\src\utils\json.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\discrete_src\utils\json_stream.cpp">
+    <ClCompile Include="..\src\utils\json_stream.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\discrete_src\utils\test_debugger.cpp">
+    <ClCompile Include="..\src\utils\test_debugger.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\discrete_src\utils\serializer.cpp">
+    <ClCompile Include="..\src\utils\serializer.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\discrete_src\utils\utils.cpp">
+    <ClCompile Include="..\src\utils\utils.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\discrete_src\utils\win32_comm.cpp">
+    <ClCompile Include="..\src\utils\win32_comm.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\discrete_src\utils\wrench_cli.cpp">
+    <ClCompile Include="..\src\utils\wrench_cli.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\discrete_src\utils\wrench_dap.cpp">
+    <ClCompile Include="..\src\utils\wrench_dap.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\discrete_src\utils\wrench_debug_eval.cpp">
+    <ClCompile Include="..\src\utils\wrench_debug_eval.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\discrete_src\utils\wrench_debug_host.cpp">
+    <ClCompile Include="..\src\utils\wrench_debug_host.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\discrete_src\utils\wrench_project.cpp">
+    <ClCompile Include="..\src\utils\wrench_project.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\discrete_src\utils\wrench_lsp.cpp">
+    <ClCompile Include="..\src\utils\wrench_lsp.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\discrete_src\vm\gc.cpp">
+    <ClCompile Include="..\src\vm\gc.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\discrete_src\vm\gc_object.cpp">
+    <ClCompile Include="..\src\vm\gc_object.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\discrete_src\vm\index.cpp">
+    <ClCompile Include="..\src\vm\index.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\discrete_src\vm\operations.cpp">
+    <ClCompile Include="..\src\vm\operations.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\discrete_src\vm\operations_compact.cpp">
+    <ClCompile Include="..\src\vm\operations_compact.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\discrete_src\vm\operations_non_compact.cpp">
+    <ClCompile Include="..\src\vm\operations_non_compact.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\discrete_src\vm\scheduler.cpp">
+    <ClCompile Include="..\src\vm\scheduler.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\discrete_src\vm\vm.cpp">
+    <ClCompile Include="..\src\vm\vm.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="..\discrete_src\cc\cc.h">
+    <ClInclude Include="..\src\cc\cc.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="..\discrete_src\cc\opcode_stream.h">
+    <ClInclude Include="..\src\cc\opcode_stream.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="..\discrete_src\debug\debug.h">
+    <ClInclude Include="..\src\debug\debug.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="..\discrete_src\debug\debug_client.h">
+    <ClInclude Include="..\src\debug\debug_client.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="..\discrete_src\debug\debug_protocol.h">
+    <ClInclude Include="..\src\debug\debug_protocol.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="..\discrete_src\debug\debugger.h">
+    <ClInclude Include="..\src\debug\debugger.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="..\discrete_src\lib\std_io_defs.h">
+    <ClInclude Include="..\src\lib\std_io_defs.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="..\discrete_src\lib\std_tcp.h">
+    <ClInclude Include="..\src\lib\std_tcp.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="..\discrete_src\utils\json.h">
+    <ClInclude Include="..\src\utils\json.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="..\discrete_src\utils\json_stream.h">
+    <ClInclude Include="..\src\utils\json_stream.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="..\discrete_src\utils\wrench_lsp_library.inc">
+    <ClInclude Include="..\src\utils\wrench_lsp_library.inc">
       <Filter>Source Files</Filter>
     </ClInclude>
-    <ClInclude Include="..\discrete_src\utils\opcode.h">
+    <ClInclude Include="..\src\utils\opcode.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="..\discrete_src\utils\serializer.h">
+    <ClInclude Include="..\src\utils\serializer.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="..\discrete_src\utils\simple_args.h">
+    <ClInclude Include="..\src\utils\simple_args.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="..\discrete_src\utils\simple_ll.h">
+    <ClInclude Include="..\src\utils\simple_ll.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="..\discrete_src\utils\utils.h">
+    <ClInclude Include="..\src\utils\utils.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="..\discrete_src\utils\wrench_debug_eval.h">
+    <ClInclude Include="..\src\utils\wrench_debug_eval.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="..\discrete_src\utils\wrench_debug_host.h">
+    <ClInclude Include="..\src\utils\wrench_debug_host.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="..\discrete_src\utils\wrench_project.h">
+    <ClInclude Include="..\src\utils\wrench_project.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="..\discrete_src\vm\vm.h">
+    <ClInclude Include="..\src\vm\vm.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="..\discrete_src\wrench.h">
+    <ClInclude Include="..\src\wrench.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

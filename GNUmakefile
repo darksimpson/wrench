@@ -13,7 +13,7 @@ DEBUG ?= -DWRENCH_INCLUDE_DEBUG_CODE -DWRENCH_INCLUDE_DEBUG_CLIENT
 
 PLATFORM ?= -DWRENCH_LINUX_FILE_IO -DWRENCH_LINUX_SERIAL -DWRENCH_LINUX_TCP
 
-FLAGS ?= $(OPT) $(PERF) -iquote discrete_src -I. $(COMPACT) -MD $(DEBUG) $(PLATFORM)
+FLAGS ?= $(OPT) $(PERF) -iquote src -I. $(COMPACT) -MD $(DEBUG) $(PLATFORM)
 
 # extra link flags, "make LDFLAGS=-static" gives a binary that runs on any
 # distribution (used for the copy bundled in the VS Code extension)
@@ -95,7 +95,7 @@ tests: test
 tested: test
 
 test: wrench
-	g++ $(CORE_OBJS) -Wall -Werror $(FLAGS) -std=c++11 discrete_src/utils/test_wrench_cross_module_globals.cpp -DDOCTEST_CONFIG_IMPLEMENT_WITH_MAIN -o test_wrench_cross_module_globals
+	g++ $(CORE_OBJS) -Wall -Werror $(FLAGS) -std=c++11 src/utils/test_wrench_cross_module_globals.cpp -DDOCTEST_CONFIG_IMPLEMENT_WITH_MAIN -o test_wrench_cross_module_globals
 	./test_wrench_cross_module_globals
 	./wrench t
 
@@ -106,7 +106,7 @@ DIST = dist
 
 dist: wrench
 	mkdir -p $(DIST)
-	./wrench release discrete_src $(DIST)
+	./wrench release src $(DIST)
 
 release: dist
 
@@ -129,44 +129,44 @@ dist-check: dist
 	cd examples && ../$(DIST)/basic
 	-@rm -f $(DIST)/check.o $(DIST)/basic
 
-$(OBJDIR)/%.o: discrete_src/cc/%.cpp
+$(OBJDIR)/%.o: src/cc/%.cpp
 	$(CC) $@ $<
 
-$(OBJDIR)/%.o: discrete_src/vm/%.cpp
+$(OBJDIR)/%.o: src/vm/%.cpp
 	$(CC) $@ $<
 
-$(OBJDIR)/%.o: discrete_src/lib/%.cpp
+$(OBJDIR)/%.o: src/lib/%.cpp
 	$(CC) $@ $<
 
-$(OBJDIR)/debug.o: discrete_src/debug/debug.cpp
+$(OBJDIR)/debug.o: src/debug/debug.cpp
 	$(CC) $@ $<
 
-$(OBJDIR)/disassemble.o: discrete_src/debug/disassemble.cpp
+$(OBJDIR)/disassemble.o: src/debug/disassemble.cpp
 	$(CC) $@ $<
 
-$(OBJDIR)/debug_protocol.o: discrete_src/debug/debug_protocol.cpp
+$(OBJDIR)/debug_protocol.o: src/debug/debug_protocol.cpp
 	$(CC) $@ $<
 
-$(OBJDIR)/debug_server.o: discrete_src/debug/debug_server.cpp
+$(OBJDIR)/debug_server.o: src/debug/debug_server.cpp
 	$(CC) $@ $<
 
-$(OBJDIR)/debug_transport.o: discrete_src/debug/debug_transport.cpp
+$(OBJDIR)/debug_transport.o: src/debug/debug_transport.cpp
 	$(CC) $@ $<
 
-$(OBJDIR)/utils.o: discrete_src/utils/utils.cpp
+$(OBJDIR)/utils.o: src/utils/utils.cpp
 	$(CC) $@ $<
 
-$(OBJDIR)/serializer.o: discrete_src/utils/serializer.cpp
+$(OBJDIR)/serializer.o: src/utils/serializer.cpp
 	$(CC) $@ $<
 
-$(OBJDIR)/linux_comm.o: discrete_src/utils/linux_comm.cpp
+$(OBJDIR)/linux_comm.o: src/utils/linux_comm.cpp
 	$(CC) $@ $<
 
-$(OBJDIR)/debug_client.o: discrete_src/debug/debug_client.cpp
+$(OBJDIR)/debug_client.o: src/debug/debug_client.cpp
 	$(HOSTCC) $@ $<
 
-$(OBJDIR)/debugger.o: discrete_src/debug/debugger.cpp
+$(OBJDIR)/debugger.o: src/debug/debugger.cpp
 	$(HOSTCC) $@ $<
 
-$(OBJDIR)/%.o: discrete_src/utils/%.cpp
+$(OBJDIR)/%.o: src/utils/%.cpp
 	$(HOSTCC) $@ $<

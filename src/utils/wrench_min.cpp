@@ -1,5 +1,5 @@
 // size check of the smallest VM: "make dist", then from the repository root
-// g++ -o wmin -m32 -O3 -I. discrete_src/utils/wrench_min.cpp
+// g++ -o wmin -m32 -O3 -I. src/utils/wrench_min.cpp
 
 #define WRENCH_WITHOUT_COMPILER
 #define WRENCH_COMPACT

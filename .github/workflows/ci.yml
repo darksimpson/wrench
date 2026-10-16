@@ -98,7 +98,7 @@ jobs:
       - name: Single file build compiles with MSVC
         run: |
           mkdir -p dist
-          win32/Release/wrench.exe release discrete_src dist
+          win32/Release/wrench.exe release src dist
           cl -nologo -W3 -WX -c -Idist dist/wrench.cpp -Fodist/check.obj
           cl -nologo -W3 -WX -c -Idist -DWRENCH_INCLUDE_DEBUG_CODE -DWRENCH_WIN32_TCP -DWRENCH_WIN32_SERIAL -DWRENCH_WIN32_FILE_IO dist/wrench.cpp -Fodist/check.obj
           cl -nologo -W3 -WX -c -Idist -DWRENCH_COMPACT -DWRENCH_REALLY_COMPACT dist/wrench.cpp -Fodist/check.obj

@@ -27,7 +27,7 @@ except for `esp32_idf`, where the sources live in `main/`:
 
 1. `wrench.cpp` and `wrench.h` are the single-file build. Download both from
    the assets of a release on the repository's Releases page (any release
-   made after the debugger was added), or generate them from `discrete_src/` in the
+   made after the debugger was added), or generate them from `src/` in the
    repository root:
 
    ```
@@ -38,7 +38,7 @@ except for `esp32_idf`, where the sources live in `main/`:
    existing `wrench` executable on any platform:
 
    ```
-   wrench release discrete_src dist
+   wrench release src dist
    ```
 
    Then copy `wrench.cpp` and `wrench.h` into the folder above (git ignores

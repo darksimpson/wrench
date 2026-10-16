@@ -1,9 +1,11 @@
 next (unreleased) ----------------------------------------------------------------------
 Distribution:
-- the single file build (wrench.h + wrench.cpp) is no longer kept in git: src/ and the
-  copies in examples/arduino are gone. CI (.github/workflows/ci.yml) generates it, checks
+- the single file build (wrench.h + wrench.cpp) is no longer kept in git: the old
+  src/wrench.h|cpp and the copies in examples/arduino are gone. CI (.github/workflows/ci.yml) generates it, checks
   that it compiles with GCC and MSVC in several configurations, and attaches it to every
-  release; "make dist" (or "wrench release discrete_src dist") writes it to dist/
+  release; "make dist" (or "wrench release src dist") writes it to dist/
+- discrete_src/ is now src/: the sources live in src/, the generated single file build
+  in dist/
 - CI builds and tests Linux (default, compact, really compact, sanitizers) and Windows
   (Debug, Release, debugger / language server / extension tests) on every push
 - the single file build compiles with WRENCH_WIN32_SERIAL and WRENCH_WIN32_TCP together
