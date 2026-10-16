@@ -1,0 +1,202 @@
+{
+	"$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+	"name": "Wrench",
+	"scopeName": "source.wrench",
+	"patterns": [
+		{ "include": "#comments" },
+		{ "include": "#function-declaration" },
+		{ "include": "#struct-declaration" },
+		{ "include": "#enum-declaration" },
+		{ "include": "#keywords" },
+		{ "include": "#strings" },
+		{ "include": "#characters" },
+		{ "include": "#numbers" },
+		{ "include": "#library-call" },
+		{ "include": "#qualified-name" },
+		{ "include": "#member-function" },
+		{ "include": "#function-call" },
+		{ "include": "#label" },
+		{ "include": "#operators" },
+		{ "include": "#punctuation" },
+		{ "include": "#variables" }
+	],
+	"repository": {
+		"comments": {
+			"patterns": [
+				{
+					"name": "comment.block.wrench",
+					"begin": "/\\*",
+					"end": "\\*/",
+					"captures": { "0": { "name": "punctuation.definition.comment.wrench" } }
+				},
+				{
+					"name": "comment.line.double-slash.wrench",
+					"begin": "//",
+					"end": "$",
+					"beginCaptures": { "0": { "name": "punctuation.definition.comment.wrench" } }
+				}
+			]
+		},
+		"function-declaration": {
+			"begin": "\\b(function|unit)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*(\\()",
+			"beginCaptures": {
+				"1": { "name": "storage.type.function.wrench" },
+				"2": { "name": "entity.name.function.wrench" },
+				"3": { "name": "punctuation.definition.parameters.begin.wrench" }
+			},
+			"end": "\\)",
+			"endCaptures": { "0": { "name": "punctuation.definition.parameters.end.wrench" } },
+			"patterns": [
+				{ "include": "#comments" },
+				{ "name": "variable.parameter.wrench", "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b" },
+				{ "name": "punctuation.separator.parameter.wrench", "match": "," }
+			]
+		},
+		"struct-declaration": {
+			"patterns": [
+				{
+					"begin": "\\b(struct)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*(\\()",
+					"beginCaptures": {
+						"1": { "name": "storage.type.struct.wrench" },
+						"2": { "name": "entity.name.type.struct.wrench" },
+						"3": { "name": "punctuation.definition.parameters.begin.wrench" }
+					},
+					"end": "\\)",
+					"patterns": [
+						{ "name": "variable.parameter.wrench", "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b" }
+					]
+				},
+				{
+					"match": "\\b(struct)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+					"captures": {
+						"1": { "name": "storage.type.struct.wrench" },
+						"2": { "name": "entity.name.type.struct.wrench" }
+					}
+				},
+				{
+					"match": "\\b(new)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+					"captures": {
+						"1": { "name": "keyword.operator.new.wrench" },
+						"2": { "name": "entity.name.type.struct.wrench" }
+					}
+				}
+			]
+		},
+		"enum-declaration": {
+			"match": "\\b(enum)(?:\\s+([A-Za-z_][A-Za-z0-9_]*))?",
+			"captures": {
+				"1": { "name": "storage.type.enum.wrench" },
+				"2": { "name": "entity.name.type.enum.wrench" }
+			}
+		},
+		"keywords": {
+			"patterns": [
+				{ "name": "keyword.control.wrench", "match": "\\b(if|else|while|for|do|switch|case|default|break|continue|return|goto|yield)\\b" },
+				{ "name": "storage.type.wrench", "match": "\\b(var|blank|function|struct|enum|export|unit)\\b" },
+				{ "name": "keyword.operator.new.wrench", "match": "\\bnew\\b" },
+				{ "name": "constant.language.wrench", "match": "\\b(true|false|null)\\b" },
+				{ "name": "storage.type.cast.wrench", "match": "\\(\\s*(int|float)\\s*\\)" }
+			]
+		},
+		"strings": {
+			"name": "string.quoted.double.wrench",
+			"begin": "\"",
+			"end": "\"|$",
+			"beginCaptures": { "0": { "name": "punctuation.definition.string.begin.wrench" } },
+			"endCaptures": { "0": { "name": "punctuation.definition.string.end.wrench" } },
+			"patterns": [
+				{ "name": "constant.character.escape.wrench", "match": "\\\\([nrt0\\\\\"'abfv]|x[0-9A-Fa-f]{1,2}|[0-9]{1,3})" },
+				{ "name": "constant.other.placeholder.wrench", "match": "%[-+ 0#]*[0-9]*(\\.[0-9]+)?[diouxXcsfgbe%]" }
+			]
+		},
+		"characters": {
+			"name": "string.quoted.single.wrench",
+			"match": "'(\\\\.|[^'\\\\])*'",
+			"captures": { "0": { "patterns": [ { "name": "constant.character.escape.wrench", "match": "\\\\." } ] } }
+		},
+		"numbers": {
+			"patterns": [
+				{ "name": "constant.numeric.hex.wrench", "match": "\\b0[xX][0-9A-Fa-f]+\\b" },
+				{ "name": "constant.numeric.binary.wrench", "match": "\\b0[bB][01]+\\b" },
+				{ "name": "constant.numeric.float.wrench", "match": "(?<![A-Za-z_])(\\d+\\.\\d*|\\.\\d+)([eE][-+]?\\d+)?[fF]?\\b" },
+				{ "name": "constant.numeric.decimal.wrench", "match": "\\b\\d+\\b" }
+			]
+		},
+		"library-call": {
+			"match": "\\b(std|math|str|io|sys|time|msg|tcp|debug|array|hash|list|queue|stack)(::)([A-Za-z_][A-Za-z0-9_]*)",
+			"captures": {
+				"1": { "name": "entity.name.namespace.wrench" },
+				"2": { "name": "punctuation.separator.namespace.wrench" },
+				"3": { "name": "support.function.library.wrench" }
+			}
+		},
+		"qualified-name": {
+			"patterns": [
+				{
+					"match": "(::)([A-Za-z_][A-Za-z0-9_]*)",
+					"captures": {
+						"1": { "name": "punctuation.separator.namespace.wrench" },
+						"2": { "name": "variable.other.global.wrench" }
+					}
+				},
+				{
+					"match": "\\b([A-Za-z_][A-Za-z0-9_]*)(::)([A-Za-z_][A-Za-z0-9_]*)",
+					"captures": {
+						"1": { "name": "entity.name.type.enum.wrench" },
+						"2": { "name": "punctuation.separator.namespace.wrench" },
+						"3": { "name": "variable.other.enummember.wrench" }
+					}
+				}
+			]
+		},
+		"member-function": {
+			"match": "(\\.)(_count|_exists|_remove|_hash)\\b",
+			"captures": {
+				"1": { "name": "punctuation.accessor.wrench" },
+				"2": { "name": "support.function.builtin.wrench" }
+			}
+		},
+		"function-call": {
+			"patterns": [
+				{
+					"match": "\\b(print|println)\\s*(?=\\()",
+					"captures": { "1": { "name": "support.function.builtin.wrench" } }
+				},
+				{
+					"match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\()",
+					"captures": { "1": { "name": "entity.name.function.call.wrench" } }
+				}
+			]
+		},
+		"label": {
+			"match": "^\\s*(?!(?:if|else|while|for|do|switch|case|default|break|continue|return|goto|yield|var|blank|function|struct|enum|export|unit|new|true|false|null)\\b)([A-Za-z_][A-Za-z0-9_]*)\\s*(:)(?!:)",
+			"captures": {
+				"1": { "name": "entity.name.label.wrench" },
+				"2": { "name": "punctuation.separator.label.wrench" }
+			}
+		},
+		"operators": {
+			"patterns": [
+				{ "name": "keyword.operator.assignment.compound.wrench", "match": "(<<=|>>=|\\+=|-=|\\*=|/=|%=|&=|\\|=|\\^=)" },
+				{ "name": "keyword.operator.comparison.wrench", "match": "(==|!=|<=|>=|<|>)" },
+				{ "name": "keyword.operator.logical.wrench", "match": "(&&|\\|\\||!)" },
+				{ "name": "keyword.operator.increment.wrench", "match": "(\\+\\+|--)" },
+				{ "name": "keyword.operator.bitwise.wrench", "match": "(<<|>>|&|\\||\\^|~)" },
+				{ "name": "keyword.operator.arithmetic.wrench", "match": "(\\+|-|\\*|/|%)" },
+				{ "name": "keyword.operator.assignment.wrench", "match": "=" },
+				{ "name": "keyword.operator.ternary.wrench", "match": "(\\?|:)" }
+			]
+		},
+		"punctuation": {
+			"patterns": [
+				{ "name": "punctuation.terminator.statement.wrench", "match": ";" },
+				{ "name": "punctuation.separator.comma.wrench", "match": "," },
+				{ "name": "punctuation.accessor.wrench", "match": "\\." }
+			]
+		},
+		"variables": {
+			"name": "variable.other.wrench",
+			"match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b"
+		}
+	}
+}

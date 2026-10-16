@@ -1,0 +1,349 @@
+{
+	"name": "wrench",
+	"displayName": "Wrench",
+	"description": "Wrench scripting language: syntax highlighting, language server and debugger (local, TCP and serial targets)",
+	"version": "0.1.0",
+	"publisher": "wrench",
+	"license": "MIT",
+	"engines": {
+		"vscode": "^1.82.0"
+	},
+	"categories": [
+		"Programming Languages",
+		"Debuggers"
+	],
+	"keywords": [
+		"wrench",
+		"embedded",
+		"scripting",
+		"esp32",
+		"stm32"
+	],
+	"main": "./out/extension.js",
+	"activationEvents": [
+		"onDebugResolve:wrench",
+		"onDebugDynamicConfigurations:wrench"
+	],
+	"contributes": {
+		"languages": [
+			{
+				"id": "wrench",
+				"aliases": [
+					"Wrench",
+					"wrench"
+				],
+				"extensions": [
+					".w",
+					".wrench"
+				],
+				"configuration": "./language-configuration.json"
+			}
+		],
+		"grammars": [
+			{
+				"language": "wrench",
+				"scopeName": "source.wrench",
+				"path": "./syntaxes/wrench.tmLanguage.json"
+			}
+		],
+		"breakpoints": [
+			{
+				"language": "wrench"
+			}
+		],
+		"commands": [
+			{
+				"command": "wrench.showDisassembly",
+				"title": "Show Disassembly",
+				"category": "Wrench"
+			},
+			{
+				"command": "wrench.compile",
+				"title": "Compile to Bytecode",
+				"category": "Wrench"
+			},
+			{
+				"command": "wrench.restartLanguageServer",
+				"title": "Restart Language Server",
+				"category": "Wrench"
+			},
+			{
+				"command": "wrench.createProjectFile",
+				"title": "Describe the Host Application (wrench.json)",
+				"category": "Wrench"
+			}
+		],
+		"jsonValidation": [
+			{
+				"fileMatch": "wrench.json",
+				"url": "./schemas/wrench.schema.json"
+			}
+		],
+		"menus": {
+			"commandPalette": [
+				{
+					"command": "wrench.showDisassembly",
+					"when": "editorLangId == wrench"
+				},
+				{
+					"command": "wrench.compile",
+					"when": "editorLangId == wrench"
+				}
+			]
+		},
+		"configuration": {
+			"title": "Wrench",
+			"properties": {
+				"wrench.executablePath": {
+					"type": "string",
+					"default": "",
+					"description": "Path to the wrench executable (wrench.exe on Windows). Empty uses the copy bundled with the extension (Windows and Linux x86-64), then 'wrench' on the PATH."
+				},
+				"wrench.nonStrict": {
+					"type": "boolean",
+					"default": false,
+					"description": "Allow variables without 'var' (compile with -nostrict) when checking files."
+				},
+				"wrench.compileDebugInfo": {
+					"type": "boolean",
+					"default": true,
+					"description": "'Compile to Bytecode' embeds debug information and the source, so the file can be debugged on a target."
+				},
+				"wrench.trace.server": {
+					"type": "string",
+					"enum": [
+						"off",
+						"messages",
+						"verbose"
+					],
+					"default": "off",
+					"description": "Trace the communication with the wrench language server."
+				}
+			}
+		},
+		"debuggers": [
+			{
+				"type": "wrench",
+				"label": "Wrench",
+				"languages": [
+					"wrench"
+				],
+				"configurationAttributes": {
+					"launch": {
+						"required": [
+							"program"
+						],
+						"properties": {
+							"program": {
+								"type": "string",
+								"description": "The .w source file to debug, or a .bin compiled with -debugsource (used as it is, the source shown is the one embedded in it).",
+								"default": "${file}"
+							},
+							"stopOnEntry": {
+								"type": "boolean",
+								"description": "Stop on the first line.",
+								"default": false
+							},
+							"transport": {
+								"type": "string",
+								"enum": [
+									"local",
+									"tcp",
+									"serial"
+								],
+								"enumDescriptions": [
+									"Run in a VM inside the debug adapter",
+									"A wrench debug server reachable over TCP (ESP32 WiFi, wrench dbgserver...)",
+									"A wrench debug server on a serial port (UART, USB CDC)"
+								],
+								"description": "Where the program runs.",
+								"default": "local"
+							},
+							"host": {
+								"type": "string",
+								"description": "TCP host of the target.",
+								"default": "127.0.0.1"
+							},
+							"port": {
+								"type": "number",
+								"description": "TCP port of the target.",
+								"default": 5050
+							},
+							"serialPort": {
+								"type": "string",
+								"description": "Serial port of the target: COM3 on Windows, /dev/ttyUSB0 on Linux.",
+								"default": "COM3"
+							},
+							"baudRate": {
+								"type": "number",
+								"description": "Serial baud rate.",
+								"default": 115200
+							},
+							"target": {
+								"type": "string",
+								"description": "Alternative to transport/host/port: local, tcp:<host>:<port> or serial:<port>[:<baud>]."
+							},
+							"upload": {
+								"type": "boolean",
+								"description": "Upload the freshly compiled program to the target before running it.",
+								"default": true
+							},
+							"project": {
+								"type": "string",
+								"description": "wrench.json describing the host application. The local target then loads only its libraries and stands in for its functions. Empty uses the nearest wrench.json above the program, \"none\" ignores it.",
+								"default": ""
+							},
+							"timeout": {
+								"type": "number",
+								"description": "Milliseconds to wait for each reply from the target.",
+								"default": 3000
+							},
+							"connectTimeout": {
+								"type": "number",
+								"description": "Milliseconds to wait for a TCP connection.",
+								"default": 5000
+							},
+							"trace": {
+								"type": "boolean",
+								"description": "Log the Debug Adapter Protocol traffic to the adapter's stderr.",
+								"default": false
+							}
+						}
+					},
+					"attach": {
+						"properties": {
+							"program": {
+								"type": "string",
+								"description": "Local copy of the program the target runs: its .w source or a .bin compiled with -debugsource. Leave empty to read the symbols and source embedded in the target's bytecode.",
+								"default": "${file}"
+							},
+							"stopOnEntry": {
+								"type": "boolean",
+								"description": "Pause as soon as the target executes script code.",
+								"default": false
+							},
+							"transport": {
+								"type": "string",
+								"enum": [
+									"tcp",
+									"serial"
+								],
+								"default": "tcp"
+							},
+							"host": {
+								"type": "string",
+								"default": "127.0.0.1"
+							},
+							"port": {
+								"type": "number",
+								"default": 5050
+							},
+							"serialPort": {
+								"type": "string",
+								"default": "COM3"
+							},
+							"baudRate": {
+								"type": "number",
+								"default": 115200
+							},
+							"target": {
+								"type": "string",
+								"description": "Alternative to transport/host/port: tcp:<host>:<port> or serial:<port>[:<baud>]."
+							},
+							"project": {
+								"type": "string",
+								"description": "wrench.json describing the host application, used to name missing functions in errors. Empty uses the nearest wrench.json above the program, \"none\" ignores it.",
+								"default": ""
+							},
+							"timeout": {
+								"type": "number",
+								"default": 3000
+							},
+							"trace": {
+								"type": "boolean",
+								"default": false
+							}
+						}
+					}
+				},
+				"initialConfigurations": [
+					{
+						"type": "wrench",
+						"request": "launch",
+						"name": "Debug wrench file",
+						"program": "${file}",
+						"stopOnEntry": false
+					}
+				],
+				"configurationSnippets": [
+					{
+						"label": "Wrench: Launch locally",
+						"description": "Run and debug the current file in a local VM",
+						"body": {
+							"type": "wrench",
+							"request": "launch",
+							"name": "Debug wrench file",
+							"program": "^\"\\${file}\""
+						}
+					},
+					{
+						"label": "Wrench: Launch on a TCP target",
+						"description": "Upload and debug on a device or wrench dbgserver over TCP",
+						"body": {
+							"type": "wrench",
+							"request": "launch",
+							"name": "Debug on TCP target",
+							"program": "^\"\\${file}\"",
+							"transport": "tcp",
+							"host": "192.168.1.50",
+							"port": 5050
+						}
+					},
+					{
+						"label": "Wrench: Launch on a serial target",
+						"description": "Upload and debug on a device over UART / USB serial",
+						"body": {
+							"type": "wrench",
+							"request": "launch",
+							"name": "Debug on serial target",
+							"program": "^\"\\${file}\"",
+							"transport": "serial",
+							"serialPort": "COM3",
+							"baudRate": 115200
+						}
+					},
+					{
+						"label": "Wrench: Attach to a running target",
+						"description": "Debug what a device already runs, without uploading",
+						"body": {
+							"type": "wrench",
+							"request": "attach",
+							"name": "Attach to target",
+							"program": "^\"\\${file}\"",
+							"transport": "tcp",
+							"host": "192.168.1.50",
+							"port": 5050
+						}
+					}
+				]
+			}
+		]
+	},
+	"scripts": {
+		"compile": "tsc -p ./",
+		"watch": "tsc -watch -p ./",
+		"bundle-exe": "node scripts/bundle-exe.js",
+		"package": "npm run compile && vsce package --allow-missing-repository"
+	},
+	"dependencies": {
+		"vscode-languageclient": "^9.0.1"
+	},
+	"devDependencies": {
+		"@types/node": "^18.19.0",
+		"@types/vscode": "^1.82.0",
+		"@vscode/vsce": "^3.2.0",
+		"typescript": "^5.4.0",
+		"vscode-oniguruma": "^2.0.1",
+		"vscode-textmate": "^9.3.2"
+	}
+}

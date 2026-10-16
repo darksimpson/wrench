@@ -1,0 +1,97 @@
+{
+	"$schema": "http://json-schema.org/draft-07/schema#",
+	"title": "wrench.json",
+	"description": "Describes the host application wrench scripts run in: the native functions it registers and the standard libraries it loads. The language server, the local debug target and wrench dbgserver use it for every .w file in this folder and below.",
+	"type": "object",
+	"additionalProperties": false,
+	"properties": {
+		"$schema": {
+			"type": "string"
+		},
+		"libraries": {
+			"description": "Standard libraries the application loads (wr_loadMathLib and friends). Missing or \"all\" means every library, as with wr_loadAllLibs.",
+			"oneOf": [
+				{
+					"const": "all"
+				},
+				{
+					"type": "array",
+					"uniqueItems": true,
+					"items": {
+						"enum": [ "all", "math", "std", "io", "string", "msg", "sys", "serialize", "debug", "tcp", "container" ],
+						"enumDescriptions": [
+							"Every library",
+							"math:: (wr_loadMathLib)",
+							"std::rand, std::time, time:: (wr_loadStdLib)",
+							"io:: files and time (wr_loadIOLib)",
+							"str:: (wr_loadStringLib)",
+							"msg:: messages between contexts (wr_loadMessageLib)",
+							"sys:: (wr_loadSysLib)",
+							"std::serialize, std::deserialize (wr_loadSerializeLib)",
+							"debug:: (wr_loadDebugLib)",
+							"tcp:: (wr_loadTCPLib)",
+							"array::, hash::, list::, queue::, stack:: (wr_loadContainerLib)"
+						]
+					}
+				}
+			]
+		},
+		"functions": {
+			"description": "Native functions the application registers with wr_registerFunction or wr_registerLibraryFunction. Also list functions of modules the scripts import, and print/println if the application provides them.",
+			"type": "array",
+			"items": {
+				"oneOf": [
+					{
+						"type": "string",
+						"description": "A signature: \"name( a, b? )\" or \"lib::name( values... )\". A parameter ending in ? is optional, one ending in ... takes any number of arguments.",
+						"pattern": "^\\s*[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)?\\s*(\\(.*\\))?\\s*$"
+					},
+					{
+						"type": "object",
+						"additionalProperties": false,
+						"required": [ "name" ],
+						"properties": {
+							"name": {
+								"type": "string",
+								"description": "Function name, \"name\" or \"lib::name\".",
+								"pattern": "^[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)?$"
+							},
+							"params": {
+								"type": "array",
+								"description": "Parameter names. A name ending in ? is optional, one ending in ... takes any number of arguments. Leave out to skip the argument count check.",
+								"items": {
+									"type": "string"
+								}
+							},
+							"doc": {
+								"type": "string",
+								"description": "Shown on hover and in completion."
+							},
+							"returns": {
+								"description": "What the local debug target answers in place of the real function (default 0).",
+								"type": [ "number", "string", "boolean", "null" ]
+							}
+						}
+					}
+				]
+			}
+		},
+		"undeclaredCalls": {
+			"description": "How the editor reports calls to functions that are neither declared here nor defined in the script.",
+			"enum": [ "warning", "error", "ignore" ],
+			"default": "warning"
+		}
+	},
+	"defaultSnippets": [
+		{
+			"label": "Host application",
+			"body": {
+				"libraries": [ "math", "string" ],
+				"functions": [
+					{ "name": "${1:myFunction}", "params": [ "${2:value}" ], "doc": "${3:What it does}", "returns": 0 }
+				],
+				"undeclaredCalls": "warning"
+			}
+		}
+	]
+}

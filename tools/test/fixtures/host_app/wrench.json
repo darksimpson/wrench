@@ -1,0 +1,8 @@
+{
+	"libraries": [ "math" ],
+	"functions": [
+		{ "name": "getAnswer", "params": [], "doc": "The answer the application computed.", "returns": 42 },
+		{ "name": "ui::alert", "params": [ "text", "title?" ], "doc": "Shows a message box, returns 1 when confirmed.", "returns": true },
+		"log( values... )"
+	]
+}
