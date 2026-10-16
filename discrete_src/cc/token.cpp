@@ -32,6 +32,48 @@ int wr_strnlen( const char* s, int len )
 	return found ? (found - s) : len;
 }
 
+// the digits of an integer literal into 32 bits ("0x" and "0b" alone are 0).
+// False when the value does not fit: strtol/strtoul clamp or wrap
+// differently with 32 and 64 bit longs, so the same source would mean other
+// numbers
+static bool wr_parseLiteral( const char* digits, const unsigned int base, uint32_t& out )
+{
+	out = 0;
+	if ( !digits || !*digits )
+	{
+		return true;
+	}
+	uint32_t v = 0;
+	for( ; *digits; ++digits )
+	{
+		char c = *digits;
+		unsigned int d;
+		if ( c >= '0' && c <= '9' )
+		{
+			d = (unsigned int)(c - '0');
+		}
+		else if ( c >= 'a' && c <= 'f' )
+		{
+			d = (unsigned int)(c - 'a' + 10);
+		}
+		else if ( c >= 'A' && c <= 'F' )
+		{
+			d = (unsigned int)(c - 'A' + 10);
+		}
+		else
+		{
+			return false;
+		}
+		if ( d >= base || v > (0xFFFFFFFFu - d) / base )
+		{
+			return false;
+		}
+		v = v * base + d;
+	}
+	out = v;
+	return true;
+}
+
 //------------------------------------------------------------------------------
 bool WRCompilationContext::getToken( WRExpressionContext& ex, const char* expect )
 {
@@ -46,10 +88,13 @@ bool WRCompilationContext::getToken( WRExpressionContext& ex, const char* expect
 	}
 	else
 	{
+		// after a comment the next token is read from here (a recursive call
+		// per comment overflows the stack on long comment blocks)
+nextToken:
 		m_quoted = false;
 		value.p2 = INIT_AS_REF;
 
-		ex.spaceBefore = (m_pos < m_sourceLen) && isspace(m_source[m_pos]);
+		ex.spaceBefore = (m_pos < m_sourceLen) && isspace((unsigned char)m_source[m_pos]);
 	
 		do
 		{
@@ -59,7 +104,7 @@ bool WRCompilationContext::getToken( WRExpressionContext& ex, const char* expect
 				return false;
 			}
 			
-		} while( isspace(m_source[m_pos++]) );
+		} while( isspace((unsigned char)m_source[m_pos++]) );
 
 		token = m_source[m_pos - 1];
 
@@ -68,13 +113,41 @@ bool WRCompilationContext::getToken( WRExpressionContext& ex, const char* expect
 
 		int offset = m_pos - 1;
 
+		// a name right after '.' is a member (p.y), never an enum constant
+		int previous = offset - 1;
+		while( previous >= 0 && isspace((unsigned char)m_source[previous]) )
+		{
+			--previous;
+		}
+		bool memberName = previous >= 0 && m_source[previous] == '.';
+
+		// a name declared with var/blank: inside a struct it is a member
+		// (struct P { var y; } next to enum { y }), elsewhere it would
+		// silently turn into an assignment to the constant
+		bool declaredName = false;
+		if ( previous >= 0 && (isalnum((unsigned char)m_source[previous]) || m_source[previous] == '_') )
+		{
+			int wordStart = previous;
+			while( wordStart > 0 && (isalnum((unsigned char)m_source[wordStart - 1]) || m_source[wordStart - 1] == '_') )
+			{
+				--wordStart;
+			}
+			int wordLen = previous - wordStart + 1;
+			declaredName = (wordLen == 3 && !strncmp(m_source + wordStart, "var", 3))
+							|| (wordLen == 5 && !strncmp(m_source + wordStart, "blank", 5));
+		}
+		if ( declaredName && m_units[m_unitTop].bytecode.isStructSpace )
+		{
+			memberName = true;
+		}
+
 		for( ; c_operations[t].token; ++t )
 		{
 			int len = wr_strnlen( c_operations[t].token, 20 );
 			if ( ((offset + len) < m_sourceLen)
 				 && !strncmp(m_source + offset, c_operations[t].token, len) )
 			{
-				if ( isalnum(m_source[offset+len]) || m_source[offset+len] == '_' )
+				if ( isalnum((unsigned char)m_source[offset+len]) || m_source[offset+len] == '_' )
 				{
 					continue;
 				}
@@ -85,17 +158,21 @@ bool WRCompilationContext::getToken( WRExpressionContext& ex, const char* expect
 			}
 		}
 
-		for( t = 0; t<m_units[0].constantValues.count(); ++t )
+		for( t = 0; !memberName && t<m_units[0].constantValues.count(); ++t )
 		{
 			int len = m_units[0].constantValues[t].label.size();
 			if ( ((offset + len) < m_sourceLen)
 				 && !strncmp(m_source + offset, m_units[0].constantValues[t].label.c_str(), len) )
 			{
-				if ( isalnum(m_source[offset+len]) || m_source[offset+len] == '_' )
+				if ( isalnum((unsigned char)m_source[offset+len]) || m_source[offset+len] == '_' )
 				{
 					continue;
 				}
 
+				if ( declaredName )
+				{
+					m_err = WR_ERR_constant_redefined;
+				}
 				m_pos += len - 1;
 				token.clear();
 				value = m_units[0].constantValues[t].value;
@@ -103,17 +180,21 @@ bool WRCompilationContext::getToken( WRExpressionContext& ex, const char* expect
 			}
 		}
 
-		for( t = 0; t<m_units[m_unitTop].constantValues.count(); ++t )
+		for( t = 0; !memberName && t<m_units[m_unitTop].constantValues.count(); ++t )
 		{
 			int len = m_units[m_unitTop].constantValues[t].label.size();
 			if ( ((offset + len) < m_sourceLen)
 				 && !strncmp(m_source + offset, m_units[m_unitTop].constantValues[t].label.c_str(), len) )
 			{
-				if ( isalnum(m_source[offset+len]) || m_source[offset+len] == '_' )
+				if ( isalnum((unsigned char)m_source[offset+len]) || m_source[offset+len] == '_' )
 				{
 					continue;
 				}
 
+				if ( declaredName )
+				{
+					m_err = WR_ERR_constant_redefined;
+				}
 				m_pos += len - 1;
 				token.clear();
 				value = m_units[m_unitTop].constantValues[t].value;
@@ -126,7 +207,7 @@ bool WRCompilationContext::getToken( WRExpressionContext& ex, const char* expect
 			if ( m_pos < m_sourceLen )
 			{
 				/*
-				if ( (isdigit(m_source[m_pos]) && !m_LastParsedLabel) || m_source[m_pos] == '.' )
+				if ( (isdigit((unsigned char)m_source[m_pos]) && !m_LastParsedLabel) || m_source[m_pos] == '.' )
 				{
 					goto parseAsNumber;
 				}
@@ -309,13 +390,14 @@ bool WRCompilationContext::getToken( WRExpressionContext& ex, const char* expect
 					}
 					else if (c == '\\')
 					{
-						c = m_source[++m_pos];
-						if (m_pos >= m_sourceLen)
+						// check before reading: the backslash may be the last byte
+						if (m_pos + 1 >= m_sourceLen)
 						{
 							m_err = WR_ERR_unterminated_string_literal;
 							m_EOF = true;
 							return false;
 						}
+						c = m_source[++m_pos];
 
 						if (c == '\\') // escaped slash
 						{
@@ -323,8 +405,14 @@ bool WRCompilationContext::getToken( WRExpressionContext& ex, const char* expect
 						}
 						else if (c == '0')
 						{
-							token += atoi(m_source + m_pos);
-							for (; (m_pos < m_sourceLen) && isdigit(m_source[m_pos]); ++m_pos);
+							// \0, \097: the digits after the backslash are a decimal character code
+							unsigned int code = 0;
+							while ( m_pos < m_sourceLen && isdigit((unsigned char)m_source[m_pos]) )
+							{
+								code = ((code * 10) + (unsigned int)(m_source[m_pos] - '0')) & 0xFFFF;
+								++m_pos;
+							}
+							token += (char)code;
 							--m_pos;
 						}
 						else if (c == '\"')
@@ -347,6 +435,33 @@ bool WRCompilationContext::getToken( WRExpressionContext& ex, const char* expect
 						{
 							token += '\t';
 						}
+						else if (c == 'a')
+						{
+							token += '\a';
+						}
+						else if (c == 'b')
+						{
+							token += '\b';
+						}
+						else if (c == 'f')
+						{
+							token += '\f';
+						}
+						else if (c == 'v')
+						{
+							token += '\v';
+						}
+						else if (c == 'x' && (m_pos + 1 < m_sourceLen) && isxdigit((unsigned char)m_source[m_pos + 1]))
+						{
+							// \xH or \xHH
+							int hex = 0;
+							for( int digits = 0; digits < 2 && (m_pos + 1 < m_sourceLen) && isxdigit((unsigned char)m_source[m_pos + 1]); ++digits )
+							{
+								char h = m_source[++m_pos];
+								hex = (hex << 4) | (isdigit((unsigned char)h) ? (h - '0') : ((tolower((unsigned char)h) - 'a') + 10));
+							}
+							token += (char)hex;
+						}
 						else
 						{
 							m_err = WR_ERR_bad_string_escape_sequence;
@@ -363,7 +478,9 @@ bool WRCompilationContext::getToken( WRExpressionContext& ex, const char* expect
 				value.p2 = INIT_AS_INT;
 				if ( single )
 				{
-					value.ui = token.size() == 1 ? token[0] : 0;
+					// bytes are unsigned everywhere else (string indexing), keep
+					// character literals consistent: '\xFF' is 255
+					value.ui = token.size() == 1 ? (unsigned char)token[0] : 0;
 					token.clear();
 				}
 				else
@@ -377,13 +494,15 @@ bool WRCompilationContext::getToken( WRExpressionContext& ex, const char* expect
 			{
 				if ( m_pos < m_sourceLen )
 				{	
-					if ( !isspace(m_source[m_pos]) )
+					if ( !isspace((unsigned char)m_source[m_pos]) )
 					{
 						if ( m_source[m_pos] == '/' )
 						{
-							for( ; m_pos<m_sourceLen && m_source[m_pos] != '\n'; ++m_pos ); // clear to end EOL
+							for( ; m_pos<m_sourceLen && m_source[m_pos] != '\n'; ++m_pos ) // clear to end EOL
+							{
+							}
 
-							return getToken( ex, expect );
+							goto nextToken;
 						}
 						else if ( m_source[m_pos] == '*' )
 						{
@@ -399,7 +518,7 @@ bool WRCompilationContext::getToken( WRExpressionContext& ex, const char* expect
 
 							m_pos += 2;
 
-							return getToken( ex, expect );
+							goto nextToken;
 
 						}
 						else if ( m_source[m_pos] == '=' )
@@ -411,8 +530,8 @@ bool WRCompilationContext::getToken( WRExpressionContext& ex, const char* expect
 					//else // bare '/' 
 				}
 			}
-			else if ( isdigit(token[0])
-					  || (token[0] == '.' && (m_pos < m_sourceLen) && isdigit(m_source[m_pos])) )
+			else if ( isdigit((unsigned char)token[0])
+						|| (token[0] == '.' && (m_pos < m_sourceLen) && isdigit((unsigned char)m_source[m_pos])) )
 			{
 				if ( m_pos >= m_sourceLen )
 				{
@@ -422,6 +541,26 @@ bool WRCompilationContext::getToken( WRExpressionContext& ex, const char* expect
 //parseAsNumber:
 
 				m_LastParsedLabel = true;
+
+				// a leading zero means octal only for a plain run of octal
+				// digits: 09.5, 0.5 and 07e2 are decimal numbers
+				bool octal = token[0] == '0' && isdigit((unsigned char)m_source[m_pos]);
+				if ( octal )
+				{
+					int scan = m_pos;
+					while( scan < m_sourceLen && isdigit((unsigned char)m_source[scan]) )
+					{
+						if ( m_source[scan] > '7' )
+						{
+							octal = false;
+						}
+						++scan;
+					}
+					if ( scan < m_sourceLen && (m_source[scan] == '.' || m_source[scan] == 'e' || m_source[scan] == 'E') )
+					{
+						octal = false;
+					}
+				}
 
 				if ( token[0] == '0' && m_source[m_pos] == 'x' ) // interpret as hex
 				{
@@ -436,7 +575,7 @@ bool WRCompilationContext::getToken( WRExpressionContext& ex, const char* expect
 							return false;
 						}
 
-						if ( !isxdigit(m_source[m_pos]) )
+						if ( !isxdigit((unsigned char)m_source[m_pos]) )
 						{
 							break;
 						}
@@ -445,7 +584,11 @@ bool WRCompilationContext::getToken( WRExpressionContext& ex, const char* expect
 					}
 
 					value.p2 = INIT_AS_INT;
-					value.ui = strtoul( token, 0, 16 );
+					if ( !wr_parseLiteral(token.c_str(), 16, value.ui) )
+					{
+						m_err = WR_ERR_bad_expression; // more than 32 bits
+						return false;
+					}
 				}
 				else if (token[0] == '0' && m_source[m_pos] == 'b' )
 				{
@@ -469,9 +612,13 @@ bool WRCompilationContext::getToken( WRExpressionContext& ex, const char* expect
 					}
 
 					value.p2 = INIT_AS_INT;
-					value.i = strtol( token, 0, 2 );
+					if ( !wr_parseLiteral(token.c_str(), 2, value.ui) )
+					{
+						m_err = WR_ERR_bad_expression; // more than 32 bits
+						return false;
+					}
 				}
-				else if (token[0] == '0' && isdigit(m_source[m_pos]) ) // octal
+				else if ( octal )
 				{
 					token.clear();
 
@@ -492,7 +639,11 @@ bool WRCompilationContext::getToken( WRExpressionContext& ex, const char* expect
 					}
 
 					value.p2 = INIT_AS_INT;
-					value.i = strtol( token, 0, 8 );
+					if ( !wr_parseLiteral(token.c_str(), 8, value.ui) )
+					{
+						m_err = WR_ERR_bad_expression; // more than 32 bits
+						return false;
+					}
 				}
 				else
 				{
@@ -514,7 +665,23 @@ bool WRCompilationContext::getToken( WRExpressionContext& ex, const char* expect
 
 							decimal = true;
 						}
-						else if ( !isdigit(m_source[m_pos]) )
+						else if ( (m_source[m_pos] == 'e' || m_source[m_pos] == 'E')
+									&& (m_pos + 1 < m_sourceLen)
+									&& (isdigit((unsigned char)m_source[m_pos + 1])
+										|| ((m_source[m_pos + 1] == '-' || m_source[m_pos + 1] == '+')
+											&& (m_pos + 2 < m_sourceLen)
+											&& isdigit((unsigned char)m_source[m_pos + 2]))) )
+						{
+							// exponent: 1e3, 2.5e-3
+							decimal = true;
+							token += m_source[m_pos++];
+							if ( m_source[m_pos] == '-' || m_source[m_pos] == '+' )
+							{
+								token += m_source[m_pos++];
+							}
+							continue;
+						}
+						else if ( !isdigit((unsigned char)m_source[m_pos]) )
 						{
 							if ( m_source[m_pos] == 'f' || m_source[m_pos] == 'F')
 							{
@@ -536,15 +703,19 @@ bool WRCompilationContext::getToken( WRExpressionContext& ex, const char* expect
 					else
 					{
 						value.p2 = INIT_AS_INT;
-						value.ui = (uint32_t)strtoul( token, 0, 10 );
+						if ( !wr_parseLiteral(token.c_str(), 10, value.ui) )
+						{
+							m_err = WR_ERR_bad_expression; // more than 32 bits
+							return false;
+						}
 					}
 				}
 			}
-			else if ( token[0] == ':' && isspace(m_source[m_pos]) )
+			else if ( token[0] == ':' && m_pos < m_sourceLen && isspace((unsigned char)m_source[m_pos]) )
 			{
 				
 			}
-			else if ( isalpha(token[0]) || token[0] == '_' || token[0] == ':' ) // must be a label
+			else if ( isalpha((unsigned char)token[0]) || token[0] == '_' || token[0] == ':' ) // must be a label
 			{
 				if ( token[0] != ':' || (m_pos < m_sourceLen && m_source[m_pos] == ':') )
 				{
@@ -569,7 +740,7 @@ bool WRCompilationContext::getToken( WRExpressionContext& ex, const char* expect
 							continue;
 						}
 						
-						if (!isalnum(m_source[m_pos]) && m_source[m_pos] != '_' )
+						if (!isalnum((unsigned char)m_source[m_pos]) && m_source[m_pos] != '_' )
 						{
 							break;
 						}
@@ -595,7 +766,7 @@ bool WRCompilationContext::getToken( WRExpressionContext& ex, const char* expect
 
 foundMacroToken:
 	
-		ex.spaceAfter = (m_pos < m_sourceLen) && isspace(m_source[m_pos]);
+		ex.spaceAfter = (m_pos < m_sourceLen) && isspace((unsigned char)m_source[m_pos]);
 	}
 
 	m_loadedToken.clear();

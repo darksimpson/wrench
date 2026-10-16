@@ -92,23 +92,23 @@ const WROperation c_operations[] =
 	{ "-",    6, O_BinarySubtraction,   true,  WR_OPER_BINARY, O_LAST },
 	{ "*",    5, O_BinaryMultiplication,true,  WR_OPER_BINARY_COMMUTE, O_LAST },
 	{ "/",    5, O_BinaryDivision,      true,  WR_OPER_BINARY, O_LAST },
-	{ "%",    6, O_BinaryMod,           true,  WR_OPER_BINARY, O_LAST },
+	{ "%",    5, O_BinaryMod,           true,  WR_OPER_BINARY, O_LAST },
 
 	{ "|",   13, O_BinaryOr,            true,  WR_OPER_BINARY_COMMUTE, O_LAST },
 	{ "&",   11, O_BinaryAnd,           true,  WR_OPER_BINARY_COMMUTE, O_LAST },
-	{ "^",   11, O_BinaryXOR,           true,  WR_OPER_BINARY_COMMUTE, O_LAST },
+	{ "^",   12, O_BinaryXOR,           true,  WR_OPER_BINARY_COMMUTE, O_LAST },
 
 	{ ">>",   7, O_BinaryRightShift,    true,  WR_OPER_BINARY, O_LAST },
 	{ "<<",   7, O_BinaryLeftShift,     true,  WR_OPER_BINARY, O_LAST },
 
-	{ "+=",  17, O_AddAssign,           true,  WR_OPER_BINARY, O_LAST },
-	{ "-=",  17, O_SubtractAssign,      true,  WR_OPER_BINARY, O_LAST },
-	{ "%=",  17, O_ModAssign,           true,  WR_OPER_BINARY, O_LAST },
-	{ "*=",  17, O_MultiplyAssign,      true,  WR_OPER_BINARY, O_LAST },
-	{ "/=",  17, O_DivideAssign,        true,  WR_OPER_BINARY, O_LAST },
-	{ "|=",  17, O_ORAssign,            true,  WR_OPER_BINARY, O_LAST },
-	{ "&=",  17, O_ANDAssign,           true,  WR_OPER_BINARY, O_LAST },
-	{ "^=",  17, O_XORAssign,           true,  WR_OPER_BINARY, O_LAST },
+	{ "+=",  17, O_AddAssign,           false,  WR_OPER_BINARY, O_LAST },
+	{ "-=",  17, O_SubtractAssign,      false,  WR_OPER_BINARY, O_LAST },
+	{ "%=",  17, O_ModAssign,           false,  WR_OPER_BINARY, O_LAST },
+	{ "*=",  17, O_MultiplyAssign,      false,  WR_OPER_BINARY, O_LAST },
+	{ "/=",  17, O_DivideAssign,        false,  WR_OPER_BINARY, O_LAST },
+	{ "|=",  17, O_ORAssign,            false,  WR_OPER_BINARY, O_LAST },
+	{ "&=",  17, O_ANDAssign,           false,  WR_OPER_BINARY, O_LAST },
+	{ "^=",  17, O_XORAssign,           false,  WR_OPER_BINARY, O_LAST },
 	{ ">>=", 17, O_RightShiftAssign,   false,  WR_OPER_BINARY, O_LAST },
 	{ "<<=", 17, O_LeftShiftAssign,    false,  WR_OPER_BINARY, O_LAST },
 
@@ -330,7 +330,21 @@ public:
 
 	//------------------------------------------------------------------------------
 	void swapWithTop( int stackPosition, bool addOpcodes =true );
-	
+
+	// bookkeeping only: exchange whatever sits at stack positions a and b
+	void swapPositions( int a, int b )
+	{
+		int ia = -1;
+		int ib = -1;
+		for( unsigned int i=0; i<context.count(); ++i )
+		{
+			if ( context[i].stackPosition == a ) { ia = i; }
+			if ( context[i].stackPosition == b ) { ib = i; }
+		}
+		if ( ia != -1 ) { context[ia].stackPosition = b; }
+		if ( ib != -1 ) { context[ib].stackPosition = a; }
+	}
+
 	WRExpression() { reset(); }
 	WRExpression( WRarray<WRNamespaceLookup>& localSpace, bool isStructSpace )
 	{
@@ -358,6 +372,14 @@ struct ConstantValue
 	WRValue value;
 	WRstr label;
 	ConstantValue() { value.init(); }
+};
+
+// an unknown name compiled to its hash ("var f = myFunction;"): legal only
+// for functions and structs of the program, checked once all are known
+struct WRNameAsHash
+{
+	WRstr name;
+	int pos; // source position, for the error report
 };
 
 //------------------------------------------------------------------------------
@@ -422,8 +444,15 @@ public:
 					 WRstr* erroMsg,
 					 const uint8_t compilerOptionFlags );
 
+	// where the last error was detected, 1-based line and 0-based column
+	int m_errLine;
+	int m_errColumn;
+
 private:
-	
+
+	void checkNamesAsHashes();
+	WRarray<WRNameAsHash> m_namesAsHashes;
+
 	bool isReserved( const char* token );
 	bool isValidLabel( WRstr& token, bool& isGlobal, WRstr& prefix, bool& isLibConstant );
 
@@ -449,7 +478,7 @@ private:
 	bool m_exportNextUnit;
 	
 	uint16_t m_lastCode;
-	uint16_t m_lastParam;
+	int m_lastParam;
 	void pushDebug( uint16_t code, WRBytecode& bytecode,int param );
 	int getSourcePosition();
 	int getSourcePosition( int& onLine, int& onChar, WRstr* line =0 );
@@ -476,7 +505,9 @@ private:
 	bool parseCallFunction( WRExpression& expression, WRstr functionName, int depth, bool parseArguments );
 	bool pushObjectTable( WRExpressionContext& context, WRarray<WRNamespaceLookup>& localSpace, uint32_t hash );
 	int parseInitializer( WRExpression& expression, int depth );
+	int parseInitializerBody( WRExpression& expression, int depth );
 	char parseExpression( WRExpression& expression );
+	char parseExpressionBody( WRExpression& expression );
 	bool parseUnit( bool isStruct, int parentUnitIndex );
 	bool parseWhile( WROpcode opcodeToReturn );
 	bool parseDoWhile( WROpcode opcodeToReturn );
@@ -487,6 +518,12 @@ private:
 	bool parseSwitch( WROpcode opcodeToReturn );
 	bool parseIf( WROpcode opcodeToReturn );
 	bool parseStatement( int unitIndex, char end, WROpcode opcodeToReturn );
+	bool parseStatementBody( int unitIndex, char end, WROpcode opcodeToReturn );
+
+	// nesting of statements, expressions and initializers, bounded so deep
+	// source fails to compile instead of overflowing the native stack
+	int m_parseDepth;
+	bool enterNesting();
 
 	void createLocalHashMap( WRUnitContext& unit, unsigned char** buf, int* size );
 	void link( unsigned char** out, int* outLen, const uint8_t compilerOptionFlags );
@@ -494,6 +531,8 @@ private:
 	const char* m_source;
 	int m_sourceLen;
 	int m_pos;
+	int m_lineScanPos; // getSourcePosition() has counted lines up to here
+	int m_lineScanLine;
 
 	bool getChar( char &c )
 	{

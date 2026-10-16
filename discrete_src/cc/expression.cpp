@@ -57,7 +57,7 @@ static bool wr_expressionHasBlankDeclaration( WRarray<WRExpressionContext>& cont
 }
 
 //------------------------------------------------------------------------------
-char WRCompilationContext::parseExpression( WRExpression& expression )
+char WRCompilationContext::parseExpressionBody( WRExpression& expression )
 {
 	int depth = 0;
 	char end = 0;
@@ -141,7 +141,11 @@ char WRCompilationContext::parseExpression( WRExpression& expression )
 		if ( !m_quoted && token == "?" )
 		{
 			// ternary is parsed as a single operator node with recursive true/false expression branches.
-			if ( (depth == 0) || (expression.context[depth - 1].type == EXTYPE_OPERATION) )
+			// a postfix operator (i++ ? a : b) completes its operand
+			if ( (depth == 0)
+					|| ((expression.context[depth - 1].type == EXTYPE_OPERATION)
+						&& (!expression.context[depth - 1].operation
+							|| expression.context[depth - 1].operation->type != WR_OPER_POST)) )
 			{
 				m_err = WR_ERR_bad_expression;
 				return 0;
@@ -360,7 +364,7 @@ char WRCompilationContext::parseExpression( WRExpression& expression )
 
 						if ( !pushObjectTable(expression.context[depth], expression.bytecode.localSpace, hash) )
 						{
-							m_err = WR_ERR_bad_expression;
+							m_err = m_err ? m_err : WR_ERR_bad_expression;
 							return 0;
 						}
 
@@ -414,7 +418,7 @@ char WRCompilationContext::parseExpression( WRExpression& expression )
 					m_loadedValue = value3;
 					m_loadedQuoted = m_quoted;
 				}
-				else if ( token2 != ";" )
+				else if ( token3 != ";" ) // token2 dangles: remove() reallocated the context
 				{
 					m_err = WR_ERR_unexpected_token;
 					return 0;
@@ -431,7 +435,7 @@ char WRCompilationContext::parseExpression( WRExpression& expression )
 
 			if ( !pushObjectTable(expression.context[depth], expression.bytecode.localSpace, hash) )
 			{
-				m_err = WR_ERR_bad_expression;
+				m_err = m_err ? m_err : WR_ERR_bad_expression;
 				return 0;
 			}
 
@@ -501,7 +505,7 @@ char WRCompilationContext::parseExpression( WRExpression& expression )
 				m_loadedQuoted = m_quoted;
 				if ( parseExpression(nex) != ')' )
 				{
-					m_err = WR_ERR_unexpected_token;
+					m_err = m_err ? m_err : WR_ERR_unexpected_token;
 					return 0;
 				}
 
@@ -539,7 +543,7 @@ char WRCompilationContext::parseExpression( WRExpression& expression )
 
 			if ( parseExpression(nex) != ']' )
 			{
-				m_err = WR_ERR_unexpected_EOF;
+				m_err = m_err ? m_err : WR_ERR_unexpected_EOF;
 				return 0;
 			}
 

@@ -487,12 +487,13 @@ void WRCompilationContext::pushOpcode( WRBytecode& bytecode, WROpcode opcode )
 
 		if ( opcode == O_Negate )
 		{
-			if ( bytecode.opcodes[o] == O_LiteralInt8 )
+			if ( bytecode.opcodes[o] == O_LiteralInt8 && bytecode.all[ a ] != 0x80 ) // -(-128) does not fit
 			{
 				bytecode.all[ a ] = -bytecode.all[ a ];
 				return;
 			}
-			else if ( bytecode.opcodes[o] == O_LiteralInt16 && (a > 1) )
+			else if ( bytecode.opcodes[o] == O_LiteralInt16 && (a > 1)
+				&& !(bytecode.all[ a - 1 ] == 0x00 && bytecode.all[ a ] == 0x80) ) // nor -(-32768)
 			{
 				int16_t be = ((int16_t)bytecode.all[ a - 1 ])
 							 | ((int16_t)bytecode.all[ a ] << 8);
@@ -1038,16 +1039,16 @@ void WRCompilationContext::pushOpcode( WRBytecode& bytecode, WROpcode opcode )
 				{
 					bytecode.all[a-4] = O_LLCompareEQBZ;
 					bytecode.all[a-2] = bytecode.all[a-1];
-					bytecode.opcodes.clear();
-					bytecode.opcodes[o-2] = O_LLCompareEQBZ;
+					bytecode.opcodes.clear(); // the cache now holds just the fused compare
+					bytecode.opcodes += O_LLCompareEQBZ;
 					bytecode.all.shave(2);
 				}
 				else if ( (o>1) && (bytecode.opcodes[o-1] == O_LoadFromGlobal) && (bytecode.opcodes[o-2] == O_LoadFromGlobal) )
 				{
 					bytecode.all[a-4] = O_GGCompareEQBZ;
 					bytecode.all[a-2] = bytecode.all[a-1];
-					bytecode.opcodes.clear();
-					bytecode.opcodes[o-2] = O_GGCompareEQBZ;
+					bytecode.opcodes.clear(); // the cache now holds just the fused compare
+					bytecode.opcodes += O_GGCompareEQBZ;
 					bytecode.all.shave(2);
 				}
 				else
@@ -1063,16 +1064,16 @@ void WRCompilationContext::pushOpcode( WRBytecode& bytecode, WROpcode opcode )
 				{
 					bytecode.all[a-4] = O_LLCompareLTBZ;
 					bytecode.all[a-2] = bytecode.all[a-1];
-					bytecode.opcodes.clear();
-					bytecode.opcodes[o-2] = O_LLCompareLTBZ;
+					bytecode.opcodes.clear(); // the cache now holds just the fused compare
+					bytecode.opcodes += O_LLCompareLTBZ;
 					bytecode.all.shave(2);
 				}
 				else if ( (o>1) && (bytecode.opcodes[o-1] == O_LoadFromGlobal) && (bytecode.opcodes[o-2] == O_LoadFromGlobal) )
 				{
 					bytecode.all[a-4] = O_GGCompareLTBZ;
 					bytecode.all[a-2] = bytecode.all[a-1];
-					bytecode.opcodes.clear();
-					bytecode.opcodes[o-2] = O_GGCompareLTBZ;
+					bytecode.opcodes.clear(); // the cache now holds just the fused compare
+					bytecode.opcodes += O_GGCompareLTBZ;
 					bytecode.all.shave(2);
 				}
 				else
@@ -1088,16 +1089,16 @@ void WRCompilationContext::pushOpcode( WRBytecode& bytecode, WROpcode opcode )
 				{
 					bytecode.all[a-4] = O_LLCompareGTBZ;
 					bytecode.all[a-2] = bytecode.all[a-1];
-					bytecode.opcodes.clear();
-					bytecode.opcodes[o-2] = O_LLCompareGTBZ;
+					bytecode.opcodes.clear(); // the cache now holds just the fused compare
+					bytecode.opcodes += O_LLCompareGTBZ;
 					bytecode.all.shave(2);
 				}
 				else if ( (o>1) && (bytecode.opcodes[o-1] == O_LoadFromGlobal) && (bytecode.opcodes[o-2] == O_LoadFromGlobal) )
 				{
 					bytecode.all[a-4] = O_GGCompareGTBZ;
 					bytecode.all[a-2] = bytecode.all[a-1];
-					bytecode.opcodes.clear();
-					bytecode.opcodes[o-2] = O_GGCompareGTBZ;
+					bytecode.opcodes.clear(); // the cache now holds just the fused compare
+					bytecode.opcodes += O_GGCompareGTBZ;
 					bytecode.all.shave(2);
 				}
 				else
@@ -1114,8 +1115,8 @@ void WRCompilationContext::pushOpcode( WRBytecode& bytecode, WROpcode opcode )
 					bytecode.all[a-4] = O_LLCompareGEBZ;
 					bytecode.all[a-2] = bytecode.all[a-3];
 					bytecode.all[a-3] = bytecode.all[a-1];
-					bytecode.opcodes.clear();
-					bytecode.opcodes[o-2] = O_LLCompareLTBZ;
+					bytecode.opcodes.clear(); // the cache now holds just the fused compare
+					bytecode.opcodes += O_LLCompareGEBZ;
 					bytecode.all.shave(2);
 				}
 				else if ( (o>1) && (bytecode.opcodes[o-1] == O_LoadFromGlobal) && (bytecode.opcodes[o-2] == O_LoadFromGlobal) )
@@ -1123,8 +1124,8 @@ void WRCompilationContext::pushOpcode( WRBytecode& bytecode, WROpcode opcode )
 					bytecode.all[a-4] = O_GGCompareGEBZ;
 					bytecode.all[a-2] = bytecode.all[a-3];
 					bytecode.all[a-3] = bytecode.all[a-1];
-					bytecode.opcodes.clear();
-					bytecode.opcodes[o-2] = O_GGCompareLTBZ;
+					bytecode.opcodes.clear(); // the cache now holds just the fused compare
+					bytecode.opcodes += O_GGCompareGEBZ;
 					bytecode.all.shave(2);
 				}
 				else
@@ -1141,8 +1142,8 @@ void WRCompilationContext::pushOpcode( WRBytecode& bytecode, WROpcode opcode )
 					bytecode.all[a-4] = O_LLCompareLEBZ;
 					bytecode.all[a-2] = bytecode.all[a-3];
 					bytecode.all[a-3] = bytecode.all[a-1];
-					bytecode.opcodes.clear();
-					bytecode.opcodes[o-2] = O_LLCompareGTBZ;
+					bytecode.opcodes.clear(); // the cache now holds just the fused compare
+					bytecode.opcodes += O_LLCompareLEBZ;
 					bytecode.all.shave(2);
 				}
 				else if ( (o>1) && (bytecode.opcodes[o-1] == O_LoadFromGlobal) && (bytecode.opcodes[o-2] == O_LoadFromGlobal) )
@@ -1150,8 +1151,8 @@ void WRCompilationContext::pushOpcode( WRBytecode& bytecode, WROpcode opcode )
 					bytecode.all[a-4] = O_GGCompareLEBZ;
 					bytecode.all[a-2] = bytecode.all[a-3];
 					bytecode.all[a-3] = bytecode.all[a-1];
-					bytecode.opcodes.clear();
-					bytecode.opcodes[o-2] = O_GGCompareGTBZ;
+					bytecode.opcodes.clear(); // the cache now holds just the fused compare
+					bytecode.opcodes += O_GGCompareLEBZ;
 					bytecode.all.shave(2);
 				}
 				else
@@ -1168,16 +1169,16 @@ void WRCompilationContext::pushOpcode( WRBytecode& bytecode, WROpcode opcode )
 				{
 					bytecode.all[a-4] = O_LLCompareNEBZ;
 					bytecode.all[a-2] = bytecode.all[a-1];
-					bytecode.opcodes.clear();
-					bytecode.opcodes[o-2] = O_LLCompareNEBZ;
+					bytecode.opcodes.clear(); // the cache now holds just the fused compare
+					bytecode.opcodes += O_LLCompareNEBZ;
 					bytecode.all.shave(2);
 				}
 				else if ( (o>1) && (bytecode.opcodes[o-1] == O_LoadFromGlobal) && (bytecode.opcodes[o-2] == O_LoadFromGlobal) )
 				{
 					bytecode.all[a-4] = O_GGCompareNEBZ;
 					bytecode.all[a-2] = bytecode.all[a-1];
-					bytecode.opcodes.clear();
-					bytecode.opcodes[o-2] = O_GGCompareNEBZ;
+					bytecode.opcodes.clear(); // the cache now holds just the fused compare
+					bytecode.opcodes += O_GGCompareNEBZ;
 					bytecode.all.shave(2);
 				}
 				else
@@ -1812,7 +1813,12 @@ void WRCompilationContext::appendBytecode( WRBytecode& bytecode, WRBytecode& add
 	resolveRelativeJumps( addMe );
 
 	bytecode.all += addMe.all;
-	bytecode.opcodes += addMe.opcodes;
+	if ( addMe.all.size() )
+	{
+		// the cache describes only a suffix of addMe.all (keyholes clear it), so it
+		// can never be extended by what came before
+		bytecode.opcodes = addMe.opcodes;
+	}
 }
 
 //------------------------------------------------------------------------------
@@ -1824,7 +1830,9 @@ void WRCompilationContext::FinalizeStatementBytecode( WRUnitContext& unit, WRByt
 	bool haveCurrentStore = wr_findLastStatementOverwriteStore( statementBytecode, currentStore );
 	bool currentIsLiteralClobber = haveCurrentStore && wr_statementIsLiteralClobber( statementBytecode, currentStore );
 
+	// with debug info every statement is a place to stop, so each store must stay visible
 	if ( currentIsLiteralClobber
+			&& !m_addDebugSymbols
 		 && unit.lastStatementOverwriteStore.valid
 		 && unit.lastStatementOverwriteStore.global == currentStore.global
 		 && unit.lastStatementOverwriteStore.index == currentStore.index

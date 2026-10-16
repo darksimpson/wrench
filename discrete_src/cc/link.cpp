@@ -41,7 +41,7 @@ void WRCompilationContext::createLocalHashMap( WRUnitContext& unit, unsigned cha
 	}
 
 	WRHashTable<unsigned char> offsets;
-	for( unsigned char i=unit.arguments; i<unit.bytecode.localSpace.count(); ++i )
+	for( unsigned int i=unit.arguments; i<unit.bytecode.localSpace.count(); ++i )
 	{
 		if ( !offsets.set( unit.bytecode.localSpace[i].hash, i - unit.arguments ) )
 		{
@@ -71,6 +71,16 @@ void WRCompilationContext::createLocalHashMap( WRUnitContext& unit, unsigned cha
 	}
 }
 
+static void wr_freeNamespacePushes( NamespacePush*& list )
+{
+	while( list )
+	{
+		NamespacePush* next = list->next;
+		g_free( list );
+		list = next;
+	}
+}
+
 //------------------------------------------------------------------------------
 void WRCompilationContext::link( unsigned char** out, int* outLen, const uint8_t compilerOptionFlags )
 {
@@ -80,17 +90,32 @@ void WRCompilationContext::link( unsigned char** out, int* outLen, const uint8_t
 
 	NamespacePush *namespaceLookups = 0;
 
+	// a jump whose target was never placed would keep its placeholder
+	// offset and send the VM out of the image
+	for( unsigned int u=0; u<m_units.count(); ++u )
+	{
+		WRBytecode& b = m_units[u].bytecode;
+		for( unsigned int j=0; j<b.jumpOffsetTargets.count(); ++j )
+		{
+			if ( b.jumpOffsetTargets[j].offset < 0 && b.jumpOffsetTargets[j].references.count() )
+			{
+				m_err = WR_ERR_compiler_panic;
+				return;
+			}
+		}
+	}
+
 	unsigned int globals = m_units[0].bytecode.localSpace.count();
 	if ( globals > 255 )
 	{
-		m_err = WR_ERR_compiler_panic;
+		m_err = WR_ERR_too_many_locals;
 		return;
 	}
 
 	code += (uint8_t)globals; // globals count (for VM allocation)
 	if ( (m_units.count() - 1) > 255 )
 	{
-		m_err = WR_ERR_compiler_panic;
+		m_err = WR_ERR_too_many_functions;
 		return;
 	}
 	code += (uint8_t)(m_units.count() - 1); // function count (for VM allocation)
@@ -114,17 +139,20 @@ void WRCompilationContext::link( unsigned char** out, int* outLen, const uint8_t
 		// WRFunction.hash
 		code.append( wr_pack32(m_units[u].hash, data), 4 );
 
+		// arguments, locals and the return vector are addressed with 8 bits
+		if ( m_units[u].arguments > m_units[u].bytecode.localSpace.count()
+				|| m_units[u].bytecode.localSpace.count() > 254 )
+		{
+			m_err = WR_ERR_too_many_locals;
+			return;
+		}
+
 		// WRFunction.arguments;
 		data[0] = m_units[u].arguments;
 		code.append( data, 1 );
 
 		// WRFunction.frameSpaceNeeded;
 		unsigned int frameSpaceNeeded = m_units[u].bytecode.localSpace.count() - m_units[u].arguments;
-		if ( frameSpaceNeeded > 255 )
-		{
-			m_err = WR_ERR_compiler_panic;
-			return;
-		}
 		data[1] = (uint8_t)frameSpaceNeeded;
 		code.append( data + 1, 1 );
 
@@ -275,6 +303,7 @@ void WRCompilationContext::link( unsigned char** out, int* outLen, const uint8_t
 						if ( diff < -32768 || diff > 32767 )
 						{
 							m_err = WR_ERR_bad_goto_location;
+							wr_freeNamespacePushes( namespaceLookups );
 							return;
 						}
 						*m_units[u].bytecode.all.p_str( m_units[u].bytecode.gotoSource[g].offset ) = (unsigned char)O_RelativeJump;
@@ -288,6 +317,7 @@ void WRCompilationContext::link( unsigned char** out, int* outLen, const uint8_t
 			if ( j >= m_units[u].bytecode.jumpOffsetTargets.count() )
 			{
 				m_err = WR_ERR_goto_target_not_found;
+				wr_freeNamespacePushes( namespaceLookups );
 				return;
 			}
 		}
@@ -295,6 +325,14 @@ void WRCompilationContext::link( unsigned char** out, int* outLen, const uint8_t
 		WR_DUMP_LINK_OUTPUT(printf("Adding Unit %d [%d]\n%s", u, m_units[u].bytecode.all.size(), wr_asciiDump(m_units[u].bytecode.all, m_units[u].bytecode.all.size(), str)));
 
 		code.append( m_units[u].bytecode.all, m_units[u].bytecode.all.size() );
+
+		// function offsets, struct tables and fixups are 16 bit
+		if ( code.size() > 0xFFFF )
+		{
+			m_err = WR_ERR_code_too_large;
+			wr_freeNamespacePushes( namespaceLookups );
+			return;
+		}
 
 		WR_DUMP_LINK_OUTPUT(printf("->\n%s\n", wr_asciiDump( code.p_str(), code.size(), str )));
 
