@@ -171,9 +171,67 @@ static void dumpStack( const WRValue* bottom, const WRValue* top )
 
 #define DEBUG_PER_INSTRUCTION
 
+// a call into an imported context must run to completion: a time slice
+// cannot preempt it (the parent could not resume it), and the parent's slice
+// carries on where it was afterwards
+#ifdef WRENCH_TIME_SLICES
+#define WR_IMPORT_CALL_BEGIN int wrSlice = w->instructionsPerSlice; int wrSliceCount = w->sliceInstructionCount; int wrYieldEnabled = w->yieldEnabled; w->instructionsPerSlice = 0;
+#define WR_IMPORT_CALL_END w->instructionsPerSlice = wrSlice; w->sliceInstructionCount = wrSliceCount; w->yieldEnabled = wrYieldEnabled;
+#else
+#define WR_IMPORT_CALL_BEGIN
+#define WR_IMPORT_CALL_END
+#endif
+
+// native code may call back into this context with wr_callFunction(): such a
+// nested call must start above the live stack, not on top of running frames.
+// It cannot yield (nothing could resume the native in between), so time
+// slices stay off for it and the caller's slice carries on afterwards
+#define WR_NATIVE_CALL( CALL ) \
+{ \
+	uint16_t wrSavedOffset = context->stackOffset; \
+	uint8_t wrSavedNative = context->flags & (uint8_t)WRC_InNative; \
+	context->stackOffset = (uint16_t)(stackTop + 1 - context->stack); \
+	context->flags |= (uint8_t)WRC_InNative; \
+	WR_IMPORT_CALL_BEGIN \
+	CALL; \
+	WR_IMPORT_CALL_END \
+	context->flags = (uint8_t)((context->flags & ~(uint8_t)WRC_InNative) | wrSavedNative); \
+	context->stackOffset = wrSavedOffset; \
+}
+
+// fail the current call with a runtime error, giving an attached debugger the
+// chance to show where it happened while the frames are still intact
+#ifdef WRENCH_INCLUDE_DEBUG_CODE
+#define WR_DEBUG_ON_ERROR { if ( context->debugServer ) { context->debugServer->onError( context, pc, frameBase, stackTop ); } }
+#else
+#define WR_DEBUG_ON_ERROR
+#endif
+#define WR_VM_FAIL(E) { w->err = (E); WR_DEBUG_ON_ERROR; return 0; }
+
+// a call to a name nothing provides: the host's not-found handler gets a
+// chance (and may still fail the call by setting w->err), otherwise fail
+#define WR_CALL_NOT_FOUND( HANDLER, CALL, E ) \
+{ \
+	if ( HANDLER ) \
+	{ \
+		w->err = WR_ERR_None; \
+		WR_NATIVE_CALL( CALL ); \
+		if ( w->err != WR_ERR_None ) \
+		{ \
+			w->missingFunction = fhash; \
+			WR_VM_FAIL( w->err ); \
+		} \
+	} \
+	else \
+	{ \
+		w->missingFunction = fhash; \
+		WR_VM_FAIL( E ); \
+	} \
+}
+
 //------------------------------------------------------------------------------
 #ifdef WRENCH_PROTECT_STACK_FROM_OVERFLOW
-#define CHECK_STACK { if ( stackTop >= stackLimit ) { w->err = WR_ERR_stack_overflow; return 0; } }
+#define CHECK_STACK { if ( stackTop >= stackLimit ) { WR_VM_FAIL( WR_ERR_stack_overflow ); } }
 #else
 #define CHECK_STACK
 #endif
@@ -181,7 +239,7 @@ static void dumpStack( const WRValue* bottom, const WRValue* top )
 //------------------------------------------------------------------------------
 #ifdef WRENCH_HANDLE_MALLOC_FAIL
   bool g_mallocFailed = false;
-  #define MALLOC_FAIL_CHECK {if( g_mallocFailed ) { w->err = WR_ERR_malloc_failed; g_mallocFailed = false; return 0; } }
+  #define MALLOC_FAIL_CHECK {if( g_mallocFailed ) { g_mallocFailed = false; WR_VM_FAIL( WR_ERR_malloc_failed ); } }
 #else
   #define MALLOC_FAIL_CHECK
 #endif
@@ -247,15 +305,17 @@ static float multiplicationF( float a, float b ) { return a * b; }
 
 static int divisionI( int a, int b )
 {
-	return b ? a / b : 0;
+	return b ? ((b == -1) ? (int)(0u - (unsigned int)a) : a / b) : 0;
 }
-int wr_addI( int a, int b ) { return a + b; }
-static int subtractionI( int a, int b ) { return a - b; }
-static int multiplicationI( int a, int b ) { return a * b; }
+// two's complement wrap like the non compact operations, signed overflow is
+// undefined in C++
+int wr_addI( int a, int b ) { return (int)((unsigned int)a + (unsigned int)b); }
+static int subtractionI( int a, int b ) { return (int)((unsigned int)a - (unsigned int)b); }
+static int multiplicationI( int a, int b ) { return (int)((unsigned int)a * (unsigned int)b); }
 
-static int rightShiftI( int a, int b ) { return a >> b; }
-static int leftShiftI( int a, int b ) { return a << b; }
-static int modI( int a, int b ) { return a % b; }
+static int rightShiftI( int a, int b ) { return a >> (b & 31); }
+static int leftShiftI( int a, int b ) { return (int)((unsigned int)a << (b & 31)); }
+static int modI( int a, int b ) { return (b == 0 || b == -1) ? 0 : a % b; }
 static int orI( int a, int b ) { return a | b; }
 static int xorI( int a, int b ) { return a ^ b; }
 static int andI( int a, int b ) { return a & b; }
@@ -264,6 +324,8 @@ static bool CompareGTI( int a, int b ) { return a > b; }
 static bool CompareLTI( int a, int b ) { return a < b; }
 static bool CompareANDI( int a, int b ) { return a && b; }
 static bool CompareORI( int a, int b ) { return a || b; }
+static bool CompareANDF( float a, float b ) { return a && b; }
+static bool CompareORF( float a, float b ) { return a || b; }
 
 static bool CompareLTF( float a, float b ) { return a < b; }
 static bool CompareGTF( float a, float b ) { return a > b; }
@@ -271,8 +333,14 @@ static bool CompareGTF( float a, float b ) { return a > b; }
 bool CompareEQI( int a, int b ) { return a == b; }
 bool CompareEQF( float a, float b ) { return WR_FLOATS_EQUAL( a, b ); }
 
-static bool CompareBlankF( float a, float b ) { return false; }
-static float blankF( float a, float b ) { return 0; }
+// integer operators with a float operand work on the truncated values, like
+// the non compact build does
+static float rightShiftF( float a, float b ) { return (float)rightShiftI( (int)a, (int)b ); }
+static float leftShiftF( float a, float b ) { return (float)leftShiftI( (int)a, (int)b ); }
+static float modF( float a, float b ) { return (float)modI( (int)a, (int)b ); }
+static float orF( float a, float b ) { return (float)orI( (int)a, (int)b ); }
+static float xorF( float a, float b ) { return (float)xorI( (int)a, (int)b ); }
+static float andF( float a, float b ) { return (float)andI( (int)a, (int)b ); }
 
 int32_t READ_32_FROM_PC_func( const unsigned char* P )
 {
@@ -678,7 +746,9 @@ WRValue* wr_callFunction( WRContext* context, WRFunction* function, const WRValu
 	WRValue* stackBase = context->stack + context->stackOffset;
 	WRValue* stackTop;
 #ifdef WRENCH_PROTECT_STACK_FROM_OVERFLOW
-	WRValue* stackLimit = stackBase + (w->stackSize - 2); // one entry buffer, we SHOULD detect on every frame inc
+	// measured from the real stack bottom: imports and nested calls run at
+	// an offset into the same stack
+	WRValue* stackLimit = context->stack + (w->stackSize - 2); // one entry buffer, we SHOULD detect on every frame inc
 #endif
 
 	if ( context->yield_pc )
@@ -714,6 +784,14 @@ WRValue* wr_callFunction( WRContext* context, WRFunction* function, const WRValu
 
 	if ( function )
 	{
+		// the return slot and the arguments must fit (a native calling back
+		// in starts high up the stack)
+		if ( argn < 0 || (stackTop - context->stack) + argn + 2 > w->stackSize )
+		{
+			w->err = WR_ERR_stack_overflow;
+			return 0;
+		}
+
 		stackTop->p = 0;
 		(stackTop++)->p2 = INIT_AS_INT;
 
@@ -724,7 +802,7 @@ WRValue* wr_callFunction( WRContext* context, WRFunction* function, const WRValu
 		
 		pc = context->stopLocation;
 
-		context->gc( stackTop + 1 );
+		context->gc( stackTop ); // everything below stackTop is initialized
 
 		goto callFunction;
 	}
@@ -799,8 +877,7 @@ yieldContinue:
 
 				if ( (stackTop->p2 & INIT_AS_LIB_CONST) != INIT_AS_LIB_CONST )
 				{
-					w->err = WR_ERR_library_constant_not_loaded;
-					return 0;
+					WR_VM_FAIL( WR_ERR_library_constant_not_loaded );
 				}
 				
 				(stackTop++)->p2 &= ~INIT_AS_LIB_CONST;
@@ -813,8 +890,18 @@ yieldContinue:
 			{
 				register0 = &(--stackTop)->singleValue();
 				register1 = &(stackTop - 1)->deref();
-				register1->p2 = INIT_AS_ARRAY;
-				register1->va = context->getSVA( register0->ui, SV_VALUE, true );
+				{
+					// typed as an array only once the storage exists: the
+					// collector must never see an array without one
+					WRGCObject* array = context->getSVA( register0->ui, SV_VALUE, true );
+					if ( !array )
+					{
+						register1->init();
+						WR_VM_FAIL( WR_ERR_malloc_failed );
+					}
+					register1->va = array;
+					register1->p2 = INIT_AS_ARRAY;
+				}
 				context->gc( stackTop );
 				CONTINUE;
 			}
@@ -827,10 +914,17 @@ yieldContinue:
 			
 			CASE(Yield):
 			{
+				if ( context->flags & (uint8_t)WRC_InNative )
+				{
+					// called back from a native: a later continue could not
+					// resume the native frames in between
+					WR_VM_FAIL( WR_ERR_yield_in_native_call );
+				}
+
 				// preserve the calling and stack context so the code
 				// can pick up where it left off on continue
 				context->yieldArgs = READ_8_FROM_PC(pc++);
-#if defined(WRENCH_TIME_SLICES) || defined(WRENCH_INCLUDE_DEBUG_CODE)
+#if defined(WRENCH_TIME_SLICES)
 doYield:
 #endif
 #if defined(WRENCH_TIME_SLICES)
@@ -847,17 +941,16 @@ doYield:
 			CASE(DebugInfo):
 			{
 #ifdef WRENCH_INCLUDE_DEBUG_CODE
-				if ( context->debugInterface
-					 && context->debugInterface->I->codewordEncountered(pc, READ_16_FROM_PC(pc), stackTop) )
+				// the server blocks in here while the debugger has us
+				// stopped, a true return means the client terminated us
+				if ( context->debugServer
+						&& context->debugServer->onDebugInfo(context, pc, frameBase, stackTop) )
 				{
-debugReturn:
-					context->yieldArgs = 0;
-					context->flags |= (uint8_t)WRC_ForceYielded;
-					pc += 2;
-					goto doYield;
+					w->err = WR_ERR_debugger_terminated;
+					return 0;
 				}
 #endif
-				pc += 2; // no debug code compiled in, just skip the directive
+				pc += 2; // skip the codeword
 				CONTINUE;
 			}
 
@@ -883,25 +976,29 @@ debugReturn:
 									// import shares our stack, tell it where to find it's args
 									uint16_t savedOffset = import->stackOffset;
 									import->stackOffset = (uint16_t)(stackTop - context->stack);
+									WR_IMPORT_CALL_BEGIN
 									register0 = wr_callFunction( import, I->wrf, stackTop - args, args );
+									WR_IMPORT_CALL_END
 									import->stackOffset = savedOffset;
 									if ( import->yield_pc )
 									{
-										w->err = WR_ERR_cannot_call_function_context_yielded;
-										return 0;
+										import->yield_pc = 0; // an import cannot be resumed, drop the yield
+										WR_VM_FAIL( WR_ERR_cannot_call_function_context_yielded );
 									}
 									if ( !register0 )
 									{
 										return 0;
 									}
+									// keep the value itself: a reference into the
+									// import's finished frame would dangle
+									*stackTop = *register0;
 									register0 = stackTop;
 
 								if ( *pc == O_NewObjectTable )
 								{
 									if ( !I->wrf->namespaceOffset )
 									{
-										w->err = WR_ERR_struct_not_exported;
-										return 0;
+										WR_VM_FAIL( WR_ERR_struct_not_exported );
 									}
 									
 									table = import->bottom + I->wrf->namespaceOffset;
@@ -933,19 +1030,11 @@ debugReturn:
 						}
 					}
 
-					if ( w->onCallbackNotFound )
-					{
-						w->onCallbackNotFound( fhash, context, stackTop - args, args, *stackTop, 0 );
-					}
-					else
-					{
-						w->err = WR_ERR_function_not_found;
-						return 0;
-					}
+					WR_CALL_NOT_FOUND( w->onCallbackNotFound, w->onCallbackNotFound( fhash, context, stackTop - args, args, *stackTop, 0 ), WR_ERR_function_not_found );
 				}
 				else
 				{
-					register1->ccb( context, stackTop - args, args, *stackTop, register1->usr );
+					WR_NATIVE_CALL( register1->ccb( context, stackTop - args, args, *stackTop, register1->usr ) );
 				}
 
 				// DO care about return value, which will be at the top
@@ -970,6 +1059,7 @@ newObjOut:
 			CASE(CallFunctionByHashAndPop):
 			{
 				args = READ_8_FROM_PC(pc++);
+				stackTop->init(); // return slot: callbacks only set part of it and the gc may scan it
 
 				uint32_t fhash = READ_32_FROM_PC(pc);
 				pc += 4;
@@ -986,12 +1076,14 @@ newObjOut:
 								// import shares our stack, tell it where to find it's args
 								uint16_t savedOffset = import->stackOffset;
 								import->stackOffset = (uint16_t)(stackTop - context->stack);
+								WR_IMPORT_CALL_BEGIN
 								register0 = wr_callFunction( import, register0->wrf, stackTop - args, args );
+								WR_IMPORT_CALL_END
 								import->stackOffset = savedOffset;
 								if ( import->yield_pc )
 								{
-									w->err = WR_ERR_cannot_call_function_context_yielded;
-									return 0;
+									import->yield_pc = 0; // an import cannot be resumed, drop the yield
+									WR_VM_FAIL( WR_ERR_cannot_call_function_context_yielded );
 								}
 								if ( !register0 )
 								{
@@ -1004,19 +1096,11 @@ newObjOut:
 						}
 					}
 
-					if ( w->onCallbackNotFound )
-					{
-						w->onCallbackNotFound( fhash, context, stackTop - args, args, *stackTop, 0 );
-					}
-					else
-					{
-						w->err = WR_ERR_function_not_found;
-						return 0;
-					}
+					WR_CALL_NOT_FOUND( w->onCallbackNotFound, w->onCallbackNotFound( fhash, context, stackTop - args, args, *stackTop, 0 ), WR_ERR_function_not_found );
 				}
 				else
 				{
-					register1->ccb( context, stackTop - args, args, *stackTop, register1->usr );
+					WR_NATIVE_CALL( register1->ccb( context, stackTop - args, args, *stackTop, register1->usr ) );
 				}
 
 CallFunctionByHashAndPop_continue:
@@ -1056,16 +1140,15 @@ callFunction:
 #ifdef WRENCH_PROTECT_STACK_FROM_OVERFLOW
 				if ( stackTop + function->frameSpaceNeeded + 2 >= stackLimit )
 				{
-					w->err = WR_ERR_stack_overflow;
-					return 0;
+					WR_VM_FAIL( WR_ERR_stack_overflow );
 				}
 #endif
 				
 				// initialize locals to int zero
 				for( int l=0; l<function->frameSpaceNeeded; ++l )
 				{
-					(stackTop++)->p2 = INIT_AS_INT;
 					stackTop->p = 0;
+					(stackTop++)->p2 = INIT_AS_INT;
 				}
 			
 				// temp value contains return vector/frame base
@@ -1098,21 +1181,13 @@ callFunction:
 
 				uint32_t fhash = READ_32_FROM_PC(pc);
 				register1 = w->globalRegistry.getAsRawValueHashTable(fhash);
-				if ( !register1 || !register1->lcb )
+				if ( !register1 || !register1->lcb || (register1->p2 & INIT_AS_LIB_CONST) == INIT_AS_LIB_CONST ) // constants share the registry
 				{
-					if ( w->onLibCallbackNotFound )
-					{
-						w->onLibCallbackNotFound( fhash, stackTop, args, context );
-					}
-					else
-					{
-						w->err = WR_ERR_lib_function_not_found;
-						return 0;
-					}
+					WR_CALL_NOT_FOUND( w->onLibCallbackNotFound, w->onLibCallbackNotFound( fhash, stackTop, args, context ), WR_ERR_lib_function_not_found );
 				}
 				else
 				{
-					register1->lcb( stackTop, args, context );
+					WR_NATIVE_CALL( register1->lcb( stackTop, args, context ) );
 				}
 				
 				pc += 4;
@@ -1145,24 +1220,17 @@ callFunction:
 			CASE(CallLibFunctionAndPop):
 			{
 				args = READ_8_FROM_PC(pc++); // which have already been pushed
+				stackTop->init(); // return slot: library functions may run the gc over it
 
 				uint32_t fhash = READ_32_FROM_PC(pc);
 				register1 = w->globalRegistry.getAsRawValueHashTable(fhash);
-				if ( !register1 || !register1->lcb )
+				if ( !register1 || !register1->lcb || (register1->p2 & INIT_AS_LIB_CONST) == INIT_AS_LIB_CONST ) // constants share the registry
 				{
-					if ( w->onLibCallbackNotFound )
-					{
-						w->onLibCallbackNotFound( fhash, stackTop, args, context );
-					}
-					else
-					{
-						w->err = WR_ERR_lib_function_not_found;
-						return 0;
-					}
+					WR_CALL_NOT_FOUND( w->onLibCallbackNotFound, w->onLibCallbackNotFound( fhash, stackTop, args, context ), WR_ERR_lib_function_not_found );
 				}
 				else
 				{
-					register1->lcb( stackTop, args, context );
+					WR_NATIVE_CALL( register1->lcb( stackTop, args, context ) );
 				}
 				
 				pc += 4;
@@ -1201,8 +1269,7 @@ callFunction:
 				}
 				else
 				{
-					w->err = WR_ERR_hash_not_found;
-					return 0;
+					WR_VM_FAIL( WR_ERR_hash_not_found );
 				}
 				
 				CONTINUE;
@@ -1275,8 +1342,13 @@ callFunction:
 				register0 = --stackTop;
 				register1 = (stackTop - 1);
 				register2 = &(register1->deref());
-				register1->p2 = INIT_AS_INT;
-				register1->i = ((register2->xtype == WR_EX_HASH_TABLE) && register2->va->exists(register0->getHash(), false)) ? 1 : 0;
+				{
+					// decide before writing the result: for a temporary table
+					// deref() is the slot that receives it
+					bool found = (register2->xtype == WR_EX_HASH_TABLE) && register2->va->exists( register0->getHash(), false );
+					register1->p2 = INIT_AS_INT;
+					register1->i = found ? 1 : 0;
+				}
 				
 				FASTCONTINUE;	
 			}
@@ -1301,13 +1373,6 @@ callFunction:
 				stackTop = frameBase;
 				frameBase = register0->frame;
 
-#ifdef WRENCH_INCLUDE_DEBUG_CODE
-				if ( context->debugInterface
-					 && context->debugInterface->I->codewordEncountered(pc, WRD_Return, stackTop) )
-				{
-					goto debugReturn;
-				}
-#endif
 				FASTCONTINUE;
 			}
 
@@ -1336,12 +1401,6 @@ callFunction:
 			{
 				*stackBase = *(register0 + 1);
 				context->stopLocation = pc - 1;
-#ifdef WRENCH_INCLUDE_DEBUG_CODE
-				if ( context->debugInterface )
-				{
-					context->debugInterface->I->codewordEncountered( pc, WRD_FunctionCall | WRD_GlobalStopFunction, stackTop );
-				}
-#endif
 #if defined(WRENCH_TIME_SLICES)
 				w->lastSlicesUsed = w->instructionsPerSlice - w->sliceInstructionCount;
 #endif
@@ -1386,6 +1445,7 @@ callFunction:
 			{
 				register0 = &(globalSpace + READ_8_FROM_PC(pc++))->deref();
 				register1 = stackTop++;
+				register1->init(); // gc below may scan this slot
 				goto hashIndexJump;
 			}
 
@@ -1393,6 +1453,7 @@ callFunction:
 			{
 				register0 = &(frameBase + READ_8_FROM_PC(pc++))->deref();
 				register1 = stackTop++;
+				register1->init(); // gc below may scan this slot
 				goto hashIndexJump;
 			}
 
@@ -1405,14 +1466,15 @@ hashIndexJump:
 				pc += 4;
 				if ( !EXPECTS_HASH_INDEX(register0->xtype) )
 				{
-					register0->p2 = INIT_AS_HASH_TABLE;
-					register0->va = context->getSVA( 0, SV_HASH_TABLE, false );
-#ifdef WRENCH_HANDLE_MALLOC_FAIL
-					if ( !register0->va )
+					// typed only once the table exists (see InitArray)
+					WRGCObject* table = context->getSVA( 0, SV_HASH_TABLE, false );
+					if ( !table )
 					{
-						CONTINUE;
+						register0->init();
+						WR_VM_FAIL( WR_ERR_malloc_failed );
 					}
-#endif
+					register0->va = table;
+					register0->p2 = INIT_AS_HASH_TABLE;
 					context->gc(stackTop);
 				}
 
@@ -1838,16 +1900,15 @@ NextIterator:
 				CONTINUE;
 			}
 			
-			CASE(BinaryRightShiftSkipLoad): { intCall = rightShiftI; goto targetFuncOpSkipLoad; }
-			CASE(BinaryLeftShiftSkipLoad): { intCall = leftShiftI; goto targetFuncOpSkipLoad; }
-			CASE(BinaryAndSkipLoad): { intCall = andI; goto targetFuncOpSkipLoad; }
-			CASE(BinaryOrSkipLoad): { intCall = orI; goto targetFuncOpSkipLoad; }
-			CASE(BinaryXORSkipLoad): { intCall = xorI; goto targetFuncOpSkipLoad; }
+			CASE(BinaryRightShiftSkipLoad): { intCall = rightShiftI; floatCall = rightShiftF; goto targetFuncOpSkipLoadNoClobberF; }
+			CASE(BinaryLeftShiftSkipLoad): { intCall = leftShiftI; floatCall = leftShiftF; goto targetFuncOpSkipLoadNoClobberF; }
+			CASE(BinaryAndSkipLoad): { intCall = andI; floatCall = andF; goto targetFuncOpSkipLoadNoClobberF; }
+			CASE(BinaryOrSkipLoad): { intCall = orI; floatCall = orF; goto targetFuncOpSkipLoadNoClobberF; }
+			CASE(BinaryXORSkipLoad): { intCall = xorI; floatCall = xorF; goto targetFuncOpSkipLoadNoClobberF; }
 			CASE(BinaryModSkipLoad):
 			{
 				intCall = modI;
-targetFuncOpSkipLoad:
-				floatCall = blankF;
+				floatCall = modF;
 targetFuncOpSkipLoadNoClobberF:
 				register2 = stackTop++;
 targetFuncOpSkipLoadAndReg2:
@@ -1863,12 +1924,12 @@ targetFuncOpSkipLoadAndReg2:
 			CASE(BinaryMultiplication): { floatCall = multiplicationF; intCall = multiplicationI; goto targetFuncOp; }
 			CASE(BinarySubtraction): { floatCall = subtractionF; intCall = subtractionI; goto targetFuncOp; } 
 			CASE(BinaryDivision): { floatCall = divisionF; intCall = divisionI; goto targetFuncOp; }
-			CASE(BinaryRightShift): { floatCall = blankF; intCall = rightShiftI; goto targetFuncOp; }
-			CASE(BinaryLeftShift): { floatCall = blankF; intCall = leftShiftI; goto targetFuncOp; }
-			CASE(BinaryMod): { floatCall = blankF; intCall = modI; goto targetFuncOp; }
-			CASE(BinaryOr): { floatCall = blankF; intCall = orI; goto targetFuncOp; }
-			CASE(BinaryXOR): { floatCall = blankF; intCall = xorI; goto targetFuncOp; }
-			CASE(BinaryAnd): { floatCall = blankF; intCall = andI; goto targetFuncOp; }
+			CASE(BinaryRightShift): { floatCall = rightShiftF; intCall = rightShiftI; goto targetFuncOp; }
+			CASE(BinaryLeftShift): { floatCall = leftShiftF; intCall = leftShiftI; goto targetFuncOp; }
+			CASE(BinaryMod): { floatCall = modF; intCall = modI; goto targetFuncOp; }
+			CASE(BinaryOr): { floatCall = orF; intCall = orI; goto targetFuncOp; }
+			CASE(BinaryXOR): { floatCall = xorF; intCall = xorI; goto targetFuncOp; }
+			CASE(BinaryAnd): { floatCall = andF; intCall = andI; goto targetFuncOp; }
 			CASE(BinaryAddition):
 			{
 				floatCall = addF;
@@ -1885,16 +1946,15 @@ targetFuncOp:
 			CASE(AddAssign): { floatCall = addF; intCall = wr_addI; goto binaryTableOp; }
 			CASE(MultiplyAssign): { floatCall = multiplicationF; intCall = multiplicationI; goto binaryTableOp; }
 			CASE(DivideAssign): { floatCall = divisionF; intCall = divisionI; goto binaryTableOp; }
-			CASE(ModAssign): { intCall = modI; goto binaryTableOpBlankF; }
-			CASE(ORAssign): { intCall = orI; goto binaryTableOpBlankF; }
-			CASE(ANDAssign): { intCall = andI; goto binaryTableOpBlankF; }
-			CASE(XORAssign): { intCall = xorI; goto binaryTableOpBlankF; }
-			CASE(RightShiftAssign): { intCall = rightShiftI; goto binaryTableOpBlankF; }
+			CASE(ModAssign): { intCall = modI; floatCall = modF; goto binaryTableOp; }
+			CASE(ORAssign): { intCall = orI; floatCall = orF; goto binaryTableOp; }
+			CASE(ANDAssign): { intCall = andI; floatCall = andF; goto binaryTableOp; }
+			CASE(XORAssign): { intCall = xorI; floatCall = xorF; goto binaryTableOp; }
+			CASE(RightShiftAssign): { intCall = rightShiftI; floatCall = rightShiftF; goto binaryTableOp; }
 			CASE(LeftShiftAssign):
 			{
 				intCall = leftShiftI;
-binaryTableOpBlankF:	
-				floatCall = blankF; 
+				floatCall = leftShiftF;
 binaryTableOp:	
 				register0 = --stackTop;
 				register1 = stackTop - 1;
@@ -1913,17 +1973,15 @@ binaryTableOp:
 			CASE(AddAssignAndPop): { floatCall = addF; intCall = wr_addI; goto binaryTableOpAndPop;	}
 			CASE(MultiplyAssignAndPop): { floatCall = multiplicationF; intCall = multiplicationI; goto binaryTableOpAndPop; }
 			CASE(DivideAssignAndPop): { floatCall = divisionF; intCall = divisionI; goto binaryTableOpAndPop; }
-			CASE(ModAssignAndPop): { intCall = modI; goto binaryTableOpAndPopBlankF; }
-			CASE(ORAssignAndPop): { intCall = orI; goto binaryTableOpAndPopBlankF; }
-			CASE(ANDAssignAndPop): { intCall = andI; goto binaryTableOpAndPopBlankF; }
-			CASE(XORAssignAndPop): { intCall = xorI; goto binaryTableOpAndPopBlankF; }
-			CASE(RightShiftAssignAndPop): { intCall = rightShiftI; goto binaryTableOpAndPopBlankF; }
+			CASE(ModAssignAndPop): { intCall = modI; floatCall = modF; goto binaryTableOpAndPop; }
+			CASE(ORAssignAndPop): { intCall = orI; floatCall = orF; goto binaryTableOpAndPop; }
+			CASE(ANDAssignAndPop): { intCall = andI; floatCall = andF; goto binaryTableOpAndPop; }
+			CASE(XORAssignAndPop): { intCall = xorI; floatCall = xorF; goto binaryTableOpAndPop; }
+			CASE(RightShiftAssignAndPop): { intCall = rightShiftI; floatCall = rightShiftF; goto binaryTableOpAndPop; }
 			CASE(LeftShiftAssignAndPop): 
 			{
 				intCall = leftShiftI;
-				
-binaryTableOpAndPopBlankF:
-				floatCall = blankF;
+				floatCall = leftShiftF;
 binaryTableOpAndPop:
 				register0 = --stackTop;
 				register1 = --stackTop;
@@ -2032,7 +2090,7 @@ compactPreDecrement:
 			CASE(BLA):
 			{
 				boolIntCall = CompareANDI;
-				boolFloatCall = CompareBlankF;
+				boolFloatCall = CompareANDF;
 compactBLAPreLoad:
 				register0 = --stackTop;
 				register1 = --stackTop;
@@ -2045,7 +2103,7 @@ compactBLA:
 			CASE(BLA8):
 			{
 				boolIntCall = CompareANDI;
-				boolFloatCall = CompareBlankF;
+				boolFloatCall = CompareANDF;
 compactBLA8PreLoad:
 				register0 = --stackTop;
 compactBLA8PreReg1:
@@ -2059,7 +2117,7 @@ compactBLA8:
 			CASE(BLO):
 			{
 				boolIntCall = CompareORI;
-				boolFloatCall = CompareBlankF;
+				boolFloatCall = CompareORF;
 				register0 = --stackTop;
 				register1 = --stackTop;
 				goto compactBLA;
@@ -2068,7 +2126,7 @@ compactBLA8:
 			CASE(BLO8):
 			{
 				boolIntCall = CompareORI;
-				boolFloatCall = CompareBlankF;
+				boolFloatCall = CompareORF;
 				register0 = --stackTop;
 				register1 = --stackTop;
 				goto compactBLA8;
@@ -2184,8 +2242,8 @@ CompactFGFunc:
 				goto CompactFFFunc;
 			}
 
-			CASE(LogicalAnd): { boolIntCall = CompareANDI; goto compactReturnFuncNormal; }
-			CASE(LogicalOr): { boolIntCall = CompareORI; goto compactReturnFuncNormal; }
+			CASE(LogicalAnd): { boolIntCall = CompareANDI; boolFloatCall = CompareANDF; goto compactReturnFuncNormal; }
+			CASE(LogicalOr): { boolIntCall = CompareORI; boolFloatCall = CompareORF; goto compactReturnFuncNormal; }
 			CASE(CompareLE): { boolIntCall = CompareGTI; boolFloatCall = CompareGTF; goto compactReturnFuncInverted; }
 			CASE(CompareGE): { boolIntCall = CompareLTI; boolFloatCall = CompareLTF; goto compactReturnFuncInverted; }
 			CASE(CompareGT): { boolIntCall = CompareGTI; boolFloatCall = CompareGTF; goto compactReturnFuncNormal; }
@@ -2720,8 +2778,7 @@ compactCompareGG8:
 				wr_DivideBinary[(register0->type<<2)|register1->type]( register0, register1, stackTop );
 				if ( IS_INVALID(stackTop++->p2) )
 				{
-					w->err = WR_ERR_division_by_zero;
-					return 0;
+					WR_VM_FAIL( WR_ERR_division_by_zero );
 				}
 #else
 				wr_DivideBinary[(register0->type<<2)|register1->type]( register0, register1, stackTop++ );
@@ -2738,8 +2795,7 @@ compactCompareGG8:
 				wr_DivideBinary[(register0->type<<2)|register1->type]( register0, register1, stackTop );
 				if ( IS_INVALID(stackTop++->p2) )
 				{
-					w->err = WR_ERR_division_by_zero;
-					return 0;
+					WR_VM_FAIL( WR_ERR_division_by_zero );
 				}
 #else
 				wr_DivideBinary[(register0->type<<2)|register1->type]( register0, register1, stackTop++ );
@@ -2756,8 +2812,7 @@ compactCompareGG8:
 				wr_DivideBinary[(register0->type<<2)|register1->type]( register0, register1, stackTop );
 				if ( IS_INVALID(stackTop++->p2) )
 				{
-					w->err = WR_ERR_division_by_zero;
-					return 0;
+					WR_VM_FAIL( WR_ERR_division_by_zero );
 				}
 #else
 				wr_DivideBinary[(register0->type<<2)|register1->type]( register0, register1, stackTop++ );
@@ -2774,8 +2829,7 @@ compactCompareGG8:
 				wr_DivideBinary[(register0->type<<2)|register1->type]( register0, register1, stackTop );
 				if ( IS_INVALID(stackTop++->p2) )
 				{
-					w->err = WR_ERR_division_by_zero;
-					return 0;
+					WR_VM_FAIL( WR_ERR_division_by_zero );
 				}
 #else
 				wr_DivideBinary[(register0->type<<2)|register1->type]( register0, register1, stackTop++ );
@@ -3183,8 +3237,7 @@ targetFuncOp:
 #ifdef WRENCH_TRAP_DIVISION_BY_ZERO
 				if ( IS_INVALID(register0->p2) )
 				{
-					w->err = WR_ERR_division_by_zero;
-					return 0;
+					WR_VM_FAIL( WR_ERR_division_by_zero );
 				}
 #endif
 				CONTINUE;
@@ -3210,8 +3263,7 @@ binaryTableOp:
 #ifdef WRENCH_TRAP_DIVISION_BY_ZERO
 				if ( IS_INVALID(register0->p2) )
 				{
-					w->err = WR_ERR_division_by_zero;
-					return 0;
+					WR_VM_FAIL( WR_ERR_division_by_zero );
 				}
 #endif
 				CONTINUE;
@@ -3238,8 +3290,7 @@ binaryTableOpAndPop:
 #ifdef WRENCH_TRAP_DIVISION_BY_ZERO
 				if ( IS_INVALID(register0->p2) )
 				{
-					w->err = WR_ERR_division_by_zero;
-					return 0;
+					WR_VM_FAIL( WR_ERR_division_by_zero );
 				}
 #endif
 				CONTINUE;
@@ -3260,8 +3311,7 @@ targetFuncStoreGlobalOp:
 				targetFunc[(register1->type<<2)|register0->type]( register1, register0, T );
 				if ( IS_INVALID(T->p2) )
 				{
-					w->err = WR_ERR_division_by_zero;
-					return 0;
+					WR_VM_FAIL( WR_ERR_division_by_zero );
 				}
 #else
 				targetFunc[(register1->type<<2)|register0->type]( register1, register0, globalSpace + READ_8_FROM_PC(pc++) );
@@ -3284,8 +3334,7 @@ targetFuncStoreLocalOp:
 				targetFunc[(register1->type<<2)|register0->type]( register1, register0, T );
 				if ( IS_INVALID(T->p2) )
 				{
-					w->err = WR_ERR_division_by_zero;
-					return 0;
+					WR_VM_FAIL( WR_ERR_division_by_zero );
 				}
 #else
 				targetFunc[(register1->type<<2)|register0->type]( register1, register0, frameBase + READ_8_FROM_PC(pc++) );

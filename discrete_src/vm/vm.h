@@ -44,7 +44,9 @@ struct WRFunction
 enum WRContextFlags
 {
 	WRC_OwnsMemory = 1<<0, // if this is true, 'bottom' must be freed upon destruction
-	WRC_ForceYielded = 1<<1, // if this is true, 'bottom' must be freed upon destruction
+	WRC_ForceYielded = 1<<1, // the last yield was forced by a time slice
+	WRC_Import = 1<<2, // created by wr_import(), runs on its parent's stack
+	WRC_InNative = 1<<3, // a native callback of this context is running, calls back into it cannot yield
 };
 
 //------------------------------------------------------------------------------

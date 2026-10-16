@@ -206,6 +206,7 @@ WRState* wr_newState( int stackSize )
 																		   
 	memset( (unsigned char*)w, 0, sizeof(WRState) );
 	w->globalRegistry.growHash( WRENCH_NULL_HASH, 0 );
+	w->mailbox.growHash( WRENCH_NULL_HASH, 0 );
 
 	w->stackSize = stackSize;
 	w->allocatedMemoryLimit = WRENCH_DEFAULT_ALLOCATED_MEMORY_GC_HINT;
@@ -232,8 +233,10 @@ void wr_destroyState( WRState* w )
 	}
 
 	wr_freeGCChain( w->globalRegistry.m_nextGC );
+	wr_freeGCChain( w->mailbox.m_nextGC );
 
 	w->globalRegistry.clear();
+	w->mailbox.clear();
 
 	g_free( w );
 }
@@ -276,21 +279,30 @@ bool wr_executeFunctionZero( WRContext* context )
 	return wr_executeContext(context) ? true : false;
 }
 
+// a block the caller handed over is ours to free when it cannot be used
+static WRContext* wr_rejectBlock( WRState* w, const unsigned char* block, bool takeOwnership, WRError error )
+{
+	w->err = error;
+	if ( takeOwnership )
+	{
+		g_free( (void*)block );
+	}
+	return 0;
+}
+
 //------------------------------------------------------------------------------
 WRContext* wr_createContext( WRState* w, const unsigned char* block, const int blockSize, bool takeOwnership, WRValue* stack )
 {
 	if ( blockSize < 8 )
 	{
-		w->err = WR_ERR_bad_bytecode_CRC;
-		return 0;
+		return wr_rejectBlock( w, block, takeOwnership, WR_ERR_bad_bytecode_CRC );
 	}
 
 	// CRC the code block, at least is it what the compiler intended?
 	uint32_t hash = READ_32_FROM_PC(block + (blockSize - 4));
 	if ( hash != wr_hash_read8(block, (blockSize - 4)) + WRENCH_VERSION_MAJOR )
 	{
-		w->err = WR_ERR_bad_bytecode_CRC;
-		return 0;
+		return wr_rejectBlock( w, block, takeOwnership, WR_ERR_bad_bytecode_CRC );
 	}
 
 	int globals = READ_8_FROM_PC( block );
@@ -300,10 +312,9 @@ WRContext* wr_createContext( WRState* w, const unsigned char* block, const int b
 	int headerSize = 3 + (localFuncs * WR_FUNCTION_CORE_SIZE);
 	if ( headerSize + 4 > blockSize )
 	{
-		w->err = WR_ERR_bad_bytecode_CRC;
-		return 0;
+		return wr_rejectBlock( w, block, takeOwnership, WR_ERR_bad_bytecode_CRC );
 	}
-	
+
 	int needed = sizeof(WRContext) // class
 				 + (globals * sizeof(WRValue))  // globals
 				 + (localFuncs * sizeof(WRFunction)) // functions
@@ -313,8 +324,7 @@ WRContext* wr_createContext( WRState* w, const unsigned char* block, const int b
 #ifdef WRENCH_HANDLE_MALLOC_FAIL
 	if ( !C )
 	{
-		w->err = WR_ERR_malloc_failed;
-		return 0;
+		return wr_rejectBlock( w, block, takeOwnership, WR_ERR_malloc_failed );
 	}
 #endif
 	
@@ -393,23 +403,57 @@ WRContext* wr_import( WRContext* context, const unsigned char* block, const int 
 	{
 		return 0;
 	}
+	import->flags |= WRC_Import;
 
-	if ( !wr_callFunction(import, (WRFunction*)0) )
-	{ 
-		// imported context may not yield
-		wr_destroyContextEx( import );
-		return 0;
+	// the import's global code runs on the shared stack above anything the
+	// parent still needs: its frames when called from a native callback, or
+	// its saved stack when the parent is yielded
+	import->stackOffset = context->stackOffset;
+	if ( context->yield_pc && context->yield_stackTop )
+	{
+		import->stackOffset = (uint16_t)(context->yield_stackTop + 1 - context->stack);
 	}
 
+	// join the group before running anything so garbage collection sees
+	// the parent's objects too; the list is circular
 	import->imported = context->imported;
 	context->imported = import;
-
-	// make this a circular linked list
 	if ( import->imported == 0 )
 	{
 		import->imported = context;
 	}
 
+	// the global code must run to the end: no time slice may preempt it, and
+	// a running caller's slice carries on afterwards
+#ifdef WRENCH_TIME_SLICES
+	WRState* w = context->w;
+	int savedSlice = w->instructionsPerSlice;
+	int savedSliceCount = w->sliceInstructionCount;
+	int savedYieldEnabled = w->yieldEnabled;
+	w->instructionsPerSlice = 0;
+#endif
+
+	WRValue* ran = wr_callFunction( import, (WRFunction*)0 );
+
+#ifdef WRENCH_TIME_SLICES
+	w->instructionsPerSlice = savedSlice;
+	w->sliceInstructionCount = savedSliceCount;
+	w->yieldEnabled = savedYieldEnabled;
+#endif
+
+	if ( !ran )
+	{
+		// failed, or yielded: an imported context may not yield
+		if ( import->yield_pc && context->w->err == WR_ERR_None )
+		{
+			context->w->err = WR_ERR_cannot_call_function_context_yielded;
+		}
+		context->imported = (import->imported == context) ? 0 : import->imported;
+		wr_destroyContextEx( import );
+		return 0;
+	}
+
+	import->stackOffset = 0;
 	return import;
 }
 
@@ -488,7 +532,7 @@ void wr_destroyContextEx( WRContext* context )
 {
 	// g_free all memory allocations by forcing the gc to collect everything
 	context->globals = 0;
-	context->allocatedMemoryHint = (uint16_t)-1;
+	context->allocatedMemoryHint = 0xFFFFFFFF; // above any limit, so gc() really runs
 	context->gc( 0 );
 
 	wr_freeGCChain( context->registry.m_nextGC );
@@ -794,105 +838,128 @@ int WRValue::arraySize() const
 	return V.xtype == WR_EX_ARRAY ? V.va->m_size : -1;
 }
 
-//------------------------------------------------------------------------------
-int wr_technicalAsStringEx( char* string, const WRValue* value, size_t pos, size_t maxLen, bool valuesInHex )
+// The buffer holds maxLen bytes including the terminator: positions never
+// pass maxLen - 1, so the caller can always terminate the text
+static size_t wr_technicalPut( char* string, size_t pos, size_t maxLen, const char* text )
 {
-	if ( pos >= maxLen )
+	while ( *text && pos + 1 < maxLen )
 	{
-		return maxLen - 1;
+		string[pos++] = *text++;
 	}
-	
+	return pos;
+}
+
+// containers can hold themselves, so nesting is cut off
+#define WR_TECHNICAL_MAX_DEPTH 16
+
+static size_t wr_technicalAsStringDepth( char* string, const WRValue* value, size_t pos, size_t maxLen, bool valuesInHex, int depth )
+{
+	if ( pos + 1 >= maxLen )
+	{
+		return pos;
+	}
+	if ( depth > WR_TECHNICAL_MAX_DEPTH )
+	{
+		return wr_technicalPut( string, pos, maxLen, "..." );
+	}
+
+	char number[32];
+
 	if ( value->type == WR_REF )
 	{
-		strncpy( (string + pos), "ref: ", maxLen - pos );
-		pos += 5;
-		return wr_technicalAsStringEx( string, value->r, pos, maxLen, valuesInHex );
+		pos = wr_technicalPut( string, pos, maxLen, "ref: " );
+		return wr_technicalAsStringDepth( string, value->r, pos, maxLen, valuesInHex, depth + 1 );
 	}
 	else if ( value->type == WR_FLOAT )
 	{
-		return pos + snprintf( string + pos, maxLen - pos, "%g", value->f );
+		snprintf( number, sizeof(number), "%g", value->f );
+		return wr_technicalPut( string, pos, maxLen, number );
 	}
 	else if ( value->type == WR_INT )
 	{
-		return pos + (valuesInHex ? snprintf(string + pos, maxLen - pos, "0x%08lX", (unsigned long int)value->ui )
-			: snprintf(string + pos, maxLen - pos, "%ld", (long int)value->i));
-				
+		if ( valuesInHex )
+		{
+			snprintf( number, sizeof(number), "0x%08lX", (unsigned long int)value->ui );
+		}
+		else
+		{
+			snprintf( number, sizeof(number), "%ld", (long int)value->i );
+		}
+		return wr_technicalPut( string, pos, maxLen, number );
 	}
 	else if ( value->xtype == WR_EX_ARRAY )
 	{
 		if ( value->va->m_type == SV_VALUE )
 		{
-			pos += snprintf( string + pos, maxLen - pos, "[ " );
-
-			bool first = true;
-			for( uint32_t i=0; pos<maxLen && i<value->va->m_size; ++i )
+			pos = wr_technicalPut( string, pos, maxLen, "[ " );
+			for( uint32_t i=0; pos + 1 < maxLen && i<value->va->m_size; ++i )
 			{
-				if ( !first )
+				if ( i )
 				{
-					pos += snprintf( string + pos, maxLen - pos, ", " );
+					pos = wr_technicalPut( string, pos, maxLen, ", " );
 				}
-				first = false;
-				pos = wr_technicalAsStringEx( string, value->va->m_Vdata + i, pos, maxLen, valuesInHex );
+				pos = wr_technicalAsStringDepth( string, value->va->m_Vdata + i, pos, maxLen, valuesInHex, depth + 1 );
 			}
-
-			if ( pos >= maxLen )
-			{
-				return maxLen;
-			}
-
-			pos += snprintf( string + pos, maxLen - pos, " ]" );
+			pos = wr_technicalPut( string, pos, maxLen, " ]" );
 		}
 		else if ( value->va->m_type == SV_CHAR )
 		{
-			pos += snprintf( string + pos, maxLen - pos, "\"" );
-
-			for( uint32_t i=0; pos<maxLen && i<value->va->m_size; ++i )
+			pos = wr_technicalPut( string, pos, maxLen, "\"" );
+			for( uint32_t i=0; pos + 1 < maxLen && i<value->va->m_size; ++i )
 			{
 				string[pos++] = value->va->m_SCdata[i];
 			}
-
-			if ( pos >= maxLen )
-			{
-				return maxLen;
-			}
-
-			pos += snprintf( string + pos, maxLen - pos, "\"" );
+			pos = wr_technicalPut( string, pos, maxLen, "\"" );
 		}
 		else
 		{
-			pos += snprintf( string + pos, maxLen - pos, "<raw array>" );
+			pos = wr_technicalPut( string, pos, maxLen, "<raw array>" );
 		}
 	}
 	else if ( value->xtype == WR_EX_HASH_TABLE )
 	{
-		pos += snprintf( string + pos, maxLen - pos, "{ " );
-		
+		pos = wr_technicalPut( string, pos, maxLen, "{ " );
+
 		bool first = true;
-		for( int32_t element=0; element<value->va->m_mod; ++element )
+		for( int32_t element=0; pos + 1 < maxLen && element<value->va->m_mod; ++element )
 		{
 			if ( value->va->m_hashTable[element] != WRENCH_NULL_HASH )
 			{
 				if ( !first )
 				{
-					pos += snprintf( string + pos, maxLen - pos, ", " );
+					pos = wr_technicalPut( string, pos, maxLen, ", " );
 				}
 				first = false;
 				int32_t index = element << 1;
-				pos = wr_technicalAsStringEx( string, value->va->m_Vdata + index + 1, pos, maxLen, valuesInHex );
-				pos += snprintf( string + pos, maxLen - pos, ":" );
-				pos = wr_technicalAsStringEx( string, value->va->m_Vdata + index, pos, maxLen, valuesInHex );
+				pos = wr_technicalAsStringDepth( string, value->va->m_Vdata + index + 1, pos, maxLen, valuesInHex, depth + 1 );
+				pos = wr_technicalPut( string, pos, maxLen, ":" );
+				pos = wr_technicalAsStringDepth( string, value->va->m_Vdata + index, pos, maxLen, valuesInHex, depth + 1 );
 			}
 		}
 
-		pos += snprintf( string + pos, maxLen - pos, " }" );
+		pos = wr_technicalPut( string, pos, maxLen, " }" );
 	}
 
-	return (pos >= maxLen) ? maxLen : pos;
+	return pos;
+}
+
+//------------------------------------------------------------------------------
+int wr_technicalAsStringEx( char* string, const WRValue* value, size_t pos, size_t maxLen, bool valuesInHex )
+{
+	return (int)wr_technicalAsStringDepth( string, value, pos, maxLen, valuesInHex, 0 );
 }
 
 //------------------------------------------------------------------------------
 char* WRValue::technicalAsString( char* string, unsigned int maxLen, bool valuesInHex, unsigned int* strLen ) const
 {
+	if ( !maxLen )
+	{
+		if ( strLen )
+		{
+			*strLen = 0;
+		}
+		return string;
+	}
 	unsigned int len = wr_technicalAsStringEx( string, this, 0, maxLen, valuesInHex );
 	string[ len ] = 0;
 	if ( strLen )
@@ -913,15 +980,18 @@ char* WRValue::asMallocString( unsigned int* strLen ) const
 	unsigned int len = 0;
 	char* ret = 0;
 
-	if ( type == WR_FLOAT )
+	if ( type == WR_FLOAT || type == WR_INT )
 	{
-		ret = (char*)g_malloc( 12 );
-		len = wr_ftoa( f, ret, 11 );
-	}
-	else if ( type == WR_INT )
-	{
-		ret = (char*)g_malloc( 13 );
-		len = wr_itoa( i, ret, 12 );
+		// longest float form is "-1.23456e+38", longest int "-2147483648"
+		ret = (char*)g_malloc( 16 );
+		if ( !ret )
+		{
+#ifdef WRENCH_HANDLE_MALLOC_FAIL
+			g_mallocFailed = true;
+#endif
+			return 0;
+		}
+		len = (type == WR_FLOAT) ? wr_ftoa( f, ret, 15 ) : wr_itoa( i, ret, 15 );
 	}
 	else if ( xtype == WR_EX_ARRAY && va->m_type == SV_CHAR )
 	{
@@ -935,6 +1005,7 @@ char* WRValue::asMallocString( unsigned int* strLen ) const
 #endif
 		memcpy( ret, va->m_Cdata, va->m_size );
 		ret[ va->m_size ] = 0;
+		len = va->m_size;
 	}
 	else
 	{
@@ -958,18 +1029,22 @@ char* WRValue::asString( char* string, unsigned int maxLen, unsigned int* strLen
 	}
 
 	unsigned int len = 0;
-	
+
+	// maxLen is the size of the buffer, so the terminator must fit inside
+	// it; 0 means unlimited
+	const unsigned int maxChars = maxLen ? (maxLen - 1) : 0xFFFFFFFF;
+
 	if ( type == WR_FLOAT )
 	{
-		len = wr_ftoa( f, string, maxLen );
+		len = wr_ftoa( f, string, maxChars );
 	}
 	else if ( type == WR_INT )
 	{
-		len = wr_itoa( i, string, maxLen );
+		len = wr_itoa( i, string, maxChars );
 	}
 	else if ( xtype == WR_EX_ARRAY && va->m_type == SV_CHAR )
 	{
-		len = maxLen ? (maxLen > va->m_size ? va->m_size : maxLen) : va->m_size;
+		len = (maxChars > va->m_size) ? va->m_size : maxChars;
 		memcpy( string, va->m_Cdata, len );
 		string[len] = 0;
 	}
@@ -1074,17 +1149,54 @@ WRValue* wr_callFunction( WRContext* context, const int32_t hash, const WRValue*
 		cF = context->registry.getAsRawValueHashTable( hash );
 		if ( !cF->wrf ) // not found in the registry, but...
 		{
-				cF = context->w->globalRegistry.getAsRawValueHashTable(hash);
-				if ( cF->lcb ) // it was a library function, call it
+			// a function of an imported module, as script code would find it
+			for( WRContext* import = context->imported; import && import != context; import = import->imported )
+			{
+				WRValue* f = import->registry.exists( hash, false );
+				if ( !f || !f->wrf )
 				{
-					if ( context->yield_pc )
-					{
-						context->w->err = WR_ERR_cannot_call_function_context_yielded;
-						return 0;
-					}
+					continue;
+				}
 
-					WRValue* stack = context->stack + context->stackOffset;
-					int a = 0;
+				// the import shares this context's stack: run above anything
+				// still in use (a native's frames, or a yielded stack)
+				uint16_t savedOffset = import->stackOffset;
+				import->stackOffset = context->stackOffset;
+				if ( context->yield_pc && context->yield_stackTop )
+				{
+					import->stackOffset = (uint16_t)(context->yield_stackTop + 1 - context->stack);
+				}
+				WRValue* ret = wr_callFunction( import, f->wrf, argv, argn );
+				import->stackOffset = savedOffset;
+				if ( import->yield_pc )
+				{
+					import->yield_pc = 0; // an import cannot be resumed
+					context->w->err = WR_ERR_cannot_call_function_context_yielded;
+					return 0;
+				}
+				return ret;
+			}
+
+			cF = context->w->globalRegistry.getAsRawValueHashTable(hash);
+
+			// a library function (library constants share the registry and
+			// must not be called)
+			if ( cF->lcb && (cF->p2 & INIT_AS_LIB_CONST) != INIT_AS_LIB_CONST )
+			{
+				if ( context->yield_pc )
+				{
+					context->w->err = WR_ERR_cannot_call_function_context_yielded;
+					return 0;
+				}
+
+				if ( argn < 0 || context->stackOffset + argn + 2 > context->w->stackSize )
+				{
+					context->w->err = WR_ERR_stack_overflow;
+					return 0;
+				}
+
+				WRValue* stack = context->stack + context->stackOffset;
+				int a = 0;
 				for( ; a<argn; ++a )
 				{
 					stack[a] = argv[a];
@@ -1095,7 +1207,7 @@ WRValue* wr_callFunction( WRContext* context, const int32_t hash, const WRValue*
 				cF->lcb( stack + a, argn, context );
 				return (context->w->err) ? 0 : stack + a;
 			}
-			
+
 			context->w->err = WR_ERR_wrench_function_not_found;
 			return 0;
 		}
@@ -1703,6 +1815,19 @@ const char* c_errStrings[]=
 	"WR_ERR_USER_err_out_of_range",
 
 	"WR_ERR_division_by_zero",
+
+	"WR_ERR_debugger_terminated",
+
+	"WR_ERR_too_many_locals",
+	"WR_ERR_too_many_functions",
+	"WR_ERR_code_too_large",
+	"WR_ERR_string_too_long",
+	"WR_ERR_duplicate_parameter",
+	"WR_ERR_function_redefined",
+
+	"WR_ERR_yield_in_native_call",
+	"WR_ERR_too_many_arguments",
+	"WR_ERR_nesting_too_deep",
 };
 
 #endif

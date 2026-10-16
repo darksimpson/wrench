@@ -25,23 +25,38 @@ SOFTWARE.
 #include "wrench.h"
 
 //------------------------------------------------------------------------------
-int WRGCObject::init( const unsigned int size, const WRGCObjectType type, bool clear )
+int WRGCObject::init( unsigned int size, const WRGCObjectType type, bool clear )
 {
+	if ( type == SV_VALUE && size > WRENCH_MAX_ARRAY_ELEMENTS )
+	{
+		// refuse instead of overflowing the byte count below
+		size = 0;
+#ifdef WRENCH_HANDLE_MALLOC_FAIL
+		g_mallocFailed = true;
+#endif
+	}
+
 	int ret = (m_size = size);
+
+	if ( type == SV_HASH_TABLE || type == SV_VOID_HASH_TABLE )
+	{
+		m_size = 0; // the size is only a hint here, m_size counts entries
+	}
 
 	if ( (m_type = type) == SV_VALUE )
 	{
 		ret *= sizeof(WRValue);
 		const unsigned int allocated = ret ? ret : sizeof(WRValue);
 		m_Vdata = (WRValue*)g_malloc( allocated );
-#ifdef WRENCH_HANDLE_MALLOC_FAIL
 		if ( !m_Vdata )
 		{
+			// never memset or report a size for memory we did not get
 			m_size = 0;
+#ifdef WRENCH_HANDLE_MALLOC_FAIL
 			g_mallocFailed = true;
+#endif
 			return 0;
 		}
-#endif
 		
 		if ( clear )
 		{
@@ -54,14 +69,14 @@ int WRGCObject::init( const unsigned int size, const WRGCObjectType type, bool c
 	{
 		const unsigned int allocated = size ? size : 1;
 		m_Cdata = (unsigned char*)g_malloc( allocated );
-#ifdef WRENCH_HANDLE_MALLOC_FAIL
 		if ( !m_Cdata )
 		{
 			m_size = 0;
+#ifdef WRENCH_HANDLE_MALLOC_FAIL
 			g_mallocFailed = true;
+#endif
 			return 0;
 		}
-#endif
 		if ( clear )
 		{
 			memset( m_SCdata, 0, allocated );
@@ -121,7 +136,17 @@ WRValue* WRGCObject::exists( const uint32_t hash, bool removeIfPresent )
 
 		} while( tries-- );
 
-		return 0;
+		// at the largest size entries may sit anywhere (see scanLargest)
+		if ( !atLargestSize() )
+		{
+			return 0;
+		}
+		int found = scanLargest( hash, false );
+		if ( found < 0 )
+		{
+			return 0;
+		}
+		index = (uint32_t)found;
 	}
 
 foundExists:
@@ -130,6 +155,18 @@ foundExists:
 	{
 		--m_size;
 		m_hashTable[index] = WRENCH_NULL_HASH;
+
+		// a later insert reuses the slot without clearing it, so a
+		// removed key must not leave its value (or key) behind
+		if ( m_type == SV_HASH_TABLE )
+		{
+			m_Vdata[index << 1].init();
+			m_Vdata[(index << 1) + 1].init();
+		}
+		else
+		{
+			m_Vdata[index].init();
+		}
 	}
 
 	return m_Vdata + ((m_type == SV_HASH_TABLE) ? (index << 1) : index);
@@ -188,6 +225,16 @@ uint32_t WRGCObject::getIndexOfHit( const uint32_t hash, const bool inserting )
 
 	} while( tries-- );
 
+	if ( !inserting && atLargestSize() )
+	{
+		// entries of a table that cannot grow may sit anywhere
+		int found = scanLargest( hash, false );
+		if ( found >= 0 )
+		{
+			return (uint32_t)found;
+		}
+	}
+
 	return inserting ? growHash(hash) : getIndexOfHit( hash, true );
 }
 
@@ -199,12 +246,34 @@ uint32_t WRGCObject::growHash( const uint32_t hash, const uint16_t sizeHint, int
 
 	uint16_t start = (sizeHint > m_mod) ? sizeHint : m_mod;
 	int t = 0;
-	for( ; c_primeTable[t] <= start ; ++t );
+	for( ; c_primeTable[t] && c_primeTable[t] <= start ; ++t );
+	if ( !c_primeTable[t] && t > 0 && m_mod < c_primeTable[t - 1] )
+	{
+		--t; // a size hint beyond the list gets the largest size
+	}
 
 	for(;;)
 	{
 tryAgain:
 		int newMod = c_primeTable[t];
+		if ( !newMod )
+		{
+			// out of table sizes: the table cannot grow, but it may still
+			// have free slots further away than the usual probes reach
+			if ( m_hashTable && m_mod )
+			{
+				int slot = scanLargest( hash, true );
+				if ( slot >= 0 )
+				{
+					return (uint32_t)slot;
+				}
+			}
+			// completely full: like an allocation failure
+#ifdef WRENCH_HANDLE_MALLOC_FAIL
+			g_mallocFailed = true;
+#endif
+			return 0;
+		}
 
 		int newSize;
 		if ( m_type == SV_VOID_HASH_TABLE )
@@ -264,9 +333,6 @@ tryAgain:
 				{
 					g_free( base );
 					++t;
-
-					assert( (unsigned int)newMod != 49157 );
-
 					goto tryAgain;
 				}
 			}
@@ -322,8 +388,60 @@ tryAgain:
 			}
 		}
 
+		// the superseded block forwards its entries to this one; link it
+		// so a member reference into an old block keeps every block
+		// between it and the live one alive (see WRContext::mark)
+		if ( m_Vdata )
+		{
+			((WRGCBase*)m_Vdata - 1)->m_referencedTable = base;
+		}
+
 		m_Vdata = newValues;
+
+		// the new key was placed in 'proposed' already, so the lookup below
+		// hits at once and would not count it
+		if ( hash != WRENCH_NULL_HASH )
+		{
+			++m_size;
+		}
 
 		return getIndexOfHit( hash, true );
 	}
+}
+
+// the table is as large as it gets: probing a few slots is no longer enough,
+// look through all of them. -1 when the hash is not there (and, inserting,
+// no slot is free)
+int WRGCObject::scanLargest( const uint32_t hash, const bool inserting )
+{
+	uint32_t start = hash % m_mod;
+	int freeSlot = -1;
+	for( uint32_t n = 0; n < m_mod; ++n )
+	{
+		uint32_t index = (start + n) % m_mod;
+		if ( m_hashTable[index] == hash )
+		{
+			return (int)index;
+		}
+		if ( freeSlot < 0 && m_hashTable[index] == WRENCH_NULL_HASH )
+		{
+			freeSlot = (int)index;
+		}
+	}
+	if ( inserting && freeSlot >= 0 )
+	{
+		++m_size;
+		m_hashTable[freeSlot] = hash;
+	}
+	return inserting ? freeSlot : -1;
+}
+
+bool WRGCObject::atLargestSize() const
+{
+	int t = 0;
+	while ( c_primeTable[t + 1] )
+	{
+		++t;
+	}
+	return m_mod >= c_primeTable[t];
 }

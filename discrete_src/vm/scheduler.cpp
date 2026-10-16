@@ -108,6 +108,7 @@ int WrenchScheduler::addThread( const uint8_t* byteCode, const int size, const i
 	}
 	else if ( !wr_getYieldInfo(context) )
 	{
+		wr_destroyContext( context );
 		return 0; // task ran to completion there was no need to yield
 	}
 

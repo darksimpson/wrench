@@ -51,7 +51,8 @@ const uint16_t c_primeTable[] =
 	6151,
 	12289,
 	24593,
-	49157
+	49157,
+	0 // end marker, users stop here
 };
 /*
 98317,

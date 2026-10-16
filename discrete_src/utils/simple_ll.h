@@ -36,12 +36,36 @@ template<class L> class SimpleLL
 {
 public:
 
-	SimpleLL( void (*clearFunc)( L& item ) =0 ) : m_iter(0), m_head(0), m_tail(0), m_clearFunc(clearFunc) {}
+	SimpleLL( void (*clearFunc)( L& item ) =0 ) : m_iter(0), m_head(0), m_tail(0), m_clearFunc(clearFunc), m_iterHeld(false) {}
 	~SimpleLL() { clear(); }
 
 	//------------------------------------------------------------------------------
-	L* first() { return m_head ? &(m_iter = m_head)->item : 0; }
-	L* next() { return m_iter ? &((m_iter = m_iter->next)->item) : 0; }
+	L* first()
+	{
+		m_iterHeld = false;
+		return (m_iter = m_head) ? &(m_iter->item) : 0;
+	}
+
+	L* next()
+	{
+		if ( !m_iter )
+		{
+			return 0;
+		}
+
+		if ( m_iterHeld )
+		{
+			// the current item was removed and m_iter already moved on to
+			// its successor, which has not been returned yet
+			m_iterHeld = false;
+		}
+		else
+		{
+			m_iter = m_iter->next;
+		}
+
+		return m_iter ? &(m_iter->item) : 0;
+	}
 	L* head() { return first(); }
 	L* tail() { return m_tail ? &(m_tail->item) : 0; }
 
@@ -133,6 +157,7 @@ public:
 				if ( m_iter == N )
 				{
 					m_iter = N->next;
+					m_iterHeld = true;
 				}
 
 				if ( item )
@@ -164,10 +189,12 @@ public:
 		else if ( &(m_head->item) == item )
 		{
 			popHead();
+			return;
 		}
 		else if ( &(m_tail->item) == item )
 		{
 			popTail();
+			return;
 		}
 
 		Node* prev = 0;
@@ -179,6 +206,7 @@ public:
 				if ( m_iter == N )
 				{
 					m_iter = N->next;
+					m_iterHeld = true;
 				}
 
 				if ( m_clearFunc )
@@ -203,6 +231,7 @@ public:
 			if ( m_iter == m_head )
 			{
 				m_iter = m_head->next;
+				m_iterHeld = true;
 			}
 
 			Node* N = m_head;
@@ -283,6 +312,7 @@ private:
 	Node* m_head;
 	Node* m_tail;
 	void (*m_clearFunc)( L& item );
+	bool m_iterHeld; // m_iter is the next item to return, do not advance first
 
 public:
 	class Iterator
@@ -383,6 +413,33 @@ inline void testLL()
 	assert( !list.next() );
 	list.popAt(0);
 	list.popAt(0);
+
+	// removing the current item while iterating must not skip the next one
+	*list.addTail() = 1;
+	*list.addTail() = 2;
+	*list.addTail() = 3;
+	*list.addTail() = 4;
+	int seen = 0;
+	for( int* v = list.first(); v; v = list.next() )
+	{
+		seen += *v;
+		if ( *v == 1 || *v == 2 )
+		{
+			list.popItem( v );
+		}
+	}
+	assert( seen == 10 );
+	assert( list.count() == 2 );
+	assert( *list.first() == 3 );
+	assert( *list.next() == 4 );
+	assert( !list.next() );
+
+	// popItem on the head or tail removes exactly that one item
+	list.popItem( list.tail() );
+	assert( list.count() == 1 );
+	assert( *list.first() == 3 );
+	list.popItem( list.head() );
+	assert( list.count() == 0 );
 }
 #endif
 

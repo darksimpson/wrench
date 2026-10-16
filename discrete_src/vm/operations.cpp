@@ -105,7 +105,9 @@ bool wr_growValueArray( WRGCObject* va, uint32_t newMinIndex )
 	const size_t size_el = va->m_size * size_of;
 	const size_t elements = (size_t)newMinIndex + 1;
 
-	if ( (newMinIndex == (uint32_t)-1) || (elements > ((size_t)-1) / size_of) )
+	if ( (newMinIndex == (uint32_t)-1)
+			|| (elements > ((size_t)-1) / size_of)
+			|| (va->m_type == SV_VALUE && newMinIndex >= WRENCH_MAX_ARRAY_ELEMENTS) )
 	{
 #ifdef WRENCH_HANDLE_MALLOC_FAIL
 		g_mallocFailed = true;
@@ -194,18 +196,42 @@ WRValue& WRValue::deref() const
 	return s_temp2;
 }
 
+// containers can hold themselves (h[1] = h): past this depth a nested
+// container contributes a constant instead of being descended into
+#define WR_HASH_MAX_DEPTH 8
+
+static uint32_t wr_hashOfValue( const WRValue* value, int depth );
+
 //------------------------------------------------------------------------------
 uint32_t WRValue::getHashEx() const
+{
+	return wr_hashOfValue( this, 0 );
+}
+
+static uint32_t wr_hashOfValue( const WRValue* value, int depth )
+{
+	if ( value->type <= WR_FLOAT )
+	{
+		return value->ui;
+	}
+	if ( depth > WR_HASH_MAX_DEPTH )
+	{
+		return 0x9E3779B9;
+	}
+	return value->getHashLevel( depth );
+}
+
+uint32_t WRValue::getHashLevel( const int depth ) const
 {
 	// QUICKLY return the easy answers, that's why this code looks a bit convoluted
 	if (type == WR_REF)
 	{
-		return r->getHash();
+		return wr_hashOfValue( r, depth + 1 );
 	}
 
 	if (IS_CONTAINER_MEMBER(xtype))
 	{
-		return deref().getHash();
+		return wr_hashOfValue( &deref(), depth + 1 );
 	}
 	else if (xtype == WR_EX_ARRAY)
 	{
@@ -228,7 +254,7 @@ uint32_t WRValue::getHashEx() const
 		{
 			if (va->m_hashTable[e] != WRENCH_NULL_HASH)
 			{
-				uint32_t h = e << 16 | va->m_Vdata[e << 1].getHash();
+				uint32_t h = e << 16 | wr_hashOfValue( va->m_Vdata + (e << 1), depth + 1 );
 				hash = wr_hash(&h, 4, hash);
 			}
 		}
@@ -243,7 +269,7 @@ uint32_t WRValue::getHashEx() const
 			const uint8_t* offset = va->m_ROMHashTable + (m * 5);
 			if ((uint32_t)READ_32_FROM_PC(offset) != WRENCH_NULL_HASH)
 			{
-				uint32_t h = va->m_Vdata[READ_8_FROM_PC(offset + 4)].getHash();
+				uint32_t h = wr_hashOfValue( va->m_Vdata + READ_8_FROM_PC(offset + 4), depth + 1 );
 				hash = wr_hash(&h, 4, hash);
 			}
 		}

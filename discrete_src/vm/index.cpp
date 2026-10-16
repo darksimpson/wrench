@@ -68,7 +68,7 @@ void wr_doIndexHash( WRValue* index, WRValue* value, WRValue* target )
 {
 	uint32_t hash = index->getHash();
 
-	if ( value->xtype == WR_EX_HASH_TABLE ) 
+	if ( value->xtype == WR_EX_HASH_TABLE )
 	{
 		int element;
 		WRValue* entry = (WRValue*)(value->va->get(hash, &element));
@@ -76,18 +76,36 @@ void wr_doIndexHash( WRValue* index, WRValue* value, WRValue* target )
 		// need to create a hash ref
 		*(entry + 1) = *index; // might be the first time it was registered
 
+		if ( target == value )
+		{
+			// the table is a temporary (a return value) whose slot the result
+			// replaces: nothing would keep the table alive behind a member
+			// reference, so take the value itself (as arrayElementToTarget)
+			WRValue copy = *entry;
+			*target = copy;
+			return;
+		}
+
 		target->p2 = INIT_AS_CONTAINER_MEMBER | ENCODE_ARRAY_ELEMENT_TO_P2( element );
 		target->vb = (WRGCBase*)(value->va->m_Vdata) - 1;
 	}
 	else // naming an element of a struct "S.element"
 	{
-		if ( (target->r = wr_valueFromConfirmedStruct(value, hash)) )
+		WRValue* member = wr_valueFromConfirmedStruct( value, hash );
+		if ( !member )
 		{
-			target->p2 = INIT_AS_REF;
+			target->init();
+		}
+		else if ( target == value )
+		{
+			// temporary struct, as above
+			WRValue copy = *member;
+			*target = copy;
 		}
 		else
 		{
-			target->p2 = INIT_AS_INT;
+			target->r = member;
+			target->p2 = INIT_AS_REF;
 		}
 	}
 }

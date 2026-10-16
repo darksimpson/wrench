@@ -38,7 +38,7 @@ void unaryPost_E( WRValue* value, WRValue* stack, int add )
 	wr_valueToEx( value, &V );
 	*stack = temp;
 }
-void unaryPost_I( WRValue* value, WRValue* stack, int add ) { stack->p2 = INIT_AS_INT; stack->i = value->i; value->i += add; }
+void unaryPost_I( WRValue* value, WRValue* stack, int add ) { stack->p2 = INIT_AS_INT; stack->i = value->i; value->ui = value->ui + (uint32_t)add; } // wraps, no undefined behavior
 void unaryPost_R( WRValue* value, WRValue* stack, int add ) { m_unaryPost[ value->r->type ]( value->r, stack, add ); }
 void unaryPost_F( WRValue* value, WRValue* stack, int add ) { stack->p2 = INIT_AS_FLOAT; stack->f = value->f; value->f += add; }
 WRVoidPlusFunc m_unaryPost[4] = 
@@ -54,7 +54,9 @@ void FuncAssign_E_E( WRValue* to, WRValue* from, WRFuncIntCall intCall, WRFuncFl
 {
 	if ( IS_CONTAINER_MEMBER(from->xtype) )
 	{
-		WRValue& V = from->deref();
+		// a copy: deref() can hand back the source element itself, which the
+		// assignment below would then overwrite with its result
+		WRValue V = from->deref();
 
 		wr_FuncAssign[(WR_EX<<2)|V.type]( to, &V, intCall, floatCall );
 		*from = to->deref();
@@ -82,7 +84,7 @@ void FuncAssign_X_E( WRValue* to, WRValue* from, WRFuncIntCall intCall, WRFuncFl
 {
 	if ( !wr_concatStringCheck(to, from, to) )
 	{
-		WRValue& V = from->singleValue();
+		WRValue V = from->singleValue();
 		wr_FuncAssign[(to->type<<2)|V.type](to, &V, intCall, floatCall);
 	}
 
@@ -90,7 +92,11 @@ void FuncAssign_X_E( WRValue* to, WRValue* from, WRFuncIntCall intCall, WRFuncFl
 }
 void FuncAssign_E_R( WRValue* to, WRValue* from, WRFuncIntCall intCall, WRFuncFloatCall floatCall )
 {
-	wr_FuncAssign[(WR_EX<<2)|from->r->type](to, from->r, intCall, floatCall);
+	// operate on a copy, the callee writes its result into 'from' and that
+	// must not be the referenced variable
+	WRValue temp = *from->r;
+	wr_FuncAssign[(WR_EX<<2)|temp.type](to, &temp, intCall, floatCall);
+	*from = temp;
 }
 
 void FuncAssign_R_R( WRValue* to, WRValue* from, WRFuncIntCall intCall, WRFuncFloatCall floatCall )
@@ -107,7 +113,9 @@ void FuncAssign_R_X( WRValue* to, WRValue* from, WRFuncIntCall intCall, WRFuncFl
 
 void FuncAssign_X_R( WRValue* to, WRValue* from, WRFuncIntCall intCall, WRFuncFloatCall floatCall )
 {
-	wr_FuncAssign[(to->type<<2)+from->r->type](to, from->r, intCall, floatCall); *from = *to;
+	WRValue temp = *from->r;
+	wr_FuncAssign[(to->type<<2)+temp.type](to, &temp, intCall, floatCall);
+	*from = *to;
 }
 
 void FuncAssign_F_F( WRValue* to, WRValue* from, WRFuncIntCall intCall, WRFuncFloatCall floatCall )
@@ -156,9 +164,11 @@ void FuncBinary_E_E( WRValue* to, WRValue* from, WRValue* target, WRFuncIntCall 
 		WRValue& V2 = from->deref();
 		wr_funcBinary[(V1.type<<2)|V2.type](&V1, &V2, target, intCall, floatCall );
 	}
-	else if ( intCall == wr_addI )
+	else if ( intCall != wr_addI || !wr_concatStringCheck(to, from, target) )
 	{
-		wr_concatStringCheck( to, from, target );
+		// no meaning for two containers, but the target slot must not keep
+		// a stale value
+		target->init();
 	}
 }
 void FuncBinary_X_E( WRValue* to, WRValue* from, WRValue* target, WRFuncIntCall intCall, WRFuncFloatCall floatCall  )
