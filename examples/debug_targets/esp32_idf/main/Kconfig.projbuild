@@ -1,0 +1,36 @@
+menu "Wrench debug target"
+
+	config WRENCH_DEBUG_TCP
+		bool "Debug over WiFi (TCP) instead of the UART"
+		default n
+		help
+			Join a WiFi network as a station and serve the debugger on a TCP
+			port. Without it the debugger talks over UART0.
+
+	config WRENCH_WIFI_SSID
+		string "WiFi network name (SSID)"
+		depends on WRENCH_DEBUG_TCP
+		default "myssid"
+
+	config WRENCH_WIFI_PASSWORD
+		string "WiFi password"
+		depends on WRENCH_DEBUG_TCP
+		default "mypassword"
+		help
+			Leave empty for an open network.
+
+	config WRENCH_WIFI_HOSTNAME
+		string "Hostname"
+		depends on WRENCH_DEBUG_TCP
+		default "wrench-target"
+		help
+			Sent with the DHCP request; many routers then resolve it, so the
+			debugger can connect by name instead of by address.
+
+	config WRENCH_DEBUG_PORT
+		int "Debug server TCP port"
+		depends on WRENCH_DEBUG_TCP
+		range 1 65535
+		default 5050
+
+endmenu
