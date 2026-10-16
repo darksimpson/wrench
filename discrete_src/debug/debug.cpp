@@ -27,58 +27,6 @@ SOFTWARE.
 #ifdef WRENCH_INCLUDE_DEBUG_CODE
 
 //------------------------------------------------------------------------------
-bool WrenchDebugCommInterface::send( WrenchPacket* packet )
-{
-	uint32_t size = packet->xlate();
-	bool ret = sendEx( (uint8_t*)packet, size );
-	packet->xlate();
-	return ret;
-}
-
-//------------------------------------------------------------------------------
-WrenchPacket* WrenchDebugCommInterface::receive( const int timeoutMilliseconds )
-{
-	if ( peekEx(timeoutMilliseconds) < sizeof(WrenchPacket) )
-	{
-		return 0;
-	}
-
-	WrenchPacket* packet = (WrenchPacket *)g_malloc( sizeof(WrenchPacket) );
-	if ( !packet )
-	{
-		return 0;
-	}
-
-	if ( !recvEx( (uint8_t*)packet, sizeof(WrenchPacket), timeoutMilliseconds) )
-	{
-		g_free( packet );
-		return 0;
-	}
-
-	packet->xlate();
-
-	if ( packet->payloadSize() )
-	{
-		WrenchPacket* full = (WrenchPacket *)g_malloc( sizeof(WrenchPacket) + packet->payloadSize() );
-		if ( !full )
-		{
-			return 0;
-		}
-		memcpy( full, packet, sizeof(WrenchPacket) );
-		g_free( packet );
-		packet = full;
-
-		if ( !recvEx( (uint8_t*)packet->payload(), packet->payloadSize(), timeoutMilliseconds) )
-		{
-			g_free( packet );
-			return 0;
-		}
-	}
-
-	return packet;
-}
-
-//------------------------------------------------------------------------------
 void wr_formatGCObject( WRGCObject const& obj, WRstr& out )
 {
 	switch( obj.m_type )
@@ -103,7 +51,13 @@ void wr_formatGCObject( WRGCObject const& obj, WRstr& out )
 		
 		case SV_VOID_HASH_TABLE:
 		{
-			out.appendFormat( "SV_VOID_HASH_TABLE : @[%p] mod[%d] ", obj.m_ROMHashTable, obj.m_mod ); 
+			out.appendFormat( "SV_VOID_HASH_TABLE : @[%p] mod[%d] ", obj.m_ROMHashTable, obj.m_mod );
+			break;
+		}
+
+		default:
+		{
+			out.appendFormat( "type[%d]", (int)obj.m_type );
 			break;
 		}
 	}
@@ -118,7 +72,7 @@ void wr_formatStackEntry( const WRValue* v, WRstr& out )
 	{
 		default:
 		{
-			out.appendFormat( "frame [0x%08X]:[0x%08X]\n", v->p, v->p2 );
+			out.appendFormat( "frame [%p]:[0x%08X]\n", v->p, (unsigned int)v->p2 );
 			break;
 		}
 		
@@ -147,7 +101,8 @@ void wr_formatStackEntry( const WRValue* v, WRstr& out )
 			{
 				case WR_EX_RAW_ARRAY:
 				{
-					out.appendFormat( "EX:RAW_ARRAY [%p] size[%d]\n", v->r->c, EX_RAW_ARRAY_SIZE_FROM_P2(v->r->p2));
+					// a raw array value holds the data pointer and the size itself
+					out.appendFormat( "EX:RAW_ARRAY [%p] size[%d]\n", (const void*)v->c, (int)EX_RAW_ARRAY_SIZE_FROM_P2(v->p2) );
 					break;
 				}
 

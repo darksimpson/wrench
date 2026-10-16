@@ -241,9 +241,20 @@ int wr_operandSizeForOpcode( const uint8_t* opPtr, const uint8_t* end, const uin
 		case O_LiteralInt16ToLocal:
 		case O_IndexLocalLiteral16:
 		case O_IndexGlobalLiteral16:
-		case O_CallFunctionByIndex:
 		{
 			return 3;
+		}
+
+		case O_CallFunctionByIndex:
+		{
+			// args, function index, then a skip byte measured from itself
+			// that steps over what is left of the original hash call
+			if ( opPtr + 3 > end )
+			{
+				return -1;
+			}
+			uint8_t skip = READ_8_FROM_PC(opPtr + 2);
+			return skip ? 2 + (int)skip : 3;
 		}
 
 		case O_LiteralInt32:
@@ -721,7 +732,7 @@ void wr_disassemble( const uint8_t* bytecode, const unsigned int len, WRstr& out
 		return;
 	}
 
-	WRContext* context = wr_createContext( w, bytecode, (int)len, false );
+	WRContext* context = wr_newContext( w, bytecode, (int)len, false ); // linked, so wr_destroyState frees it
 	if ( !context )
 	{
 		out.appendFormat( "err: context failed (%s)\n", c_errStrings[wr_getLastError(w)] );

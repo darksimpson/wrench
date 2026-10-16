@@ -24,110 +24,130 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 *******************************************************************************/
 
-void wr_stackDump( const WRValue* bottom, const WRValue* top, WRstr& out );
-
-//------------------------------------------------------------------------------
-// to allow the compiler to COMPILE debug code even if the VM does not
-// execute it
+// The compiler emits O_DebugInfo followed by a 16 bit codeword. It is always
+// defined so the compiler can produce debug code even if the VM it is built
+// into cannot run the debugger.
 enum WrenchDebugInfoType
 {
-	WRD_TypeMask =     0xC000,
-	WRD_PayloadMask =  0x3FFF,
+	WRD_TypeMask = 0xC000,
+	WRD_PayloadMask = 0x3FFF,
 	WRD_GlobalStopFunction = 0x0F00,
 	WRD_ExternalFunction = 0x0E00,
 
 	WRD_FunctionCall = 0x0000, // payload is function index
-	WRD_LineNumber =   0x4000, // 14-bit line number
-	WRD_Return =       0x8000, // function has returned
-	WRD_RESERVED =     0xC000,
+	WRD_LineNumber = 0x4000, // 14-bit line number
+	WRD_Return = 0x8000, // function has returned
+	WRD_LineHigh = 0xC000, // upper bits of the next line number (lines > 16383)
 };
 
 #ifdef WRENCH_INCLUDE_DEBUG_CODE
 
-//------------------------------------------------------------------------------
-class WRDebugClientInterfacePrivate
+void wr_stackDump( const WRValue* bottom, const WRValue* top, WRstr& out );
+
+enum WrenchDebugStepMode
 {
-public:
-	WRDebugClientInterfacePrivate();
-	~WRDebugClientInterfacePrivate();
-
-	void init();
-
-	WRDebugClientInterface* m_parent;
-	
-	char* m_sourceBlock;
-	uint32_t m_sourceBlockLen;
-	uint32_t m_sourceBlockHash;
-
-	void getValues( SimpleLL<WrenchDebugValue>& values, const int level );
-	void populateSymbols();
-
-	void (*outputDebug)( const char* debugText );
-			
-	bool m_symbolsLoaded;
-	SimpleLL<WrenchSymbol>* m_globals;
-	SimpleLL<WrenchFunction>* m_functions;
-
-	bool m_callstackDirty;
-	SimpleLL<WrenchCallStackEntry>* m_callStack;
-	WRP_ProcState m_procState;
-
-	WrenchDebugCommInterface* m_comm;
-
-	WrenchPacket* getPacket( const int timeoutMilliseconds =0 );
-	
-	WRState* m_scratchState;
-	WRContext* m_scratchContext;
+	WRD_StepNone = 0,
+	WRD_StepIn,
+	WRD_StepOver,
+	WRD_StepOut,
+	WRD_StepPause,
+	WRD_StepEntry,
 };
 
-//------------------------------------------------------------------------------
-class WRDebugServerInterfacePrivate
+struct WrenchDebugHandle
 {
-public:
-	WRDebugServerInterfacePrivate( WRDebugServerInterface* parent );
-	~WRDebugServerInterfacePrivate();
+	const void* p;
+	uint32_t aux;
+	uint8_t kind; // WrenchDebugValueTag
+};
 
-	bool codewordEncountered( const uint8_t* pc, uint16_t codeword, WRValue* stackTop );
-	void clearBreakpoint( const int bp );
-	WrenchPacket* processPacket( WrenchPacket* packet );
+struct WrenchDebugServerPrivate
+{
+	WrenchDebugServer* parent;
+	WRState* w;
+	WrenchDebugTransport* transport;
 
-	int m_steppingOverReturnVector;
-	int m_lineSteps;
-	int m_stepOverDepth;
-	bool m_stepOut;
+	// program
+	WRContext* context;
+	bool ownsContext;
+	const uint8_t* bytes;
+	uint32_t bytesLen;
+	bool ownsBytes;
+	uint32_t programHash;
+	uint8_t compilerFlags;
+	const uint8_t* symbols;
+	uint32_t symbolsLen;
+	const uint8_t* source;
+	uint32_t sourceLen;
 
-	WrenchPacket m_lastPacket;
+	// upload in progress
+	uint8_t* upload;
+	uint32_t uploadSize;
+	uint32_t uploadReceived;
 
-	SimpleLL<int>* m_lineBreaks;
-	SimpleLL<WrenchCallStackEntry>* m_callStack;
+	// execution
+	uint8_t state; // WrenchDebugState
+	uint8_t stepMode; // WrenchDebugStepMode
+	uint32_t stepKey;
+	uint32_t pollCounter;
+	bool hostDriven;
+	bool abortOnDisconnect;
+	bool uploadDisabled; // zero (uploads allowed) after the memset
+	bool entryBreak; // breakOnEntry() armed
+	uint32_t entryWaitMs; // how long to wait for a debugger, 0 forever
+	bool helloReceived;
+	bool launchPending;
+	uint8_t launchFlags;
+	bool abortPending;
+	bool resume;
+	bool inLaunch;
+	bool inHook; // polling the link from inside the VM
+	int32_t lastLine;
+	int32_t lineHigh; // pending WRD_LineHigh prefix
+	// retransmission of the previous request (its reply was lost): same type
+	// and sequence number as the request right before it
+	uint8_t lastRequestSeq;
+	uint8_t lastRequestType;
+	uint8_t lastControlReply; // reply code of the last control request, 0 ok
+	bool processingControl;
+	int tickFlags;
 
-	WRState* m_w;
-	WrenchDebugCommInterface* m_comm;
+	// the current stop, announced again to a client that attaches or pauses
+	// while we are halted (its Stopped event may have been lost)
+	uint8_t stopReason;
+	uint8_t stopError;
 
-	WRDebugServerInterface* m_parent;
-	bool m_firstCall;
-	int32_t m_stopOnLine;
-	
-	uint8_t* m_externalCodeBlock;
-	uint32_t m_externalCodeBlockSize;	
-	
-	const uint8_t* m_embeddedSource;
-	uint32_t m_embeddedSourceLen;
-	uint32_t m_embeddedSourceHash;
-	uint8_t m_compilerFlags;
+	// a step interrupted by a breakpoint, a Continue with WRD_ContinueResumeStep
+	// picks it up again (the client decided not to stop there)
+	uint8_t interruptedStepMode;
+	uint32_t interruptedStepKey;
 
-	const uint8_t* m_symbolBlock;
-	uint32_t m_symbolBlockLen;
+	// setLinkTimeout(): a halted target gives up on a client it has not
+	// heard from for this long (0: never)
+	uint32_t linkTimeoutMs;
+	uint32_t lastRxMs;
 
-	// for resuming a function call
-	WRContext* m_context;
-	const WRValue* m_argv;
-	int m_argn;
-	const unsigned char* m_pc;
-	WRValue* m_frameBase;
-	WRValue* m_stackTop;
+	// script code of the current context has run (even if a terminate or an
+	// error cut it short): a launch needs a fresh context
+	bool contextRan;
 
-	bool m_halted;
+	// where we are stopped
+	WRContext* stopContext;
+	const unsigned char* stopPc;
+	WRValue* stopFrameBase;
+	WRValue* stopStackTop;
+
+	int32_t breakpoints[WRENCH_DEBUG_MAX_BREAKPOINTS];
+	uint16_t breakpointCount;
+
+	WrenchDebugHandle handles[WRENCH_DEBUG_MAX_HANDLES];
+	uint16_t handleCount;
+	uint16_t handleGeneration;
+
+	// link
+	WrenchDebugDecoder decoder;
+	uint8_t rx[WRENCH_DEBUG_MAX_PAYLOAD + WRD_FRAME_OVERHEAD];
+	uint8_t tx[WRENCH_DEBUG_MAX_PAYLOAD + WRD_FRAME_OVERHEAD];
 };
 
 #endif

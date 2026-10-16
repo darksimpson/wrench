@@ -34,6 +34,19 @@ SOFTWARE.
 #define WRENCH_VERSION_MINOR 2
 #define WRENCH_VERSION_BUILD 2
 
+/************************************************************************
+Optional project configuration: a "wrench_config.h" next to this file (or
+anywhere on the include path) can define any of the WRENCH_ options below
+without editing this file. Handy where passing -D flags to library sources
+is awkward (Arduino sketches, ESP-IDF components, STM32Cube projects).
+Define WRENCH_NO_CONFIG_HEADER to skip the lookup.
+*/
+#if !defined(WRENCH_NO_CONFIG_HEADER) && defined(__has_include)
+#if __has_include("wrench_config.h")
+#include "wrench_config.h"
+#endif
+#endif
+
 struct WRState;
 
 /************************************************************************
@@ -80,16 +93,27 @@ architecture, see vm.h for the current definitions
 
 
 /***********************************************************************
- **** EXPERIMENTAL **** only very basic support is in place */
+Source level debugging. WRENCH_INCLUDE_DEBUG_CODE builds the VM hooks and
+the WrenchDebugServer (see "Debugging" below) that a host debugger talks to
+over any byte link: UART, USB serial, TCP... Costs a few KB of code and
+about 2 x WRENCH_DEBUG_MAX_PAYLOAD bytes of RAM per server; code that is
+not compiled with WR_EMBED_DEBUG_CODE runs at full speed regardless.
+
+WRENCH_INCLUDE_DEBUG_CLIENT builds the host side (only for PCs, it needs
+the C++ standard library). That works in builds from discrete_src; the
+single file build (src/wrench.cpp) leaves the client out by design and only
+gets the protocol and transports from it.
+
+Ready-made host transports need WRENCH_WIN32_TCP / WRENCH_LINUX_TCP and
+WRENCH_WIN32_SERIAL / WRENCH_LINUX_SERIAL. Arduino builds get a Stream
+based transport automatically.
+*/
 //#define WRENCH_INCLUDE_DEBUG_CODE
+//#define WRENCH_INCLUDE_DEBUG_CLIENT
+//#define WRENCH_DEBUG_MAX_PAYLOAD 256 // smaller buffers for small MCUs
 
-// the debugger works over a serial link, define the architecture this
-// side is being targeted for
 //#define WRENCH_WIN32_SERIAL
-//#define WRENCH_ARDUINO_SERIAL
 //#define WRENCH_LINUX_SERIAL
-
-/***********************************************************************/
 
 
 /************************************************************************
@@ -103,6 +127,22 @@ depending on usage. (consumes 8 bytes per stack entry)
 #ifndef WRENCH_DEFAULT_STACK_SIZE
 #define WRENCH_DEFAULT_STACK_SIZE 64
 #endif
+
+// the largest array (in elements) a script can create. Element references
+// carry the index in 21 bits, so this cannot go higher. Indexing past it
+// reads 0 and writes are dropped
+#ifndef WRENCH_MAX_ARRAY_ELEMENTS
+#define WRENCH_MAX_ARRAY_ELEMENTS 0x1FFFFF
+#endif
+
+// how deeply the compiler lets statements, expressions and initializers
+// nest before it fails with WR_ERR_nesting_too_deep. Each level costs native
+// stack (around 2k on a desktop build), so lower it for a compiler running
+// on a small task stack
+#ifndef WRENCH_MAX_PARSE_DEPTH
+#define WRENCH_MAX_PARSE_DEPTH 256
+#endif
+
 // this costs a small bit of overhead whenever the stack is used, for
 // most applications it is not necessary, but will protect against
 // things like infinite recursion
@@ -266,7 +306,21 @@ enum WRError
 	WR_ERR_USER_err_out_of_range,
 
 	WR_ERR_division_by_zero,
-	
+
+	WR_ERR_debugger_terminated,
+
+	// compile time limits of the bytecode format
+	WR_ERR_too_many_locals, // more than 255 globals, or arguments + locals of a function
+	WR_ERR_too_many_functions, // more than 255 functions and structs
+	WR_ERR_code_too_large, // a program larger than 64KB
+	WR_ERR_string_too_long, // a string literal longer than 65535 bytes
+	WR_ERR_duplicate_parameter, // function f( a, a )
+	WR_ERR_function_redefined, // two functions or structs with one name
+
+	WR_ERR_yield_in_native_call, // script code a native callback called back into tried to yield
+	WR_ERR_too_many_arguments, // a call passes more than 255 arguments
+	WR_ERR_nesting_too_deep, // statements, expressions or initializers nest deeper than WRENCH_MAX_PARSE_DEPTH
+
 	WR_warning_enums_follow,
 
 	WR_USER = 100, // user-defined below here
@@ -316,7 +370,7 @@ enum WrenchCompilerFlags
 	WR_INCLUDE_GLOBALS   = 1<<0, // include all globals NOTE: wr_getGlobalRef(...)
 								 // will not function without this
 	
-	WR_EMBED_DEBUG_CODE  = 1<<1, // include per-instruction NOTE: WrenchDebugInterface
+	WR_EMBED_DEBUG_CODE  = 1<<1, // include a line marker per statement NOTE: the debugger (WrenchDebugServer)
 								 // will not function without this
 	
 	WR_EMBED_SOURCE_CODE = 1<<2, // include a copy of the source code
@@ -330,6 +384,17 @@ WRError wr_compile( const char* source,
 					int* outLen,
 					WRstr* errMsg =0,
 					const uint8_t compilerOptionFlags = WR_INCLUDE_GLOBALS );
+
+// same as wr_compile, and on failure reports where the error was detected:
+// 1-based line and 0-based column (just past the offending token)
+WRError wr_compileEx( const char* source,
+						const int size,
+						unsigned char** out,
+						int* outLen,
+						WRstr* errMsg,
+						const uint8_t compilerOptionFlags,
+						int* errorLine,
+						int* errorColumn );
 
 // is this a valid bytecode image for this version? Optionally return
 // the hash signature
@@ -349,7 +414,7 @@ void wr_disassemble( const uint8_t* bytecode, const unsigned int len, char** out
 //                 collected automatically when wr_destroyState()
 //                 is called on w
 // takeOwnership: assume 'block' was allocated with wr_malloc(), it
-//                will be freed with  wr_free()
+//                will be freed with  wr_free(), also when the call fails
 WRContext* wr_run( WRState* w,
 				   const unsigned char* block,
 				   const int blockSize,
@@ -366,7 +431,7 @@ bool wr_runCommand( WRState* w, const char* sourceCode, const int size =-1 );
 // existing block, but all of its functions will become available to
 // the parent.
 // takeOwnership: assume 'block' was allocated with wr_malloc(), it
-//                will be freed with  wr_free()
+//                will be freed with  wr_free(), also when the call fails
 WRContext* wr_import( WRContext* context, const unsigned char* block, const int blockSize, bool takeOwnership =false );
 
 // After wr_run(...) or wr_callFunction(...) has run, there is always a
@@ -376,7 +441,7 @@ WRValue* wr_returnValueFromLastCall( WRContext* context );
 // wr_run actually calls these two functions back-to back. If you want
 // to separate the process you can call them on your own.
 // takeOwnership: assume 'block' was allocated with wr_malloc(), it
-//                will be freed with  wr_free()
+//                will be freed with  wr_free(), also when the call fails
 WRContext* wr_newContext( WRState* w, const unsigned char* block, const int blockSize, bool takeOwnership =false );
 WRValue* wr_executeContext( WRContext* context );
 
@@ -433,6 +498,11 @@ bool wr_getYieldInfo( WRContext* context, WRValue** args =0, int* argnum =0, WRV
 // interpreter clears the last error
 WRError wr_getLastError( WRState* w );
 
+// after WR_ERR_function_not_found or WR_ERR_lib_function_not_found: the
+// hash of the name that was called, wr_hashStr("name") or
+// wr_hashStr("lib::name"), so the host can tell which one is missing
+inline uint32_t wr_getMissingFunctionHash( WRState* w );
+
 // want direct access to a global? okay then, if the code was compiled
 // with symbols (see compile(...) suite) then this will give you a
 // reference to it
@@ -468,7 +538,8 @@ typedef void (*WR_C_CALLBACK_NOT_FOUND)( const uint32_t Signature, WRContext* c,
 
 // if the callback is not found, wrench throws a
 // WR_ERR_function_not_found error, but if this is defined, it calls
-// this instead and continues executing
+// this instead and continues executing. The handler can still fail the
+// call by setting c->w->err (to WR_ERR_function_not_found for example)
 inline void wr_setOnCallbackNotFound( WRState* w, WR_C_CALLBACK_NOT_FOUND onCallbackNotFound );
 
 
@@ -528,7 +599,8 @@ typedef void (*WR_LIB_CALLBACK_NOT_FOUND)( const uint32_t Signature, WRValue* st
 
 // if the library callback is not found, wrench throws a
 // WR_ERR_lib_function_not_found error, but if this is defined, it calls
-// this instead and continues executing
+// this instead and continues executing. The handler can still fail the
+// call by setting context->w->err
 inline void wr_setOnLibCallbackNotFound( WRState* w, WR_LIB_CALLBACK_NOT_FOUND onLibCallbackNotFound );
 
 // w:         state to register with (will be available to all contexts)
@@ -560,7 +632,11 @@ void wr_loadContainerLib( WRState* w ); // array/hash/queue/stack/list
 void wr_loadAllArduinoLibs( WRState* w );
 
 // embedded-specific libs
-#define WR_FASTLED_DATA_PIN 6  // define your data pin here
+// FastLED needs the data pin at compile time; define WR_FASTLED_DATA_PIN
+// (in wrench_config.h, for example) to use another one than 6
+#ifndef WR_FASTLED_DATA_PIN
+#define WR_FASTLED_DATA_PIN 6
+#endif
 void wr_loadFastLEDLib( WRState* w );
 
 void wr_loadArduinoSTDLib( WRState* w ); 
@@ -887,6 +963,7 @@ struct WRValue
 
 	uint32_t getHash() const { return (type <= WR_FLOAT) ? ui : getHashEx(); } // easy cases
 	uint32_t getHashEx() const; // harder
+	uint32_t getHashLevel( const int depth ) const; // getHashEx() at a nesting depth (containers can hold themselves)
 
 	union // first 4 bytes 
 	{
@@ -1108,7 +1185,7 @@ public:
 		WRContext* m_creatorContext;
 	};
 
-	int init( const unsigned int size, const WRGCObjectType type, bool clear );
+	int init( unsigned int size, const WRGCObjectType type, bool clear );
 	
 	WRValue* getAsRawValueHashTable( const uint32_t hash, int* index =0 );
 	
@@ -1118,6 +1195,8 @@ public:
 	
 	uint32_t growHash( const uint32_t hash, const uint16_t sizeHint =0, int* sizeAllocated =0 );
 	uint32_t getIndexOfHit( const uint32_t hash, const bool inserting );
+	int scanLargest( const uint32_t hash, const bool inserting );
+	bool atLargestSize() const;
 
 private:
 
@@ -1126,7 +1205,7 @@ private:
 };
 
 
-class WRDebugServerInterface;
+class WrenchDebugServer;
 
 //------------------------------------------------------------------------------
 struct WRContext
@@ -1148,7 +1227,7 @@ struct WRContext
 	WRGCBase* svAllocated;
 
 #ifdef WRENCH_INCLUDE_DEBUG_CODE
-	WRDebugServerInterface* debugInterface;
+	WrenchDebugServer* debugServer;
 #endif
 
 	WRState* w;
@@ -1196,140 +1275,324 @@ struct WRState
 	WRLibraryCleanup* libCleanupFunctions;
 
 	WRGCObject globalRegistry;
+	WRGCObject mailbox; // msg:: library values, kept apart from the callbacks in globalRegistry
 
 	void* ctx; // state-wide context pointer, opaque to wrench
 
 	uint32_t allocatedMemoryLimit; // WRENCH_DEFAULT_ALLOCATED_MEMORY_GC_HINT by default
 	uint16_t stackSize; // how much stack to give each context
 	uint8_t err;
+	uint32_t missingFunction; // name hash behind the last *_function_not_found
 
 	WR_C_CALLBACK_NOT_FOUND onCallbackNotFound;
 	WR_LIB_CALLBACK_NOT_FOUND onLibCallbackNotFound;
 };
+
+inline uint32_t wr_getMissingFunctionHash( WRState* w ) { return w->missingFunction; }
 
 inline void wr_setOnCallbackNotFound( WRState* w, WR_C_CALLBACK_NOT_FOUND onCallbackNotFound ) { w->onCallbackNotFound = onCallbackNotFound; }
 inline void wr_setOnLibCallbackNotFound( WRState* w, WR_LIB_CALLBACK_NOT_FOUND onLibCallbackNotFound ) { w->onLibCallbackNotFound = onLibCallbackNotFound; }
 
 #define WRENCH_NULL_HASH 0xABABABAB  // -1414812757 / -1.2197928214371934e-12, can't be zero since we use int/floats as their own hash
 
-#ifdef WRENCH_INCLUDE_DEBUG_CODE
-#ifndef WRENCH_COMBINED
-#include "utils/simple_ll.h"
+#if defined(WRENCH_INCLUDE_DEBUG_CODE) || defined(WRENCH_INCLUDE_DEBUG_CLIENT)
+
+// Debugging
+
+// Byte transport the debugger runs over. Implement it for your platform
+// (UART, USB CDC, TCP socket...). Ready-made implementations:
+// - WrenchDebugStreamTransport: Arduino Stream (Serial, WiFiClient)
+// - WrenchDebugTcpServerTransport: win32/linux TCP listener (target side)
+// - WrenchDebugTcpClientTransport: win32/linux TCP connection (client side)
+// - WrenchDebugSerialTransport: win32/linux serial port
+// declared below; see examples/debug_targets for STM32 HAL and
+// ESP-IDF samples.
+//
+// All methods must be non-blocking except write(), which may block until
+// the bytes are queued
+class WrenchDebugTransport
+{
+public:
+	// write all bytes or return false if the link is broken
+	virtual bool write( const uint8_t* data, uint32_t len ) = 0;
+
+	// read up to maxLen bytes that are already available, never block.
+	// return the number of bytes read, 0 if none, -1 if the link is broken
+	virtual int read( uint8_t* data, uint32_t maxLen ) = 0;
+
+	// monotonic millisecond clock
+	virtual uint32_t millis() = 0;
+
+	// called while waiting for data (stopped at a breakpoint, waiting for
+	// a reply). Sleep, feed a watchdog, service a network stack or nothing
+	virtual void idle() {}
+
+	// true while a peer is attached (TCP connected...). Links that cannot
+	// tell (UART) return true
+	virtual bool connected() { return true; }
+
+	virtual ~WrenchDebugTransport() {}
+};
+
+// Ready-made WrenchDebugTransport implementations.
+//
+// Host side (win32 / linux), enabled by WRENCH_WIN32_TCP / WRENCH_LINUX_TCP
+// and WRENCH_WIN32_SERIAL / WRENCH_LINUX_SERIAL:
+// - WrenchDebugTcpServerTransport: listens on a port, serves one client at
+// a time and accepts the next one after a disconnect
+// - WrenchDebugTcpClientTransport: connects to a target
+// - WrenchDebugSerialTransport: COMx / /dev/ttyXXX at a given baud rate
+//
+// Arduino (any board, including ESP32 under the Arduino core):
+// - WrenchDebugStreamTransport: wraps any Stream: Serial, Serial1,
+// SerialUSB, a connected WiFiClient...
+
+#if defined(WRENCH_WIN32_TCP) || defined(WRENCH_LINUX_TCP)
+
+#define WRENCH_DEBUG_HAS_TCP
+
+class WrenchDebugTcpServerTransport : public WrenchDebugTransport
+{
+public:
+	WrenchDebugTcpServerTransport();
+	~WrenchDebugTcpServerTransport();
+
+	// start listening, returns false if the port cannot be bound
+	bool listen( int port, bool loopbackOnly = false );
+
+	// wait up to timeoutMs for a client, 0 polls once
+	bool waitForClient( int timeoutMs );
+
+	bool write( const uint8_t* data, uint32_t len );
+	int read( uint8_t* data, uint32_t maxLen );
+	uint32_t millis();
+	void idle();
+	bool connected();
+
+private:
+	intptr_t m_listen;
+	intptr_t m_client;
+	bool m_lost; // a write found the client gone, read() still has to report it
+};
+
+class WrenchDebugTcpClientTransport : public WrenchDebugTransport
+{
+public:
+	WrenchDebugTcpClientTransport();
+	~WrenchDebugTcpClientTransport();
+
+	bool connect( const char* host, int port, int timeoutMs = 5000 );
+	void close();
+
+	bool write( const uint8_t* data, uint32_t len );
+	int read( uint8_t* data, uint32_t maxLen );
+	uint32_t millis();
+	void idle();
+	bool connected();
+
+private:
+	intptr_t m_socket;
+};
+
 #endif
 
-struct WrenchPacket;
-class WRDebugClientInterfacePrivate;
-class WRDebugServerInterfacePrivate;
-class WrenchDebugCommInterface;
-template<class> class SimpleLL;
+#if defined(WRENCH_WIN32_SERIAL) || defined(WRENCH_LINUX_SERIAL)
 
-//------------------------------------------------------------------------------
-struct WrenchDebugValue
-{
-	char name[64];
-	WRValue value;
-};
+#define WRENCH_DEBUG_HAS_SERIAL
 
-//------------------------------------------------------------------------------
-struct WrenchSymbol
-{
-	char label[64];
-};
-
-//------------------------------------------------------------------------------
-struct WrenchFunction
-{
-	char name[64];
-	int arguments;
-	SimpleLL<WrenchSymbol>* vars;
-};
-
-//------------------------------------------------------------------------------
-struct WrenchCallStackEntry
-{
-	int32_t onLine;
-	uint16_t stackOffset;
-
-	uint8_t fromUnitIndex;
-	uint8_t thisUnitIndex;
-	uint16_t locals;
-
-	uint8_t arguments;
-};
-
-//------------------------------------------------------------------------------
-enum WRP_ProcState
-{
-	WRP_Unloaded =0,
-	WRP_Loaded,
-	WRP_Running,
-	WRP_Complete
-};
-
-//------------------------------------------------------------------------------
-// This object runs as the main interface to a running debug image, it
-// can drive it remotely over a serial (or whatever) link or directly
-// through a pointer.
-class WRDebugClientInterface
+class WrenchDebugSerialTransport : public WrenchDebugTransport
 {
 public:
-	// server is remote, define these methods to talk to it
-	WRDebugClientInterface( WrenchDebugCommInterface* CommInterface );
+	WrenchDebugSerialTransport();
+	~WrenchDebugSerialTransport();
 
-	// load and prepare a program for running
-	// if byteCode/size is null then previoous code is re-loaded
-	void load( const uint8_t* byteCode =0, const int size =0 ); 
+	// "COM3", "\\\\.\\COM12", "/dev/ttyUSB0"...
+	bool open( const char* port, int baud = 115200 );
+	void close();
 
-	bool getSourceCode( const char** data, int* len ); // get a new'ed pointer to the source code
-	uint32_t getSourceCodeHash(); // get the crc of the code that was compiled
+	bool write( const uint8_t* data, uint32_t len );
+	int read( uint8_t* data, uint32_t maxLen );
+	uint32_t millis();
+	void idle();
+	bool connected();
 
-	SimpleLL<WrenchFunction>& getFunctions(); // global is function[0] 
-
-	// 0 is global, 1,2,3... etc are frames
-	SimpleLL<WrenchCallStackEntry>* getCallstack();
-	bool getStackDump( char* out, const unsigned int maxOut );
-	
-	const char* getFunctionLabel( const int index );
-	const char* getValueLabel( const int index, const int depth );
-	WRValue* getValue( WRValue& value, const int index, const int depth );
-
-	void run( const int toLine =0 );
-
-	void stepInto( const int steps =1 );
-	void stepOver( const int steps =1 );
-
-	void setBreakpoint( const int lineNumber );
-	void clearBreakpoint( const int lineNumber );
-
-	WRP_ProcState getProcState();
-
-	void setDebugEmitCallback( void (*print)( const char* debugText ) );
-
-	// "hidden" internals to keep header clean
-	WRDebugClientInterfacePrivate* I;
-	~WRDebugClientInterface();
-
-	void init();
+private:
+	intptr_t m_handle;
 };
 
-//------------------------------------------------------------------------------
-// This object is run on the target machine to manage the running
-// image. It has a minimal interface and is meant to be driven entirely
-// by WRDebugClientInterface
-class WRDebugServerInterface
+#endif
+
+#if defined(ARDUINO) && defined(WRENCH_INCLUDE_DEBUG_CODE)
+
+#include <Arduino.h>
+
+class WrenchDebugStreamTransport : public WrenchDebugTransport
 {
 public:
+	WrenchDebugStreamTransport( Stream& stream ) : m_stream( &stream ) {}
 
-	WRDebugServerInterface( WRState* w, WrenchDebugCommInterface* CommInterface );
+	// point at a different stream, for example a freshly accepted WiFiClient
+	void setStream( Stream& stream ) { m_stream = &stream; }
 
-	void tick();
+	bool write( const uint8_t* data, uint32_t len )
+	{
+		while ( len )
+		{
+			size_t sent = m_stream->write( data, len );
+			if ( sent == 0 )
+			{
+				return false;
+			}
+			data += sent;
+			len -= (uint32_t)sent;
+		}
+		return true;
+	}
 
-	// NOTE: loadBytes() does NOT make a local copy! bytes must remain valid for the life of this object!
-	WRContext* loadBytes( const uint8_t* bytes, const int len );
+	int read( uint8_t* data, uint32_t maxLen )
+	{
+		uint32_t n = 0;
+		while ( n < maxLen && m_stream->available() > 0 )
+		{
+			int c = m_stream->read();
+			if ( c < 0 )
+			{
+				break;
+			}
+			data[n++] = (uint8_t)c;
+		}
+		return (int)n;
+	}
 
-	// "hidden" internals to keep header clean
-	WRDebugServerInterfacePrivate *I;
-	~WRDebugServerInterface();
+	uint32_t millis() { return (uint32_t)::millis(); }
+
+	void idle() { yield(); }
+
+private:
+	Stream* m_stream;
+};
+
+#endif
+
+#endif
+
+#ifdef WRENCH_INCLUDE_DEBUG_CODE
+
+// how many line breakpoints the target can hold
+#ifndef WRENCH_DEBUG_MAX_BREAKPOINTS
+#define WRENCH_DEBUG_MAX_BREAKPOINTS 32
+#endif
+
+// how many container handles (arrays/hashes/structs being inspected) the
+// target tracks per stop
+#ifndef WRENCH_DEBUG_MAX_HANDLES
+#define WRENCH_DEBUG_MAX_HANDLES 64
+#endif
+
+// while running, the link is polled (for pause requests and breakpoint
+// changes) once every this many source lines
+#ifndef WRENCH_DEBUG_POLL_INTERVAL
+#define WRENCH_DEBUG_POLL_INTERVAL 64
+#endif
+
+struct WrenchDebugServerPrivate;
+
+// flags returned by WrenchDebugServer::tick()
+enum WrenchDebugTickFlags
+{
+	WRD_TickProgramLoaded = 1<<0, // a new program was uploaded or a launch rebuilt the context, fetch context() again
+	WRD_TickProgramRan = 1<<1, // the client launched the program and it finished
+	WRD_TickClientAttached = 1<<2, // a client said hello
+};
+
+// Runs on the target next to the VM. Code must be compiled with
+// WR_EMBED_DEBUG_CODE (and ideally WR_INCLUDE_GLOBALS) to be debuggable.
+//
+// Two ways to use it:
+//
+// 1) the server runs the program: call tick() in your main loop, the
+// client uploads code (or uses the image given to loadBytes()) and
+// launches it; tick() executes it to completion.
+//
+// 2) your firmware runs the program: loadBytes() or attach() a context,
+// then keep calling wr_run/wr_callFunction yourself as usual and call
+// tick() whenever no script is executing. Breakpoints, stepping and pause
+// work inside any call into the debugged context. Always fetch the
+// context with context() since an upload replaces it (tick() reports
+// WRD_TickProgramLoaded when that happens).
+class WrenchDebugServer
+{
+public:
+	WrenchDebugServer( WRState* w, WrenchDebugTransport* transport );
+	~WrenchDebugServer();
+
+	// service the link, returns WrenchDebugTickFlags. Never call this from
+	// inside a script callback
+	int tick();
+
+	// create a debuggable context from bytecode. The bytes are not copied
+	// unless takeOwnership is set (then they must come from wr_malloc and
+	// are freed by the server). Replaces any previous program.
+	WRContext* loadBytes( const uint8_t* bytes, const int len, const bool takeOwnership =false );
+
+	// debug a context you created yourself, the server does not own it
+	void attach( WRContext* context );
+	void detach();
+
+	WRContext* context() const;
+
+	// true when context() exists and its global code has run, so its
+	// functions can be called (false while the debugger is launching it)
+	bool ready() const;
+
+	// set when your firmware keeps calling script functions after the global
+	// code finishes, so the client does not end the session
+	void setHostDriven( const bool hostDriven );
+
+	// halt the next script code that runs (the global code, or a function
+	// your firmware calls) on its first line. With no debugger attached it
+	// waits there, servicing the link, until one attaches; the debugger then
+	// sees a stop on entry and continues when you tell it to. waitMs bounds
+	// the wait for a debugger (0 waits forever), after it the script runs on.
+	// One shot, and only for code compiled with debug information
+	void breakOnEntry( const uint32_t waitMs = 0 );
+
+	// a halted target lets go of a client it has not heard from for this
+	// many ms, as if it had disconnected (0, the default, waits forever).
+	// For links that cannot report loss, like a UART: a crashed host or a
+	// pulled cable then no longer leaves the device halted. The client must
+	// keep the link alive while halted; VS Code pings every second, the
+	// console debugger does not (use a generous value or none with it)
+	void setLinkTimeout( const uint32_t ms );
+
+	// false refuses programs sent by a debugger (WRD_ErrUploadDisabled), for
+	// field builds: the program your firmware loads is the only one that
+	// runs, a debugger can still attach, inspect and step it (and restart it
+	// when it came from loadBytes). Allowed by default
+	void setAllowUpload( const bool allow );
+
+	// send text to the debugger console (for print()/println() style output)
+	void print( const char* text, const int len =-1 );
+
+	// true once a client has completed the handshake
+	bool clientAttached() const;
+
+	// what to do with running code when the client goes away: false (the
+	// default, right for devices) clears breakpoints and lets it run on,
+	// true terminates it
+	void setAbortOnDisconnect( const bool abort );
+
+	// called by the VM for every O_DebugInfo, returns true to abort execution
+	bool onDebugInfo( WRContext* context, const unsigned char* pc, WRValue* frameBase, WRValue* stackTop );
+
+	// called by the VM right before it fails with a runtime error
+	void onError( WRContext* context, const unsigned char* pc, WRValue* frameBase, WRValue* stackTop );
+
+	WrenchDebugServerPrivate* I;
+
+private:
+	WrenchDebugServer( const WrenchDebugServer& );
+	WrenchDebugServer& operator=( const WrenchDebugServer& );
 };
 
 #endif
@@ -1340,10 +1603,6 @@ public:
 #endif
 #endif
 
-#define WRENCH_CLI_DEBUG
-#ifdef WRENCH_CLI_DEBUG
-extern WRContext* g_context;
-#endif
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1428,7 +1687,17 @@ public:
 	operator const void*() const { return m_str; }
 	operator const char*() const { return m_str; }
 
-	WRstr& set( const char* buf, const unsigned int len ) { m_len = 0; m_str[0] = 0; return insert( buf, len ); }
+	WRstr& set( const char* buf, const unsigned int len )
+	{
+		if ( isOwnBuffer(buf) && len )
+		{
+			WRstr copy( buf, len ); // clearing first would destroy the source
+			return set( copy.m_str, copy.m_len );
+		}
+		m_len = 0;
+		m_str[0] = 0;
+		return insert( buf, len );
+	}
 	WRstr& set( const WRstr& str ) { return set( str.m_str, str.m_len ); }
 	WRstr& set( const char c ) { clear(); m_str[0]=c; m_str[1]=0; m_len = 1; return *this; }
 
@@ -1491,6 +1760,9 @@ protected:
 
 	operator char*() const { return m_str; } // prevent accidental use
 
+	// true if 'p' points into this string's own storage (s += s and the like)
+	bool isOwnBuffer( const char* p ) const { return p >= m_str && p <= m_str + m_buflen; }
+
 	char *m_str; // first element so if the class is cast as a C and de-referenced it always works
 
 	unsigned int m_buflen; // how long the buffer itself is
@@ -1527,7 +1799,11 @@ unsigned int WRstr::rfind( const char* str, const unsigned int from ) const
 //------------------------------------------------------------------------------
 unsigned int WRstr::find( const char* str, const unsigned int from ) const
 {
-	unsigned int f = from > m_len ? 0 : from;
+	if ( from > m_len )
+	{
+		return npos; // starting past the end can never match
+	}
+	unsigned int f = from;
 	if ( !str || !str[0] )
 	{
 		return 0;
@@ -1560,7 +1836,11 @@ unsigned int WRstr::find( const char* str, const unsigned int from ) const
 //------------------------------------------------------------------------------
 unsigned int WRstr::findCase( const char* str, const unsigned int from ) const
 {
-	unsigned int f = from > m_len ? 0 : from;
+	if ( from > m_len )
+	{
+		return npos;
+	}
+	unsigned int f = from;
 	if ( !str || !str[0] )
 	{
 		return 0;
@@ -1581,7 +1861,7 @@ unsigned int WRstr::findCase( const char* str, const unsigned int from ) const
 				return npos;
 			}
 
-			if ( tolower(str[i]) != tolower(c) )
+			if ( tolower((unsigned char)str[i]) != tolower((unsigned char)c) )
 			{
 				break;
 			}
@@ -1725,7 +2005,7 @@ WRstr& WRstr::trim()
 	unsigned int start = 0;
 
 	// find start
-	for( ; start<m_len && isspace( (char)*(m_str + start) ) ; start++ );
+	for( ; start<m_len && isspace( (unsigned char)*(m_str + start) ) ; start++ );
 
 	// is the whole thing whitespace?
 	if ( start == m_len )
@@ -1740,7 +2020,7 @@ WRstr& WRstr::trim()
 	unsigned int marker = start;
 	for( ; start<m_len; start++,pos++ )
 	{
-		if ( !isspace((char)(m_str[pos] = m_str[start])) )
+		if ( !isspace((unsigned char)(m_str[pos] = m_str[start])) )
 		{
 			marker = pos;
 		}
@@ -1932,7 +2212,7 @@ bool WRstr::isWildMatchCase( const char* pattern, const char* haystack )
 
 			return false; // "x" doesn't match "xy"
 		}
-		else if ( tolower(t) != tolower(w) )
+		else if ( tolower((unsigned char)t) != tolower((unsigned char)w) )
 		{
 			if (w == '*')
 			{
@@ -1970,14 +2250,24 @@ WRstr& WRstr::insert( const char* buf, const unsigned int len, const unsigned in
 {
 	if ( len != 0 ) // insert 0? done
 	{
-		alloc( m_len + len + startPos, true ); // make sure there is enough room for the new string
-
-		if ( startPos < m_len ) // text after the insert, move everything up
+		if ( isOwnBuffer(buf) )
 		{
-			memmove( m_str + len + startPos, m_str + startPos, m_len );
+			// inserting part of ourselves: alloc() below may free the
+			// source, so work from a copy
+			WRstr copy( buf, len );
+			return insert( copy.m_str, copy.m_len, startPos );
 		}
 
-		memcpy( m_str + startPos, buf, len );
+		const unsigned int pos = (startPos > m_len) ? m_len : startPos; // no gaps
+
+		alloc( m_len + len, true ); // make sure there is enough room for the new string
+
+		if ( pos < m_len ) // text after the insert, move everything up
+		{
+			memmove( m_str + len + pos, m_str + pos, m_len - pos );
+		}
+
+		memcpy( m_str + pos, buf, len );
 
 		m_len += len;
 		m_str[m_len] = 0;
@@ -2009,9 +2299,13 @@ WRstr& WRstr::appendFormatVA( const char* format, va_list arg )
 	va_list vacopy;
 	va_copy( vacopy, arg ); // must be done BEFORE the vsnprintf() on some systems
 
-	int len = vsnprintf( buf, c_formatBaseTrySize, format, arg );
+	int len = vsnprintf( buf, sizeof(buf), format, arg );
 
-	if ( len < c_formatBaseTrySize )
+	if ( len < 0 )
+	{
+		// encoding error, nothing to add
+	}
+	else if ( len < (int)sizeof(buf) )
 	{
 		insert( buf, len, m_len );
 	}
@@ -2019,7 +2313,8 @@ WRstr& WRstr::appendFormatVA( const char* format, va_list arg )
 	{
 		char* alloc = (char*)g_malloc( ++len );
 
-		len = vsnprintf(alloc, len, format, arg);
+		// 'arg' was consumed by the first pass, only the copy is still valid
+		len = vsnprintf( alloc, len, format, vacopy );
 
 		if ( m_len )
 		{
@@ -2046,10 +2341,14 @@ WRstr& WRstr::format( const char* format, ... )
 	char buf[ c_formatBaseTrySize + 1 ]; // SOME space, malloc if we need a ton more
 
 	va_start( arg, format );
-	int len = vsnprintf( buf, c_formatBaseTrySize, format, arg );
+	int len = vsnprintf( buf, sizeof(buf), format, arg );
 	va_end( arg );
 
-	if ( len < c_formatBaseTrySize+1 )
+	if ( len < 0 )
+	{
+		clear();
+	}
+	else if ( len < (int)sizeof(buf) ) // it all fit, terminator included
 	{
 		set( buf, len );
 	}
@@ -2074,10 +2373,14 @@ WRstr& WRstr::appendFormat( const char* format, ... )
 	char buf[ c_formatBaseTrySize + 1 ]; // SOME space, malloc if we need a ton more
 
 	va_start( arg, format );
-	int len = vsnprintf( buf, c_formatBaseTrySize, format, arg );
+	int len = vsnprintf( buf, sizeof(buf), format, arg );
 	va_end( arg );
 
-	if ( len < c_formatBaseTrySize+1 )
+	if ( len < 0 )
+	{
+		// encoding error, nothing to add
+	}
+	else if ( len < (int)sizeof(buf) ) // it all fit, terminator included
 	{
 		insert( buf, len, m_len );
 	}
@@ -2112,13 +2415,11 @@ WRstr& WRstr::appendFormat( const char* format, ... )
 #include "vm/vm.h"
 #include "utils/opcode.h"
 #include "cc/opcode_stream.h"
-#include "debug/packet.h"
+#include "debug/debug_protocol.h"
 #include "debug/debug.h"
-#include "debug/debugger.h"
 #include "cc/cc.h"
 #include "lib/std_tcp.h"
 #include "lib/std_serial.h"
-#include "debug/debug_comm.h"
 #include "lib/std_io_defs.h"
 #endif
 
