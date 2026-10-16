@@ -1,4 +1,16 @@
 next (unreleased) ----------------------------------------------------------------------
+Distribution:
+- the single file build (wrench.h + wrench.cpp) is no longer kept in git: src/ and the
+  copies in examples/arduino are gone. CI (.github/workflows/ci.yml) generates it, checks
+  that it compiles with GCC and MSVC in several configurations, and attaches it to every
+  release; "make dist" (or "wrench release discrete_src dist") writes it to dist/
+- CI builds and tests Linux (default, compact, really compact, sanitizers) and Windows
+  (Debug, Release, debugger / language server / extension tests) on every push
+- the single file build compiles with WRENCH_WIN32_SERIAL and WRENCH_WIN32_TCP together
+  (windows.h clashed with winsock2.h); the old Makefile is removed, GNUmakefile builds
+  everything; examples/multi_context.cpp passed wr_getYieldInfo arguments in the wrong
+  order
+
 Debugger, rebuilt:
 - new wire protocol (version 2): framed with sync bytes, length and CRC16 so UART links
   recover from noise, request/reply sequence numbers with retransmission, async events

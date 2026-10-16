@@ -186,10 +186,12 @@ I have to credit <a href="https://wren.io/">Wren</a> for this
 brilliant idea (at least that's where I saw it).
 <p>
 add:
-<pre><code>/src/wrench.h
-/src/wrench.cpp
+<pre><code>wrench.h
+wrench.cpp
 </pre></code>
-to your project and compile. Of course if you want a more approachable
+to your project and compile. Both are attached to every release on the
+repository's Releases page (built and checked by CI), or generate them
+from the sources with <code>make dist</code>. Of course if you want a more approachable
 version, the traditional layout is included in
 <code>discrete_src/</code>
 
@@ -251,7 +253,7 @@ compiler and interpreter are fine as they are, but for an embedded
 target there are a few slight changes you might want to make:
 
 <p>
-In <code>src/wrench.h</code> you might want
+In <code>wrench.h</code> you might want
 to tweak
 
 <h2>build flags</h2>

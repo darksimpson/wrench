@@ -1,0 +1,127 @@
+# Builds and tests wrench on Linux and Windows, generates the single file
+# build (wrench.h + wrench.cpp) and checks that it compiles on its own.
+# Every run keeps the single file build as the artifact "wrench-single-file";
+# a pushed tag vX.Y.Z publishes it as the assets of the GitHub release X.Y.Z.
+
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Linux ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: default
+            make: ''
+          - name: compact
+            make: 'COMPACT=-DWRENCH_COMPACT'
+          - name: really compact
+            make: 'COMPACT="-DWRENCH_COMPACT -DWRENCH_REALLY_COMPACT"'
+          - name: sanitizers
+            make: 'OPT="-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined" LDFLAGS="-fsanitize=address,undefined"'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: make -j"$(nproc)" ${{ matrix.make }}
+      - name: Test
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: ./wrench t
+
+  single-file:
+    name: Single file build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate and check dist/wrench.h and dist/wrench.cpp
+        run: make -j"$(nproc)" dist-check
+      - name: Tag matches the version in wrench.h
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          test "v$(cat version.txt)" = "${GITHUB_REF_NAME}" || { echo "tag ${GITHUB_REF_NAME} but wrench.h says $(cat version.txt)"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wrench-single-file
+          path: |
+            dist/wrench.h
+            dist/wrench.cpp
+
+  windows:
+    name: Windows
+    runs-on: windows-latest
+    # bash stops at the first failing command of a step (PowerShell would only
+    # report the last one); options use the -x form because Git Bash rewrites
+    # arguments starting with / as paths
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: microsoft/setup-msbuild@v2
+      - name: Build Release and Debug
+        run: |
+          msbuild win32/wrench.sln -p:Configuration=Release -p:Platform=x86 -m -v:minimal -warnaserror
+          msbuild win32/wrench.sln -p:Configuration=Debug -p:Platform=x86 -m -v:minimal -warnaserror
+      - name: Test Release
+        run: win32/Release/wrench.exe t
+      - name: Test Debug
+        run: win32/Debug/wrench.exe t
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Debug adapter, console debugger and language server
+        run: |
+          node tools/test/dap_test.js win32/Release/wrench.exe
+          node tools/test/cli_test.js win32/Release/wrench.exe
+          node tools/test/lsp_test.js win32/Release/wrench.exe
+      - name: VS Code extension and grammar
+        working-directory: tools/vscode-wrench
+        run: |
+          npm ci
+          npm run compile
+          node scripts/test-grammar.js
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x86
+      - name: Single file build compiles with MSVC
+        run: |
+          mkdir -p dist
+          win32/Release/wrench.exe release discrete_src dist
+          cl -nologo -W3 -WX -c -Idist dist/wrench.cpp -Fodist/check.obj
+          cl -nologo -W3 -WX -c -Idist -DWRENCH_INCLUDE_DEBUG_CODE -DWRENCH_WIN32_TCP -DWRENCH_WIN32_SERIAL -DWRENCH_WIN32_FILE_IO dist/wrench.cpp -Fodist/check.obj
+          cl -nologo -W3 -WX -c -Idist -DWRENCH_COMPACT -DWRENCH_REALLY_COMPACT dist/wrench.cpp -Fodist/check.obj
+
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [ linux, single-file, windows ]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: wrench-single-file
+          path: dist
+      - name: Attach the single file build to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" > /dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" dist/wrench.h dist/wrench.cpp --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" dist/wrench.h dist/wrench.cpp --title "${GITHUB_REF_NAME#v}" --generate-notes --verify-tag
+          fi

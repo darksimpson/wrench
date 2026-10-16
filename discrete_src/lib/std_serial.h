@@ -27,6 +27,11 @@ SOFTWARE.
 #if defined(WRENCH_WIN32_SERIAL) || defined(WRENCH_LINUX_SERIAL) || defined(WRENCH_ARDUINO_SERIAL)
 
 #ifdef WRENCH_WIN32_SERIAL
+// a full windows.h brings in winsock.h, which collides with the winsock2.h
+// of the TCP code when both are compiled into one file (the single file build)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
 #include <windows.h>
 #define WR_BAD_SOCKET INVALID_HANDLE_VALUE
 #endif

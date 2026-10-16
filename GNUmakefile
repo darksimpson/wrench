@@ -83,6 +83,7 @@ clean:
 	-@rm -f wrench_dev
 	-@rm -f wrench_v
 	-@rm -f test_wrench_cross_module_globals
+	-@rm -rf $(DIST)
 
 wrench: $(OBJS)
 	g++ -o wrench $(OBJS) -pthread $(LDFLAGS)
@@ -98,9 +99,35 @@ test: wrench
 	./test_wrench_cross_module_globals
 	./wrench t
 
-# regenerate the single file distribution src/wrench.[cpp|h]
-release: wrench
-	./wrench release discrete_src src/.
+# the single file build dist/wrench.[cpp|h], published by CI with every release
+DIST = dist
+
+.PHONY: dist release dist-check
+
+dist: wrench
+	mkdir -p $(DIST)
+	./wrench release discrete_src $(DIST)
+
+release: dist
+
+# the single file build must compile on its own in every configuration users
+# pick, and an example program must link and run against it
+DIST_VARIANTS = \
+	"" \
+	"-DWRENCH_INCLUDE_DEBUG_CODE -DWRENCH_LINUX_TCP -DWRENCH_LINUX_SERIAL -DWRENCH_LINUX_FILE_IO" \
+	"-DWRENCH_COMPACT" \
+	"-DWRENCH_COMPACT -DWRENCH_REALLY_COMPACT -DWRENCH_INCLUDE_DEBUG_CODE" \
+	"-DWRENCH_WITHOUT_COMPILER -DWRENCH_COMPACT -DWRENCH_REALLY_COMPACT" \
+	"-DWRENCH_PROTECT_STACK_FROM_OVERFLOW -DWRENCH_HANDLE_MALLOC_FAIL -DWRENCH_TIME_SLICES"
+
+dist-check: dist
+	@for v in $(DIST_VARIANTS); do \
+		echo "single file build: [$$v]"; \
+		g++ -std=c++98 -Wall -Werror -O1 -I$(DIST) $$v -c $(DIST)/wrench.cpp -o $(DIST)/check.o || exit 1; \
+	done
+	g++ -std=c++98 -Wall -Werror -O1 -I$(DIST) -DWRENCH_INCLUDE_DEBUG_CODE -DWRENCH_LINUX_TCP $(DIST)/wrench.cpp examples/basic.cpp -o $(DIST)/basic
+	cd examples && ../$(DIST)/basic
+	-@rm -f $(DIST)/check.o $(DIST)/basic
 
 $(OBJDIR)/%.o: discrete_src/cc/%.cpp
 	$(CC) $@ $<

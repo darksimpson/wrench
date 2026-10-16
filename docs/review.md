@@ -30,8 +30,14 @@ and what would be worth improving next.
   plus UndefinedBehaviorSanitizer with leak checking. The node suites pass
   against both the Windows and the static Linux binary.
 
-Worth adding: running the sanitizer build in CI, and a fuzzer for
-`wr_compile` and `wr_deserialize` (both take untrusted input).
+* GitHub Actions (`.github/workflows/ci.yml`) runs all of this on every push
+  and pull request: Linux default, compact, really compact and sanitizer
+  builds, Windows Debug and Release with the node suites, and the single file
+  build checked with GCC and MSVC. The single file build is no longer kept
+  in git; CI publishes it with every release.
+
+Worth adding: a fuzzer for `wr_compile` and `wr_deserialize` (both take
+untrusted input).
 
 ## Second review: what was fixed
 
@@ -197,7 +203,5 @@ Tools:
 
 * The language server analyses one file at a time and does not infer types,
   so member completion after `.` offers the members of every struct.
-* `src/wrench.cpp|h` and the copies in `examples/arduino` are generated from
-  `discrete_src` by `wrench release discrete_src src/.` and were not
-  regenerated as part of this work, so the examples that build from `src/`
-  still use the old single file build.
+* `examples/arduino/debug` is an empty sketch with bytecode in an old
+  format; `examples/debug_targets/arduino_serial` replaces it.

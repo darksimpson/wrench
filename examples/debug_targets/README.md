@@ -25,23 +25,24 @@ except for `esp32_idf`, where the sources live in `main/`:
 | `esp32_idf` | `esp32_idf/main/` |
 | `stm32_hal` | `stm32_hal/`, or your Cube project's source folder together with the other files |
 
-1. `wrench.cpp` and `wrench.h` are the single-file build in the repository's
-   `src/` folder, and it must be a current one that contains the debugger
-   (an older `src/` has no `WrenchDebugServer`). Regenerate `src/` from
-   `discrete_src/` first, in the repository root:
+1. `wrench.cpp` and `wrench.h` are the single-file build. Download both from
+   the assets of a release on the repository's Releases page (any release
+   made after the debugger was added), or generate them from `discrete_src/` in the
+   repository root:
 
    ```
-   make release
+   make dist
    ```
 
-   on Linux (builds the `wrench` tool and runs the next command), or with an
+   on Linux (builds the `wrench` tool and writes `dist/`), or with an
    existing `wrench` executable on any platform:
 
    ```
-   wrench release discrete_src src
+   wrench release discrete_src dist
    ```
 
-   Then copy `src/wrench.cpp` and `src/wrench.h` into the folder above.
+   Then copy `wrench.cpp` and `wrench.h` into the folder above (git ignores
+   them there).
 
 2. All examples run `script/blink.w`. Generate its header, here from this
    folder (`examples/debug_targets`):
@@ -54,8 +55,9 @@ except for `esp32_idf`, where the sources live in `main/`:
    ```
 
    The comment at the top of each example gives the same command relative
-   to that example's own folder. Use a `wrench` executable built from the
-   same sources as the `src/` files.
+   to that example's own folder. Use a `wrench` executable of the same
+   version as the single file build (bytecode formats can change between
+   versions).
 
 Each example carries a `wrench_config.h` (for `esp32_idf` in `main/`) that
 `wrench.h` picks up automatically through `__has_include`, so no compiler

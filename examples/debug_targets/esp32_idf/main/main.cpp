@@ -15,11 +15,9 @@
 	example still builds on 5.0 to 5.2.
 
 	Setup, all commands run in this example's folder (esp32_idf/):
-		1. copy src/wrench.cpp and src/wrench.h from the wrench repository into
-			main/ (main/wrench_config.h switches the debugger on). They must be
-			a current build that contains the debugger: regenerate src/ first
-			with "make release" (Linux) or "wrench release discrete_src src",
-			see ../README.md
+		1. copy wrench.cpp and wrench.h, the single file build, into main/
+			(main/wrench_config.h switches the debugger on): download them from
+			a release or generate them with "make dist", see ../README.md
 		2. wrench ch -debugsource ../script/blink.w main/blink.h blink
 		3. idf.py menuconfig: "Wrench debug target", for WiFi enable TCP and
 			enter the network name and password

@@ -101,7 +101,7 @@ not compiled with WR_EMBED_DEBUG_CODE runs at full speed regardless.
 
 WRENCH_INCLUDE_DEBUG_CLIENT builds the host side (only for PCs, it needs
 the C++ standard library). That works in builds from discrete_src; the
-single file build (src/wrench.cpp) leaves the client out by design and only
+single file build (wrench.cpp) leaves the client out by design and only
 gets the protocol and transports from it.
 
 Ready-made host transports need WRENCH_WIN32_TCP / WRENCH_LINUX_TCP and

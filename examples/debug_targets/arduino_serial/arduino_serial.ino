@@ -3,10 +3,9 @@
 	(ESP32, ESP8266, RP2040, STM32duino, SAMD, Mega...).
 
 	Setup:
-		1. copy src/wrench.cpp and src/wrench.h from the wrench repository into
-			this folder (wrench_config.h here switches the debugger on). They
-			must be a current build that contains the debugger: regenerate src/
-			first with "make release" (Linux) or "wrench release discrete_src src",
+		1. copy wrench.cpp and wrench.h, the single file build, into this
+			folder (wrench_config.h here switches the debugger on): download
+			them from a release or generate them with "make dist",
 			see ../README.md
 		2. generate the embedded program, from this folder:
 				wrench ch -debugsource ../script/blink.w blink.h blink

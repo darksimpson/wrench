@@ -2,11 +2,11 @@
 	wrench debug target for STM32 with the HAL drivers.
 
 	Setup:
-		1. add src/wrench.cpp, src/wrench.h, wrench_config.h, wrench_target.h and
-			this file to the project (C++ enabled, -fno-exceptions -fno-rtti fine).
-			wrench.cpp and wrench.h must be a current build that contains the
-			debugger: regenerate src/ first with "make release" (Linux) or
-			"wrench release discrete_src src", see ../README.md. wrench.h finds
+		1. add wrench.cpp, wrench.h, wrench_config.h, wrench_target.h and this
+			file to the project (C++ enabled, -fno-exceptions -fno-rtti fine).
+			wrench.cpp and wrench.h are the single file build: download them
+			from a release or generate them with "make dist", see
+			../README.md. wrench.h finds
 			wrench_config.h through __has_include; with a compiler that lacks it
 			pass its defines as compiler flags instead
 		2. from this folder: wrench ch -debugsource ../script/blink.w blink.h blink

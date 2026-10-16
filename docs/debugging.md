@@ -34,7 +34,7 @@ projects only need the first, typically through a `wrench_config.h` next to
 `wrench.h`.
 
 The host side exists only in the `discrete_src` build: the single-file
-build in `src/` (`wrench release discrete_src src`, or `make release`)
+build (`wrench.h` and `wrench.cpp` from a release, or `make dist`)
 leaves `debug/debug_client.h`, `debug/debug_client.cpp` and the host tools
 out by design. It carries the server, the transports and the protocol code;
 defining `WRENCH_INCLUDE_DEBUG_CLIENT` with it only switches on the
