@@ -27,3 +27,8 @@ tests/025_bug54.c
 tests/026_yield_state.c
 tests/027_arithmetic_corners.c
 tests/028_ternary.c
+tests/029_library_fixes.c
+tests/030_compiler_fixes.c
+tests/031_vm_fixes.c
+tests/032_audit_fixes.c
+tests/033_library_audit.c
