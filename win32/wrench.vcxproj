@@ -16,16 +16,13 @@
     <ClCompile Include="..\discrete_src\cc\link.cpp" />
     <ClCompile Include="..\discrete_src\cc\optimizer.cpp" />
     <ClCompile Include="..\discrete_src\cc\token.cpp" />
-    <ClCompile Include="..\discrete_src\debug\client_debug.cpp" />
-    <ClCompile Include="..\discrete_src\debug\client_interface_private.cpp" />
     <ClCompile Include="..\discrete_src\debug\debug.cpp" />
+    <ClCompile Include="..\discrete_src\debug\debug_client.cpp" />
+    <ClCompile Include="..\discrete_src\debug\debug_protocol.cpp" />
+    <ClCompile Include="..\discrete_src\debug\debug_server.cpp" />
+    <ClCompile Include="..\discrete_src\debug\debug_transport.cpp" />
     <ClCompile Include="..\discrete_src\debug\debugger.cpp" />
     <ClCompile Include="..\discrete_src\debug\disassemble.cpp" />
-    <ClCompile Include="..\discrete_src\debug\packet.cpp" />
-    <ClCompile Include="..\discrete_src\debug\serial_debug_comm.cpp" />
-    <ClCompile Include="..\discrete_src\debug\server_debug.cpp" />
-    <ClCompile Include="..\discrete_src\debug\server_interface_private.cpp" />
-    <ClCompile Include="..\discrete_src\debug\tcp_debug_comm.cpp" />
     <ClCompile Include="..\discrete_src\lib\debug_lib.cpp" />
     <ClCompile Include="..\discrete_src\lib\std.cpp" />
     <ClCompile Include="..\discrete_src\lib\std_container.cpp" />
@@ -36,10 +33,18 @@
     <ClCompile Include="..\discrete_src\lib\std_string.cpp" />
     <ClCompile Include="..\discrete_src\lib\std_sys.cpp" />
     <ClCompile Include="..\discrete_src\lib\std_tcp.cpp" />
+    <ClCompile Include="..\discrete_src\utils\json.cpp" />
+    <ClCompile Include="..\discrete_src\utils\json_stream.cpp" />
+    <ClCompile Include="..\discrete_src\utils\test_debugger.cpp" />
     <ClCompile Include="..\discrete_src\utils\serializer.cpp" />
     <ClCompile Include="..\discrete_src\utils\utils.cpp" />
     <ClCompile Include="..\discrete_src\utils\win32_comm.cpp" />
     <ClCompile Include="..\discrete_src\utils\wrench_cli.cpp" />
+    <ClCompile Include="..\discrete_src\utils\wrench_dap.cpp" />
+    <ClCompile Include="..\discrete_src\utils\wrench_debug_eval.cpp" />
+    <ClCompile Include="..\discrete_src\utils\wrench_debug_host.cpp" />
+    <ClCompile Include="..\discrete_src\utils\wrench_project.cpp" />
+    <ClCompile Include="..\discrete_src\utils\wrench_lsp.cpp" />
     <ClCompile Include="..\discrete_src\vm\gc.cpp" />
     <ClCompile Include="..\discrete_src\vm\gc_object.cpp" />
     <ClCompile Include="..\discrete_src\vm\index.cpp" />
@@ -52,23 +57,23 @@
   <ItemGroup>
     <ClInclude Include="..\discrete_src\cc\cc.h" />
     <ClInclude Include="..\discrete_src\cc\opcode_stream.h" />
-    <ClInclude Include="..\discrete_src\cc\str.h" />
     <ClInclude Include="..\discrete_src\debug\debug.h" />
+    <ClInclude Include="..\discrete_src\debug\debug_client.h" />
+    <ClInclude Include="..\discrete_src\debug\debug_protocol.h" />
     <ClInclude Include="..\discrete_src\debug\debugger.h" />
-    <ClInclude Include="..\discrete_src\debug\debug_comm.h" />
-    <ClInclude Include="..\discrete_src\debug\packet.h" />
-    <ClInclude Include="..\discrete_src\debug\wrench_debug.h" />
     <ClInclude Include="..\discrete_src\lib\std_io_defs.h" />
     <ClInclude Include="..\discrete_src\lib\std_tcp.h" />
-    <ClInclude Include="..\discrete_src\utils\debug_client.h" />
+    <ClInclude Include="..\discrete_src\utils\json.h" />
+    <ClInclude Include="..\discrete_src\utils\json_stream.h" />
+    <ClInclude Include="..\discrete_src\utils\wrench_lsp_library.inc" />
     <ClInclude Include="..\discrete_src\utils\opcode.h" />
     <ClInclude Include="..\discrete_src\utils\serializer.h" />
-    <ClInclude Include="..\discrete_src\utils\serial_comm.h" />
     <ClInclude Include="..\discrete_src\utils\simple_args.h" />
     <ClInclude Include="..\discrete_src\utils\simple_ll.h" />
-    <ClInclude Include="..\discrete_src\utils\str.h" />
     <ClInclude Include="..\discrete_src\utils\utils.h" />
-    <ClInclude Include="..\discrete_src\vm\gc_object.h" />
+    <ClInclude Include="..\discrete_src\utils\wrench_debug_eval.h" />
+    <ClInclude Include="..\discrete_src\utils\wrench_debug_host.h" />
+    <ClInclude Include="..\discrete_src\utils\wrench_project.h" />
     <ClInclude Include="..\discrete_src\vm\vm.h" />
     <ClInclude Include="..\discrete_src\wrench.h" />
   </ItemGroup>
@@ -115,7 +120,7 @@
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>false</SDLCheck>
-      <PreprocessorDefinitions>WIN32_C17;WRENCH_INCLUDE_DEBUG_CODE;WRENCH_WIN32_TCP;WRENCH_WIN32_SERIAL;WRENCH_WIN32_FILE_IO;WRENCH_WIN32_TCP;_CRT_SECURE_NO_WARNINGS;WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32_C17;WRENCH_INCLUDE_DEBUG_CODE;WRENCH_INCLUDE_DEBUG_CLIENT;WRENCH_WIN32_TCP;WRENCH_WIN32_SERIAL;WRENCH_WIN32_FILE_IO;WRENCH_WIN32_TCP;_CRT_SECURE_NO_WARNINGS;WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <AdditionalIncludeDirectories>..\discrete_src;..\discrete_src\cc;..\discrete_src\debug;..\discrete_src\lib;..\discrete_src\utils;..\discrete_src\vm</AdditionalIncludeDirectories>
       <BufferSecurityCheck>false</BufferSecurityCheck>
@@ -134,7 +139,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>false</SDLCheck>
-      <PreprocessorDefinitions>WIN32_C17;WRENCH_INCLUDE_DEBUG_CODE;WRENCH_WIN32_TCP;WRENCH_WIN32_SERIAL;WRENCH_WIN32_FILE_IO;WRENCH_WIN32_TCP;_CRT_SECURE_NO_WARNINGS;WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32_C17;WRENCH_INCLUDE_DEBUG_CODE;WRENCH_INCLUDE_DEBUG_CLIENT;WRENCH_WIN32_TCP;WRENCH_WIN32_SERIAL;WRENCH_WIN32_FILE_IO;WRENCH_WIN32_TCP;_CRT_SECURE_NO_WARNINGS;WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <AdditionalIncludeDirectories>..\discrete_src;..\discrete_src\cc;..\discrete_src\debug;..\discrete_src\lib;..\discrete_src\utils;..\discrete_src\vm</AdditionalIncludeDirectories>
       <BufferSecurityCheck>false</BufferSecurityCheck>

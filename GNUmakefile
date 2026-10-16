@@ -3,18 +3,21 @@ OPT ?= -O3
 
 PERF ?=
 
-#DEBUG ?= -DWRENCH_INCLUDE_DEBUG_CODE
-
-#C_VER ?= -std=c++17
-#C_VER ?= -std=c++11
+# the VM and its debug server stay plain C++98 so they build for any target,
+# the host tools (debug client, CLI debugger, DAP and LSP servers) use C++17
 C_VER ?= -std=c++98
+HOST_C_VER ?= -std=c++17
 
-#FLAGS ?= $(OPT) $(PERF) $(C_VER)
-#FLAGS ?= $(OPT) $(PERF) -iquote discrete_src -I. $(COMPACT) $(C_VER) -MD $(DEBUG) -DWRENCH_LINUX_FILE_IO -DWRENCH_LINUX_SERIAL -DWRENCH_LINUX_TCP
-FLAGS ?= $(OPT) $(PERF) -iquote discrete_src -I. $(COMPACT) $(C_VER) -MD $(DEBUG) -DWRENCH_LINUX_FILE_IO 
+# debugging support: server in the VM, client and protocol servers in the CLI
+DEBUG ?= -DWRENCH_INCLUDE_DEBUG_CODE -DWRENCH_INCLUDE_DEBUG_CLIENT
 
-#FLAGS = $(OPT) -pg
-#FLAGS = $(OPT) $(PERF)
+PLATFORM ?= -DWRENCH_LINUX_FILE_IO -DWRENCH_LINUX_SERIAL -DWRENCH_LINUX_TCP
+
+FLAGS ?= $(OPT) $(PERF) -iquote discrete_src -I. $(COMPACT) -MD $(DEBUG) $(PLATFORM)
+
+# extra link flags, "make LDFLAGS=-static" gives a binary that runs on any
+# distribution (used for the copy bundled in the VS Code extension)
+LDFLAGS ?=
 
 all: wrench
 
@@ -22,10 +25,10 @@ OBJDIR = objs_linux
 
 -include $(OBJDIR)/*.d
 
-CC = g++ -MD -Wall -Werror $(FLAGS) -c -o
-#CC = g++ -MD $(FLAGS) -c -o
+CC = g++ -Wall -Werror $(FLAGS) $(C_VER) -c -o
+HOSTCC = g++ -Wall -Werror $(FLAGS) $(HOST_C_VER) -c -o
 
-OBJS = \
+CORE_OBJS = \
 	$(OBJDIR)/cc.o \
 	$(OBJDIR)/expression.o \
 	$(OBJDIR)/link.o \
@@ -42,16 +45,12 @@ OBJS = \
 	$(OBJDIR)/serializer.o \
 	$(OBJDIR)/debug.o \
 	$(OBJDIR)/disassemble.o \
-	$(OBJDIR)/server_debug.o \
-	$(OBJDIR)/packet.o \
-	$(OBJDIR)/client_debug.o \
-	$(OBJDIR)/server_interface_private.o \
-	$(OBJDIR)/client_interface_private.o \
+	$(OBJDIR)/debug_protocol.o \
+	$(OBJDIR)/debug_server.o \
+	$(OBJDIR)/debug_transport.o \
 	$(OBJDIR)/scheduler.o \
 	$(OBJDIR)/std.o \
 	$(OBJDIR)/std_tcp.o \
-	$(OBJDIR)/tcp_debug_comm.o \
-	$(OBJDIR)/serial_debug_comm.o \
 	$(OBJDIR)/std_io.o \
 	$(OBJDIR)/std_string.o \
 	$(OBJDIR)/std_math.o \
@@ -63,72 +62,68 @@ OBJS = \
 	$(OBJDIR)/linux_comm.o \
 	$(OBJDIR)/fastled_lib.o \
 
+HOST_OBJS = \
+	$(OBJDIR)/debug_client.o \
+	$(OBJDIR)/debugger.o \
+	$(OBJDIR)/wrench_debug_host.o \
+	$(OBJDIR)/wrench_project.o \
+	$(OBJDIR)/wrench_debug_eval.o \
+	$(OBJDIR)/wrench_dap.o \
+	$(OBJDIR)/wrench_lsp.o \
+	$(OBJDIR)/json.o \
+	$(OBJDIR)/json_stream.o \
+	$(OBJDIR)/test_debugger.o \
+	$(OBJDIR)/wrench_cli.o \
+
+OBJS = $(CORE_OBJS) $(HOST_OBJS)
+
 clean:
-	-@rm -rf $(OBJDIR)
-	-@mkdir $(OBJDIR)
+	-@rm -f $(OBJDIR)/*.o $(OBJDIR)/*.d
 	-@rm -f wrench
 	-@rm -f wrench_dev
 	-@rm -f wrench_v
-	-@rm -rf src
-	-@mkdir src
+	-@rm -f test_wrench_cross_module_globals
 
-valgrind: $(OBJS) discrete_src/utils/wrench_cli.cpp discrete_src/debug/debugger.cpp
-	g++ -o wrench_v $(FLAGS) -Wall -Werror -I. -iquote discrete_src -O3 -ggdb $(OBJS) discrete_src/utils/wrench_cli.cpp discrete_src/debug/debugger.cpp
+wrench: $(OBJS)
+	g++ -o wrench $(OBJS) -pthread $(LDFLAGS)
+
+valgrind: $(OBJS)
+	g++ -o wrench_v $(OBJS) -pthread -ggdb
 
 tests: test
 tested: test
 
-test: $(OBJS) discrete_src/utils/wrench_cli.cpp discrete_src/debug/debugger.cpp
-	g++ $(OBJS) -Wall -Werror $(FLAGS) -iquote discrete_src -Isrc -I. discrete_src/utils/test_wrench_cross_module_globals.cpp -std=c++11 -DDOCTEST_CONFIG_IMPLEMENT_WITH_MAIN -o test_wrench_cross_module_globals
-	g++ $(OBJS) -Wall -Werror discrete_src/debug/debugger.cpp discrete_src/utils/wrench_cli.cpp $(FLAGS) -iquote discrete_src -Isrc -DWRENCH_ENABLE_CROSS_MODULE_EXTERNAL_TEST -o wrench_dev
+test: wrench
+	g++ $(CORE_OBJS) -Wall -Werror $(FLAGS) -std=c++11 discrete_src/utils/test_wrench_cross_module_globals.cpp -DDOCTEST_CONFIG_IMPLEMENT_WITH_MAIN -o test_wrench_cross_module_globals
 	./test_wrench_cross_module_globals
-	./wrench_dev t
+	./wrench t
 
-wrench_dev: dev_wrench
+# regenerate the single file distribution src/wrench.[cpp|h]
+release: wrench
+	./wrench release discrete_src src/.
 
-dev_wrench: $(OBJS) discrete_src/utils/wrench_cli.cpp discrete_src/debug/debugger.cpp
-	g++ $(OBJS) -Wall -Werror discrete_src/utils/wrench_cli.cpp discrete_src/debug/debugger.cpp $(FLAGS) -iquote discrete_src -Isrc -o wrench_dev
-
-wrench: $(OBJS) discrete_src/utils/wrench_cli.cpp
-	g++ $(OBJS) -Wall -Werror discrete_src/debug/debugger.cpp discrete_src/utils/wrench_cli.cpp $(FLAGS) -iquote discrete_src -Isrc -o wrench_dev
-	./wrench_dev release discrete_src src/.
-	-@rm wrench_dev
-	g++ -o wrench -Wall -Werror $(FLAGS) -Isrc src/wrench.cpp discrete_src/utils/wrench_cli.cpp discrete_src/debug/debugger.cpp
-
-$(OBJDIR)/cc.o: discrete_src/cc/cc.cpp
+$(OBJDIR)/%.o: discrete_src/cc/%.cpp
 	$(CC) $@ $<
 
-$(OBJDIR)/optimizer.o: discrete_src/cc/optimizer.cpp
+$(OBJDIR)/%.o: discrete_src/vm/%.cpp
 	$(CC) $@ $<
 
-$(OBJDIR)/token.o: discrete_src/cc/token.cpp
+$(OBJDIR)/%.o: discrete_src/lib/%.cpp
 	$(CC) $@ $<
 
-$(OBJDIR)/expression.o: discrete_src/cc/expression.cpp
+$(OBJDIR)/debug.o: discrete_src/debug/debug.cpp
 	$(CC) $@ $<
 
-$(OBJDIR)/link.o: discrete_src/cc/link.cpp
+$(OBJDIR)/disassemble.o: discrete_src/debug/disassemble.cpp
 	$(CC) $@ $<
 
-$(OBJDIR)/operations.o: discrete_src/vm/operations.cpp
+$(OBJDIR)/debug_protocol.o: discrete_src/debug/debug_protocol.cpp
 	$(CC) $@ $<
 
-$(OBJDIR)/operations_compact.o: discrete_src/vm/operations_compact.cpp
+$(OBJDIR)/debug_server.o: discrete_src/debug/debug_server.cpp
 	$(CC) $@ $<
 
-$(OBJDIR)/operations_non_compact.o: discrete_src/vm/operations_non_compact.cpp
-	$(CC) $@ $<
-
-$(OBJDIR)/index.o: discrete_src/vm/index.cpp
-	$(CC) $@ $<
-
-$(OBJDIR)/gc.o: discrete_src/vm/gc.cpp
-	$(CC) $@ $<
-
-$(OBJDIR)/gc_object.o: discrete_src/vm/gc_object.cpp
-	$(CC) $@ $<
-
-$(OBJDIR)/vm.o: discrete_src/vm/vm.cpp
+$(OBJDIR)/debug_transport.o: discrete_src/debug/debug_transport.cpp
 	$(CC) $@ $<
 
 $(OBJDIR)/utils.o: discrete_src/utils/utils.cpp
@@ -137,68 +132,14 @@ $(OBJDIR)/utils.o: discrete_src/utils/utils.cpp
 $(OBJDIR)/serializer.o: discrete_src/utils/serializer.cpp
 	$(CC) $@ $<
 
-$(OBJDIR)/std_serialize.o: discrete_src/lib/std_serialize.cpp
-	$(CC) $@ $<
-
-$(OBJDIR)/std_container.o: discrete_src/lib/std_container.cpp
-	$(CC) $@ $<
-
-$(OBJDIR)/debug_lib.o: discrete_src/lib/debug_lib.cpp
-	$(CC) $@ $<
-
-$(OBJDIR)/disassemble.o: discrete_src/debug/disassemble.cpp
-	$(CC) $@ $<
-
-$(OBJDIR)/debug.o: discrete_src/debug/debug.cpp
-	$(CC) $@ $<
-
-$(OBJDIR)/server_debug.o: discrete_src/debug/server_debug.cpp
-	$(CC) $@ $<
-
-$(OBJDIR)/packet.o: discrete_src/debug/packet.cpp
-	$(CC) $@ $<
-
-$(OBJDIR)/server_interface_private.o: discrete_src/debug/server_interface_private.cpp
-	$(CC) $@ $<
-
-$(OBJDIR)/client_interface_private.o: discrete_src/debug/client_interface_private.cpp
-	$(CC) $@ $<
-
-$(OBJDIR)/client_debug.o: discrete_src/debug/client_debug.cpp
-	$(CC) $@ $<
-
-$(OBJDIR)/scheduler.o: discrete_src/vm/scheduler.cpp
-	$(CC) $@ $<
-
-$(OBJDIR)/std.o: discrete_src/lib/std.cpp
-	$(CC) $@ $<
-
-$(OBJDIR)/std_tcp.o: discrete_src/lib/std_tcp.cpp
-	$(CC) $@ $<
-
-$(OBJDIR)/tcp_debug_comm.o: discrete_src/debug/tcp_debug_comm.cpp
-	$(CC) $@ $<
-
-$(OBJDIR)/serial_debug_comm.o: discrete_src/debug/serial_debug_comm.cpp
-	$(CC) $@ $<
-
-$(OBJDIR)/std_io.o: discrete_src/lib/std_io.cpp
-	$(CC) $@ $<
-
-$(OBJDIR)/std_string.o: discrete_src/lib/std_string.cpp
-	$(CC) $@ $<
-
-$(OBJDIR)/std_math.o: discrete_src/lib/std_math.cpp
-	$(CC) $@ $<
-
-$(OBJDIR)/std_msg.o: discrete_src/lib/std_msg.cpp
-	$(CC) $@ $<
-
-$(OBJDIR)/std_sys.o: discrete_src/lib/std_sys.cpp
-	$(CC) $@ $<
-
 $(OBJDIR)/linux_comm.o: discrete_src/utils/linux_comm.cpp
 	$(CC) $@ $<
 
-$(OBJDIR)/fastled_lib.o: discrete_src/lib/fastled_lib.cpp
-	$(CC) $@ $<
+$(OBJDIR)/debug_client.o: discrete_src/debug/debug_client.cpp
+	$(HOSTCC) $@ $<
+
+$(OBJDIR)/debugger.o: discrete_src/debug/debugger.cpp
+	$(HOSTCC) $@ $<
+
+$(OBJDIR)/%.o: discrete_src/utils/%.cpp
+	$(HOSTCC) $@ $<
