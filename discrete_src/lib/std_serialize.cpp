@@ -27,6 +27,8 @@ SOFTWARE.
 //------------------------------------------------------------------------------
 void wr_stdSerialize( WRValue* stackTop, const int argn, WRContext* c )
 {
+	stackTop->init(); // returned as-is when the value can not be serialized
+
 	if ( argn )
 	{
 		char* buf;
@@ -37,6 +39,8 @@ void wr_stdSerialize( WRValue* stackTop, const int argn, WRContext* c )
 #ifdef WRENCH_HANDLE_MALLOC_FAIL
 			if ( !stackTop->va )
 			{
+				stackTop->init();
+				g_free( buf );
 				return;
 			}
 #endif
@@ -44,6 +48,15 @@ void wr_stdSerialize( WRValue* stackTop, const int argn, WRContext* c )
 			g_free( stackTop->va->m_Cdata );
 			stackTop->va->m_data = buf;
 			stackTop->va->m_size = len;
+
+			// the buffer was handed over instead of allocated by getSVA(),
+			// count it like getSVA() would so it can trigger a collection
+			c->allocatedMemoryHint += (uint32_t)len;
+
+			// collect here too: a loop that only serializes runs no
+			// instruction that would trigger it (the result is on the
+			// stack, so it is kept)
+			c->gc( stackTop + 1 );
 		}
 	}
 }
@@ -51,6 +64,8 @@ void wr_stdSerialize( WRValue* stackTop, const int argn, WRContext* c )
 //------------------------------------------------------------------------------
 void wr_stdDeserialize( WRValue* stackTop, const int argn, WRContext* c )
 {
+	stackTop->init();
+
 	if ( argn )
 	{
 		WRValue& V = (stackTop - argn)->deref();

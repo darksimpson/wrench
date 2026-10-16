@@ -36,10 +36,10 @@ int wr_sprintfEx( char* outbuf,
 void wr_debugPrintEx( WRValue* stackTop, const int argn, WRContext* c, const char* append )
 {
 #ifdef WRENCH_INCLUDE_DEBUG_CODE
-	if( argn >= 1 && c->debugInterface )
+	if( argn >= 1 && c->debugServer )
 	{
 		WRValue* args = stackTop - argn;
-		unsigned int inlen;
+		unsigned int inlen = 0;
 		char* inbuf = args[0].asMallocString( &inlen );
 		if ( !inbuf )
 		{
@@ -47,15 +47,24 @@ void wr_debugPrintEx( WRValue* stackTop, const int argn, WRContext* c, const cha
 		}
 
 		char outbuf[200];
-		int size = wr_sprintfEx( outbuf, 199, inbuf, inlen, args + 1, argn - 1);
-			
-		WrenchPacket* P = WrenchPacket::alloc( WRD_DebugOut, size, (uint8_t*)outbuf );
-			
+		int size = wr_sprintfEx( outbuf, sizeof(outbuf) - 1, inbuf, inlen, args + 1, argn - 1 );
 		g_free( inbuf );
 
-		c->debugInterface->I->m_comm->send( P );
+		// the formatter reports the length it wanted, not what fit
+		if ( size < 0 )
+		{
+			size = 0;
+		}
+		else if ( size > (int)sizeof(outbuf) - 1 )
+		{
+			size = (int)sizeof(outbuf) - 1;
+		}
 
-		g_free( P );
+		c->debugServer->print( outbuf, size );
+		if ( append )
+		{
+			c->debugServer->print( append );
+		}
 	}
 #endif
 }
@@ -75,8 +84,8 @@ void wr_debugPrintln( WRValue* stackTop, const int argn, WRContext* c )
 //------------------------------------------------------------------------------
 void wr_loadDebugLib( WRState* w )
 {
-#ifdef WRENCH_INCLUDE_DEBUG_CODE
+	// always registered: without debug code (or with no debugger attached)
+	// they do nothing, so scripts can call them on any build
 	wr_registerLibraryFunction( w, "debug::print", wr_debugPrint );
 	wr_registerLibraryFunction( w, "debug::println", wr_debugPrintln );
-#endif
 }

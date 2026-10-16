@@ -76,10 +76,16 @@ int wr_sprintfEx( char* outbuf,
 		negativeSign    = 1<<3,
 		parsingSigned   = 1<<4,
 		altRep			= 1<<5,
+		inPrecision = 1<<6,
 	};
+
+	const unsigned int c_maxColumns = 4096; // cap absurd field widths
 
 	unsigned int pos = 0;
 	const char* fmtend = fmt + fmtsize;
+#ifdef WRENCH_FLOAT_SPRINTF
+	const char* specStart = fmt;
+#endif
 
 	int listPtr = 0;
 
@@ -95,7 +101,7 @@ resetState:
 		{
 			goto sprintf_end;
 		}
-		
+
 		char c = *fmt++;
 
 		if ( !(secondPass & flags) )
@@ -107,7 +113,15 @@ resetState:
 			else // possibly % format specifier
 			{
 				flags |= secondPass;
+#ifdef WRENCH_FLOAT_SPRINTF
+				specStart = fmt - 1;
+#endif
 			}
+		}
+		else if ( (flags & inPrecision) && c >= '0' && c <= '9' )
+		{
+			// precision digits do not count toward the width; only a
+			// float conversion uses them (it re-reads the whole specifier)
 		}
 		else if ( c >= '0' && c <= '9' ) // width
 		{
@@ -118,6 +132,10 @@ resetState:
 				flags |= zeroPad;
 				padChar = '0';
 			}
+			else if ( columns > c_maxColumns )
+			{
+				columns = c_maxColumns;
+			}
 		}
 		else if ( c == '#' )
 		{
@@ -127,10 +145,14 @@ resetState:
 		{
 			flags |= negativeJustify;
 		}
-#ifdef WRENCH_FLOAT_SPRINTF
-		else if (c == '.') // ignore, we might be reading a floating point decimal position
-		{ }
-#endif
+		else if ( c == 'l' || c == 'h' || c == 'L' || c == 'z' || c == 'j' || c == 't' )
+		{
+			// length modifiers are accepted and ignored, every integer is 32 bits
+		}
+		else if ( c == '.' ) // precision follows
+		{
+			flags |= inPrecision;
+		}
 		else if ( c == 'c' ) // character
 		{
 			if ( listPtr < argn )
@@ -146,8 +168,10 @@ resetState:
 		}
 		else // string or integer
 		{
-			const int c_bufSize = 20;
-			char buf[c_bufSize]; // buffer for integer
+			// large enough for 32 binary digits, or any single value
+			// formatted as text
+			const int c_bufSize = 34;
+			char buf[c_bufSize];
 
 			const char *ptr; // pointer to first char of integer
 			unsigned int len;
@@ -155,64 +179,78 @@ resetState:
 			if ( c == 's' ) // string
 			{
 				buf[0] = 0;
+				ptr = buf;
+				len = 0;
 				if ( listPtr < argn )
 				{
 					ptr = (char *)args[listPtr].array(&len);
 					if ( !ptr )
 					{
-						return 0;
+						// not a string, format the value as text instead
+						unsigned int valueLen = 0;
+						args[listPtr].asString( buf, c_bufSize, &valueLen );
+						ptr = buf;
+						len = valueLen;
 					}
 					++listPtr;
-				}
-				else
-				{
-					ptr = buf;
-					len = 0;
 				}
 
 				padChar = ' '; // in case some joker uses a 0 in their column spec
 
 copyToString:
-
-				// get the string length so it can be formatted, don't
-				// copy it, just count it
-//				unsigned int len = 0;
-//				for ( ; *ptr; ptr++ )
-//				{
-//					len++;
-//				}
-//
-//				ptr -= len;
-
-				// Right-justify
-				if ( !(flags & negativeJustify) )
 				{
-					for ( ; columns > len; columns-- )
+					const bool hexPrefix = (c == 'p') || ((flags & altRep) && (c == 'x' || c == 'X'));
+
+					// the sign and prefix count toward the field width
+					unsigned int total = len;
+					if ( flags & negativeSign )
 					{
-						addChar( outbuf, padChar, pos, outsize );
+						++total;
 					}
-				}
+					if ( hexPrefix )
+					{
+						total += 2;
+					}
 
-				if ( flags & negativeSign )
-				{
-					addChar( outbuf, '-', pos, outsize );
-				}
+					// Right-justify: spaces go before the sign
+					if ( !(flags & negativeJustify) && padChar != '0' )
+					{
+						for ( ; columns > total; columns-- )
+						{
+							addChar( outbuf, ' ', pos, outsize );
+						}
+					}
 
-				if ( flags & altRep || c == 'p' )
-				{
-					addChar( outbuf, '0', pos, outsize );
-					addChar( outbuf, 'x', pos, outsize );
-				}
+					if ( flags & negativeSign )
+					{
+						addChar( outbuf, '-', pos, outsize );
+					}
 
-				for (unsigned int l = 0; l < len; ++l )
-				{
-					addChar( outbuf, *ptr++, pos, outsize );
-				}
+					if ( hexPrefix )
+					{
+						addChar( outbuf, '0', pos, outsize );
+						addChar( outbuf, 'x', pos, outsize );
+					}
 
-				// Left-justify
-				for ( ; columns > len; columns-- )
-				{
-					addChar( outbuf, ' ', pos, outsize );
+					// zeros go after the sign
+					if ( !(flags & negativeJustify) )
+					{
+						for ( ; columns > total; columns-- )
+						{
+							addChar( outbuf, padChar, pos, outsize );
+						}
+					}
+
+					for (unsigned int l = 0; l < len; ++l )
+					{
+						addChar( outbuf, *ptr++, pos, outsize );
+					}
+
+					// Left-justify
+					for ( ; columns > total; columns-- )
+					{
+						addChar( outbuf, ' ', pos, outsize );
+					}
 				}
 
 				goto resetState;
@@ -229,29 +267,82 @@ copyToString:
 					goto parseDecimal;
 				}
 #ifdef WRENCH_FLOAT_SPRINTF
-				else if ( c == 'f' || c == 'g' )
+				else if ( c == 'f' || c == 'g' || c == 'e' || c == 'F' || c == 'G' || c == 'E' )
 				{
-					char floatBuf[32];
-					int i = 30;
-					floatBuf[31] = 0;
-					const char *f = fmt;
-					for( ; *f != '%'; --f, --i )
+					// rebuild the specifier from the '%' through this
+					// character, leaving out length modifiers
+					char floatSpec[32];
+					char floatOut[64];
+					unsigned int specLen = 0;
+					bool specFits = true;
+					for( const char* s = specStart; s < fmt; ++s )
 					{
-						floatBuf[i] = *f;
+						if ( *s == 'l' || *s == 'h' || *s == 'L' || *s == 'z' || *s == 'j' || *s == 't' )
+						{
+							continue;
+						}
+						if ( specLen >= sizeof(floatSpec) - 1 )
+						{
+							specFits = false;
+							break;
+						}
+						floatSpec[specLen++] = *s;
 					}
-					floatBuf[i] = '%';
+					floatSpec[specLen] = 0;
 
-					// suck in whatever lib we need for this
-					const int chars = snprintf( buf, 31, floatBuf + i, args[listPtr++].asFloat());
-
-					// your system not have snprintf? the unsafe version is:
-					// const int chars = sprintf( buf, floatBuf + i, args[listPtr++].asFloat());
-
-					for( int j=0; j<chars; ++j )
+					const float floatValue = (listPtr < argn) ? args[listPtr].asFloat() : 0.f;
+					if ( listPtr < argn )
 					{
-						addChar( outbuf, buf[j], pos, outsize );
+						++listPtr;
+					}
+
+					if ( specFits )
+					{
+						// suck in whatever lib we need for this
+						int chars = snprintf( floatOut, sizeof(floatOut), floatSpec, floatValue );
+
+						// snprintf reports the length it wanted, not what fit
+						if ( chars < 0 )
+						{
+							chars = 0;
+						}
+						else if ( chars > (int)sizeof(floatOut) - 1 )
+						{
+							chars = (int)sizeof(floatOut) - 1;
+						}
+
+						for( int j=0; j<chars; ++j )
+						{
+							addChar( outbuf, floatOut[j], pos, outsize );
+						}
 					}
 					goto resetState;
+				}
+#else
+				else if ( c == 'f' || c == 'g' || c == 'e' || c == 'F' || c == 'G' || c == 'E' )
+				{
+					// without the C library float formatter the value is
+					// printed the way wrench prints any float, but it is
+					// always consumed so the specifiers after it still line
+					// up with their arguments
+					unsigned int valueLen = 0;
+					if ( listPtr < argn )
+					{
+						valueLen = (unsigned int)wr_ftoa( args[listPtr++].asFloat(), buf, c_bufSize - 1 );
+					}
+					buf[valueLen] = 0;
+					ptr = buf;
+					len = valueLen;
+
+					// the sign goes before any zero padding
+					if ( len && *ptr == '-' )
+					{
+						flags |= negativeSign;
+						++ptr;
+						--len;
+					}
+
+					goto copyToString;
 				}
 #endif
 				else if ( c == 'u' ) // decimal
@@ -264,13 +355,13 @@ parseDecimal:
 				else if ( c == 'b' ) // binary
 				{
 					base  = 2;
-					width = 16;
+					width = 32;
 					goto convertBase;
 				}
 				else if ( c == 'o' ) // octal
 				{
 					base  = 8;
-					width = 5;
+					width = 11;
 					goto convertBase;
 				}
 				else if ( c == 'x' || c == 'X' || c == 'p' ) // hexadecimal or pointer (pointer is treated as 'X')
@@ -290,7 +381,7 @@ convertBase:
 					if ( (flags & parsingSigned) && (val & 0x80000000) )
 					{
 						flags |= negativeSign;
-						val = -(int)val;
+						val = 0u - val; // magnitude, also correct for INT_MIN
 					}
 
 					// Convert to given base, filling buffer backwards from least to most significant
@@ -332,9 +423,9 @@ convertBase:
 			}
 		}
 	}
-	
+
 sprintf_end:
-	
+
 	return pos;
 }
 
@@ -353,84 +444,36 @@ unsigned int wr_doSprintf( WRValue& to, WRValue& fmt, WRValue* args, const int a
 		return 0;
 	}
 
-	unsigned int outbufSize = 0;
-	char* outbuf = (char*)to.array( &outbufSize, SV_CHAR );
+	// always format into a new string and only then make 'to' refer to it:
+	// the string 'to' held may be shared with other variables, and it may
+	// be one of the arguments (or the format) being read right now
+	char tmpbuf[WR_FORMAT_TRY_SIZE];
+	const unsigned int size = wr_sprintfEx( tmpbuf, WR_FORMAT_TRY_SIZE, fmtbuffer, fmtBufferSize, args, argn );
 
-	unsigned int size;
-
-	if ( !outbuf ) // going to have to make one then
+	WRGCObject* out = c->getSVA( size, SV_CHAR, false );
+#ifdef WRENCH_HANDLE_MALLOC_FAIL
+	if ( !out )
 	{
-		char tmpbuf[WR_FORMAT_TRY_SIZE + 1]; // start with a temp buf
-		
-		size = wr_sprintfEx( tmpbuf, WR_FORMAT_TRY_SIZE, fmtbuffer, fmtBufferSize, args, argn );
+		to.init();
+		return 0;
+	}
+#endif
 
-		if ( size > WR_FORMAT_TRY_SIZE )
-		{
-			goto createNewBuffer;
-		}
-
-		to.va = c->getSVA( size, SV_CHAR, false );
-
-		#ifdef WRENCH_HANDLE_MALLOC_FAIL
-		if ( !to.va )
-		{
-			to.p2 = WR_INT;
-			return 0;
-		}
-		#endif
-
-		memcpy( to.va->m_Cdata, tmpbuf, size );
+	if ( size <= WR_FORMAT_TRY_SIZE )
+	{
+		memcpy( out->m_Cdata, tmpbuf, size );
 	}
 	else
 	{
-		size = wr_sprintfEx( outbuf, outbufSize, fmtbuffer, fmtBufferSize, args, argn );
-
-		if ( size > outbufSize )
-		{
-createNewBuffer:
-
-			to.va = c->getSVA( size, SV_CHAR, false );
-
-			#ifdef WRENCH_HANDLE_MALLOC_FAIL
-			if ( !to.va )
-			{
-				to.p2 = WR_INT;
-				return 0;
-			}
-			#endif
-			wr_sprintfEx( (char *)to.va->m_Cdata, size, fmtbuffer, fmtBufferSize, args, argn );
-			}
-			else
-			{
-				// Keep amortized behavior for normal growth/shrink patterns,
-				// but release oversized buffers when utilization gets very low.
-				// This avoids long-lived large allocations after temporary spikes.
-				if ( outbufSize > WR_FORMAT_TRY_SIZE
-					 && size > 0
-					 && outbufSize >= (size << 2) )
-				{
-					to.va = c->getSVA( size, SV_CHAR, false );
-
-					#ifdef WRENCH_HANDLE_MALLOC_FAIL
-					if ( !to.va )
-					{
-						to.p2 = WR_INT;
-						return 0;
-					}
-					#endif
-					wr_sprintfEx( (char *)to.va->m_Cdata, size, fmtbuffer, fmtBufferSize, args, argn );
-				}
-				else
-				{
-					to.va->m_size = size;
-				}
-			}
-		}
+		// did not fit the temp buffer, format again straight into the
+		// new string
+		wr_sprintfEx( (char *)out->m_Cdata, size, fmtbuffer, fmtBufferSize, args, argn );
+	}
 
 	to.p2 = INIT_AS_ARRAY;
+	to.va = out;
 
 	return size;
-
 }
 
 
@@ -464,7 +507,8 @@ void wr_printf( WRValue* stackTop, const int argn, WRContext* c )
 		if ( (chars = wr_doSprintf( *stackTop, args->deref(), args + 1, argn - 1, c )) )
 		{
 #if !defined(WRENCH_WIN32_FILE_IO) && !defined(WRENCH_LINUX_FILE_IO) && !defined(WRENCH_SPIFFS_FILE_IO) && !defined(WRENCH_LITTLEFS_FILE_IO)
-			printf( "%s", (const char*)stackTop->va->m_Cdata );
+			// the formatted array is not null terminated
+			fwrite( stackTop->va->m_Cdata, 1, stackTop->va->m_size, stdout );
 #else
 			wr_stdout( (const char*)stackTop->va->m_Cdata, stackTop->va->m_size );
 #endif
@@ -480,7 +524,7 @@ void wr_isspace( WRValue* stackTop, const int argn, WRContext* c )
 {
 	if ( argn == 1 )
 	{
-		stackTop->i = (int)isspace( (char)(stackTop - 1)->asInt() );
+		stackTop->i = (int)isspace( (unsigned char)(stackTop - 1)->asInt() );
 	}
 }
 
@@ -489,7 +533,7 @@ void wr_isalpha( WRValue* stackTop, const int argn, WRContext* c )
 {
 	if ( argn == 1 )
 	{
-		stackTop->i = (int)isalpha( (char)(stackTop - 1)->asInt() );
+		stackTop->i = (int)isalpha( (unsigned char)(stackTop - 1)->asInt() );
 	}
 }
 
@@ -498,7 +542,7 @@ void wr_isdigit( WRValue* stackTop, const int argn, WRContext* c )
 {
 	if ( argn == 1 )
 	{
-		stackTop->i = (int)isdigit( (char)(stackTop - 1)->asInt() );
+		stackTop->i = (int)isdigit( (unsigned char)(stackTop - 1)->asInt() );
 	}
 }
 
@@ -507,7 +551,7 @@ void wr_isalnum( WRValue* stackTop, const int argn, WRContext* c )
 {
 	if ( argn == 1 )
 	{
-		stackTop->i = (int)isalnum( (char)(stackTop - 1)->asInt() );
+		stackTop->i = (int)isalnum( (unsigned char)(stackTop - 1)->asInt() );
 	}
 }
 
@@ -603,12 +647,13 @@ void wr_tolower( WRValue* stackTop, const int argn, WRContext* c )
 
 			for( uint32_t i=0; i<value.va->m_size; ++i )
 			{
-				stackTop->va->m_SCdata[i] = tolower(value.va->m_SCdata[i]);
+				stackTop->va->m_SCdata[i] = (char)tolower( (unsigned char)value.va->m_SCdata[i] );
 			}
 		}
 		else if ( value.type == WR_INT )
 		{
-			stackTop->i = (int)tolower( (stackTop - 1)->asInt() );
+			const int ch = (stackTop - 1)->asInt();
+			stackTop->i = (ch >= 0 && ch <= 255) ? (int)tolower( ch ) : ch; // ctype is only defined for unsigned char values
 		}
 	}
 }
@@ -632,28 +677,139 @@ void wr_toupper( WRValue* stackTop, const int argn, WRContext* c )
 
 			for( uint32_t i=0; i<value.va->m_size; ++i )
 			{
-				stackTop->va->m_SCdata[i] = toupper(value.va->m_SCdata[i]);
+				stackTop->va->m_SCdata[i] = (char)toupper( (unsigned char)value.va->m_SCdata[i] );
 			}
 		}
 		else if ( value.type == WR_INT )
 		{
-			stackTop->i = (int)toupper( (stackTop - 1)->asInt() );
+			const int ch = (stackTop - 1)->asInt();
+			stackTop->i = (ch >= 0 && ch <= 255) ? (int)toupper( ch ) : ch;
 		}
 
 	}
 }
 
 //------------------------------------------------------------------------------
+// strtol() for a string that is not null terminated and may be of any
+// length; the result is clamped to 32 bits on every platform (like strtol
+// where long is 32 bits). Returns 0 for an invalid base or no digits
+static int32_t wr_strToL( const char* s, const unsigned int len, int base )
+{
+	unsigned int pos = 0;
+	while( pos < len && isspace((unsigned char)s[pos]) )
+	{
+		++pos;
+	}
+
+	bool negative = false;
+	if ( pos < len && (s[pos] == '-' || s[pos] == '+') )
+	{
+		negative = (s[pos] == '-');
+		++pos;
+	}
+
+	if ( base < 0 || base == 1 || base > 36 )
+	{
+		return 0;
+	}
+
+	// a "0x" prefix only counts when a hex digit follows it
+	const bool hexPrefix = (pos + 2 < len)
+		&& s[pos] == '0'
+		&& (s[pos + 1] == 'x' || s[pos + 1] == 'X')
+		&& isxdigit( (unsigned char)s[pos + 2] );
+
+	if ( base == 0 )
+	{
+		if ( hexPrefix )
+		{
+			base = 16;
+			pos += 2;
+		}
+		else if ( pos < len && s[pos] == '0' )
+		{
+			base = 8;
+		}
+		else
+		{
+			base = 10;
+		}
+	}
+	else if ( base == 16 && hexPrefix )
+	{
+		pos += 2;
+	}
+
+	// magnitude limit: 2147483647, or 2147483648 for a negative result
+	const uint32_t limit = negative ? 0x80000000u : 0x7FFFFFFFu;
+	uint32_t value = 0;
+	bool overflow = false;
+	for( ; pos < len; ++pos )
+	{
+		const char ch = s[pos];
+		int digit;
+		if ( ch >= '0' && ch <= '9' )
+		{
+			digit = ch - '0';
+		}
+		else if ( ch >= 'a' && ch <= 'z' )
+		{
+			digit = ch - 'a' + 10;
+		}
+		else if ( ch >= 'A' && ch <= 'Z' )
+		{
+			digit = ch - 'A' + 10;
+		}
+		else
+		{
+			break;
+		}
+
+		if ( digit >= base )
+		{
+			break;
+		}
+
+		if ( !overflow )
+		{
+			if ( value > (limit - (uint32_t)digit) / (uint32_t)base )
+			{
+				overflow = true; // keep consuming digits, the result saturates
+				value = limit;
+			}
+			else
+			{
+				value = value * (uint32_t)base + (uint32_t)digit;
+			}
+		}
+	}
+
+	return negative ? (int32_t)(0u - value) : (int32_t)value;
+}
+
 void wr_tol( WRValue* stackTop, const int argn, WRContext* c )
 {
-	char buf[21];
-	if ( argn == 2 )
+	if ( argn != 1 && argn != 2 )
 	{
-		stackTop->i = (int)strtol( stackTop[-2].asString(buf, 20), 0, stackTop[-1].asInt() );
+		return;
 	}
-	else if ( argn == 1 )
+
+	WRValue* args = stackTop - argn;
+	const int base = (argn == 2) ? args[1].asInt() : 10;
+
+	unsigned int len = 0;
+	const char* str = (const char*)args[0].array( &len, SV_CHAR );
+	if ( str )
 	{
-		stackTop->i = (int)strtol( stackTop[-1].asString(buf, 20), 0, 10 );
+		stackTop->i = wr_strToL( str, len, base );
+	}
+	else
+	{
+		// a number: parse its text form, which always fits this buffer
+		char buf[34];
+		unsigned int numLen = 0;
+		args[0].asString( buf, sizeof(buf), &numLen );
+		stackTop->i = wr_strToL( buf, numLen, base );
 	}
 }
 
@@ -767,7 +923,9 @@ void wr_trimright( WRValue* stackTop, const int argn, WRContext* c )
 		return;
 	}
 
-	while( --len >= 0 && isspace(data[len]) );
+	while( --len >= 0 && isspace((unsigned char)data[len]) )
+	{
+	}
 
 	++len;
 
@@ -796,7 +954,7 @@ void wr_trimleft( WRValue* stackTop, const int argn, WRContext* c )
 	}
 
 	unsigned int marker = 0;
-	while( marker < len && isspace(data[marker]) ) { ++marker; }
+	while( marker < len && isspace((unsigned char)data[marker]) ) { ++marker; }
 
 	stackTop->va = c->getSVA( len - marker, SV_CHAR, false );
 #ifdef WRENCH_HANDLE_MALLOC_FAIL
@@ -822,9 +980,11 @@ void wr_trim( WRValue* stackTop, const int argn, WRContext* c )
 	}
 
 	int marker = 0;
-	while( marker < len && isspace(data[marker]) ) { ++marker; }
+	while( marker < len && isspace((unsigned char)data[marker]) ) { ++marker; }
 
-	while( --len >= marker && isspace(data[len]) );
+	while( --len >= marker && isspace((unsigned char)data[len]) )
+	{
+	}
 
 	++len;
 
@@ -885,11 +1045,18 @@ void wr_tprint( WRValue* stackTop, const int argn, WRContext* c )
 {
 	if ( argn )
 	{
-		char buf[4096];
-		(stackTop - argn)->technicalAsString( buf, 4096, false );
+		// on the heap: 4KB is too much for small task stacks
+		const unsigned int size = 4096;
+		char* buf = (char*)g_malloc( size );
+		if ( !buf )
+		{
+			return;
+		}
+		(stackTop - argn)->technicalAsString( buf, size, false );
 		printf( "\n%s\n",  buf );
-		(stackTop - argn)->technicalAsString( buf, 4096, true );
+		(stackTop - argn)->technicalAsString( buf, size, true );
 		printf( "%s\n",  buf );
+		g_free( buf );
 	}
 }
 

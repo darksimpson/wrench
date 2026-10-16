@@ -122,7 +122,7 @@ void wr_math_atan2( WRValue* stackTop, const int argn, WRContext* c )
 	stackTop->p2 = INIT_AS_FLOAT;
 	if ( argn == 2 )
 	{
-		stackTop->f = atan2f( (stackTop - 1)->asFloat(), (stackTop - 2)->asFloat() );
+		stackTop->f = atan2f( (stackTop - 2)->asFloat(), (stackTop - 1)->asFloat() ); // ( y, x )
 	}
 }
 
@@ -202,7 +202,7 @@ void wr_math_pow( WRValue* stackTop, const int argn, WRContext* c )
 	stackTop->p2 = INIT_AS_FLOAT;
 	if ( argn == 2 )
 	{
-		stackTop->f = powf( (stackTop - 1)->asFloat(), (stackTop - 2)->asFloat() );
+		stackTop->f = powf( (stackTop - 2)->asFloat(), (stackTop - 1)->asFloat() ); // ( base, exponent )
 	}
 }
 
@@ -212,7 +212,7 @@ void wr_math_fmod( WRValue* stackTop, const int argn, WRContext* c )
 	stackTop->p2 = INIT_AS_FLOAT;
 	if ( argn == 2 )
 	{
-		stackTop->f = fmodf( (stackTop - 1)->asFloat(), (stackTop - 2)->asFloat() );
+		stackTop->f = fmodf( (stackTop - 2)->asFloat(), (stackTop - 1)->asFloat() ); // ( x, y )
 	}
 }
 
@@ -232,7 +232,7 @@ void wr_math_ldexp( WRValue* stackTop, const int argn, WRContext* c )
 	stackTop->p2 = INIT_AS_FLOAT;
 	if ( argn == 2 )
 	{
-		stackTop->f = ldexpf( (stackTop - 1)->asFloat(), (stackTop - 2)->asInt() );
+		stackTop->f = ldexpf( (stackTop - 2)->asFloat(), (stackTop - 1)->asInt() ); // ( x, exp )
 	}
 }
 

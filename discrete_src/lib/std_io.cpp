@@ -33,6 +33,10 @@ SOFTWARE.
 #include <io.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <stdlib.h>
+#ifdef _MSC_VER
+#include <crtdbg.h>
+#endif
 #endif
 
 #if defined(WRENCH_LINUX_FILE_IO)
@@ -41,18 +45,67 @@ SOFTWARE.
 #include <unistd.h>
 #endif
 
+// largest single io::read() request that is honored
+#ifndef WRENCH_MAX_IO_READ
+#define WRENCH_MAX_IO_READ 0x100000
+#endif
+
+// the SPIFFS / LittleFS implementations of these live in
+// std_io_little_spiffs.cpp, only the registration below is shared
+#if defined(WRENCH_WIN32_FILE_IO) || defined(WRENCH_LINUX_FILE_IO)
+
+// The Microsoft runtime reports a bad descriptor or open mode through its
+// invalid parameter handler, which terminates the process by default. While
+// a guard lives the handler of this thread does nothing, so the call fails
+// with -1 like on Linux
+#if defined(WRENCH_WIN32_FILE_IO) && defined(_MSC_VER)
+static void wr_ignoreInvalidParameter( const wchar_t*, const wchar_t*, const wchar_t*, unsigned int, uintptr_t )
+{
+}
+
+struct WRCrtGuard
+{
+	_invalid_parameter_handler m_old;
+	int m_oldReportMode;
+
+	WRCrtGuard()
+	{
+		m_old = _set_thread_local_invalid_parameter_handler( wr_ignoreInvalidParameter );
+		m_oldReportMode = _CrtSetReportMode( _CRT_ASSERT, 0 ); // no assert dialog in debug builds
+	}
+
+	~WRCrtGuard()
+	{
+		_CrtSetReportMode( _CRT_ASSERT, m_oldReportMode );
+		_set_thread_local_invalid_parameter_handler( m_old );
+	}
+};
+#elif defined(WRENCH_WIN32_FILE_IO)
+struct WRCrtGuard
+{
+	WRCrtGuard() {}
+};
+#endif
+
 //------------------------------------------------------------------------------
 void wr_stdout( const char* data, const int size )
 {
+	// anything already buffered in stdio must reach the descriptor before
+	// this unbuffered write or the output comes out of order
+	fflush( stdout );
+
 #if defined(WRENCH_WIN32_FILE_IO)
-	if ( _write( _fileno(stdout), data, size ) > 0 )
+	if ( _write( _fileno(stdout), data, size ) < 0 )
+	{
+		return;
+	}
 #endif
 #if defined(WRENCH_LINUX_FILE_IO)
-	if ( write( STDOUT_FILENO, data, size ) > 0 )
-#endif
+	if ( write( STDOUT_FILENO, data, size ) < 0 )
 	{
-		fflush( stdout );
+		return;
 	}
+#endif
 }
 
 //------------------------------------------------------------------------------
@@ -72,23 +125,28 @@ void wr_read_file( WRValue* stackTop, const int argn, WRContext* c )
 		int ret = stat( fileName, &sbuf );
 #endif
 		
-		if ( ret == 0 )
+		// sizes past what an array holds would be truncated (a 4GB+N file
+		// would get an N byte buffer)
+		if ( ret == 0 && sbuf.st_size >= 0 && sbuf.st_size <= 0x7FFFFFFF )
 		{
 			FILE *infil = fopen( fileName, "rb" );
-			if ( infil )
+			if ( !infil )
 			{
-				stackTop->va = c->getSVA( (int)sbuf.st_size, SV_CHAR, false );
+				return;
+			}
+
+			stackTop->va = c->getSVA( (int)sbuf.st_size, SV_CHAR, false );
 #ifdef WRENCH_HANDLE_MALLOC_FAIL
-				if ( !stackTop->va )
-				{
-					return;
-				}
+			if ( !stackTop->va )
+			{
+				fclose( infil );
+				return;
+			}
 #endif
-				stackTop->p2 = INIT_AS_ARRAY;
-				if ( fread(stackTop->va->m_Cdata, sbuf.st_size, 1, infil) != 1 )
-				{
-					return;
-				}
+			stackTop->p2 = INIT_AS_ARRAY;
+			if ( sbuf.st_size > 0 && fread(stackTop->va->m_Cdata, sbuf.st_size, 1, infil) != 1 )
+			{
+				stackTop->init(); // short read, do not hand back garbage
 			}
 
 			fclose( infil );
@@ -117,7 +175,8 @@ void wr_write_file( WRValue* stackTop, const int argn, WRContext* c )
 			return;
 		}
 
-		stackTop->i = (int)fwrite( data, len, 1, outfil );
+		// fwrite of nothing reports 0 items, but the empty file is written
+		stackTop->i = len ? (int)fwrite( data, len, 1, outfil ) : 1;
 		fclose( outfil );
 	}
 }
@@ -127,10 +186,13 @@ void wr_delete_file( WRValue* stackTop, const int argn, WRContext* c )
 {
 	if ( argn == 1 )
 	{
-		const char* filename = WRValue::MallocStrScoped(*(stackTop - 1));
+		// the scoped string must outlive the call, a temporary would free it
+		// at the end of the declaration
+		WRValue::MallocStrScoped filename( *(stackTop - 1) );
 		if ( filename )
 		{
 #if defined(WRENCH_WIN32_FILE_IO)
+			WRCrtGuard guard;
 			_unlink( filename );
 #endif
 #if defined(WRENCH_LINUX_FILE_IO)
@@ -147,10 +209,13 @@ void wr_getline( WRValue* stackTop, const int argn, WRContext* c )
 	int pos = 0;
 	for (;;)
 	{
-		int in = fgetc( stdin );
+		// stop before reading a character there is no room for, so it
+		// stays in the stream instead of being lost
+		const bool full = pos >= (int)sizeof(buf);
+		int in = full ? EOF : fgetc( stdin );
 
-		if ( in == EOF || in == '\n' || in == '\r' || pos >= 256 )
-		{ 
+		if ( full || in == EOF || in == '\n' || in == '\r' )
+		{
 			stackTop->va = c->getSVA( pos, SV_CHAR, false );
 #ifdef WRENCH_HANDLE_MALLOC_FAIL
 			if ( !stackTop->va )
@@ -183,6 +248,7 @@ void wr_ioOpen( WRValue* stackTop, const int argn, WRContext* c )
 			int mode = (argn > 1) ? args[1].asInt() : O_RDWR | O_CREAT;
 			
 #if defined(WRENCH_WIN32_FILE_IO)
+			WRCrtGuard guard;
 			stackTop->i = _open( fileName, mode | O_BINARY, _S_IREAD | _S_IWRITE /*0600*/ );
 #endif
 #if defined(WRENCH_LINUX_FILE_IO)
@@ -198,6 +264,7 @@ void wr_ioClose( WRValue* stackTop, const int argn, WRContext* c )
 	if ( argn )
 	{
 #if defined(WRENCH_WIN32_FILE_IO)
+		WRCrtGuard guard;
 		stackTop->i = _close( (stackTop - argn)->asInt() );
 #endif
 #if defined(WRENCH_LINUX_FILE_IO)
@@ -221,6 +288,13 @@ void wr_ioRead( WRValue* stackTop, const int argn, WRContext* c )
 		return;
 	}
 
+	// read() may return less than asked anyway, so a huge request is
+	// served in chunks instead of trying to allocate all of it up front
+	if ( toRead > WRENCH_MAX_IO_READ )
+	{
+		toRead = WRENCH_MAX_IO_READ;
+	}
+
 	stackTop->va = c->getSVA( toRead, SV_CHAR, false );
 #ifdef WRENCH_HANDLE_MALLOC_FAIL
 	if ( !stackTop->va )
@@ -232,6 +306,7 @@ void wr_ioRead( WRValue* stackTop, const int argn, WRContext* c )
 
 
 #if defined(WRENCH_WIN32_FILE_IO)
+	WRCrtGuard guard;
 	int result = _read( args[0].asInt(), stackTop->va->m_Cdata, toRead );
 #endif
 #if defined(WRENCH_LINUX_FILE_IO)
@@ -262,6 +337,7 @@ void wr_ioWrite( WRValue* stackTop, const int argn, WRContext* c )
 			if ( data.va->m_type == SV_CHAR )
 			{
 #if defined(WRENCH_WIN32_FILE_IO)
+				WRCrtGuard guard;
 				stackTop->i = _write( fd, data.va->m_Cdata, (size > data.va->m_size) ? data.va->m_size : size );
 #endif
 #if defined(WRENCH_LINUX_FILE_IO)
@@ -275,17 +351,20 @@ void wr_ioWrite( WRValue* stackTop, const int argn, WRContext* c )
 		}
 		else if ( IS_RAW_ARRAY(data.xtype) )
 		{
-			uint32_t size = EX_RAW_ARRAY_SIZE_FROM_P2(data.r->p2);
+			// a raw array value holds the data pointer and its size itself
+			const uint32_t rawSize = EX_RAW_ARRAY_SIZE_FROM_P2(data.p2);
+			uint32_t size = rawSize;
 			if ( argn > 2 )
 			{
 				size = args[2].asInt();
 			}
 
 #if defined(WRENCH_WIN32_FILE_IO)
-			stackTop->i = _write( fd, data.r->c, (size > EX_RAW_ARRAY_SIZE_FROM_P2(data.r->p2)) ? EX_RAW_ARRAY_SIZE_FROM_P2(data.r->p2) : size );
+			WRCrtGuard guard;
+			stackTop->i = _write( fd, data.c, (size > rawSize) ? rawSize : size );
 #endif
 #if defined(WRENCH_LINUX_FILE_IO)
-			stackTop->i = write( fd, data.r->c, (size > EX_RAW_ARRAY_SIZE_FROM_P2(data.r->p2)) ? EX_RAW_ARRAY_SIZE_FROM_P2(data.r->p2) : size );
+			stackTop->i = write( fd, data.c, (size > rawSize) ? rawSize : size );
 #endif
 		}
 	}
@@ -303,6 +382,7 @@ void wr_ioSeek( WRValue* stackTop, const int argn, WRContext* c )
 		int whence = argn > 2 ? args[2].asInt() : SEEK_SET;
 
 #if defined(WRENCH_WIN32_FILE_IO)
+		WRCrtGuard guard;
 		stackTop->ui = _lseek( fd, offset, whence );
 #endif
 #if defined(WRENCH_LINUX_FILE_IO)
@@ -317,6 +397,7 @@ void wr_ioFSync(WRValue* stackTop, const int argn, WRContext* c)
 	if (argn)
 	{
 #if defined(WRENCH_WIN32_FILE_IO)
+		WRCrtGuard guard;
 		stackTop->i = _commit( (stackTop - argn)->asInt() );
 #endif
 #if defined(WRENCH_LINUX_FILE_IO)
@@ -339,6 +420,8 @@ void wr_ioPushConstants( WRState* w )
 	wr_registerLibraryConstant( w, "io::SEEK_CUR", (int32_t)SEEK_CUR );
 	wr_registerLibraryConstant( w, "io::SEEK_END", (int32_t)SEEK_END );
 }
+
+#endif // WRENCH_WIN32_FILE_IO || WRENCH_LINUX_FILE_IO
 
 //------------------------------------------------------------------------------
 void wr_loadIOLib( WRState* w )

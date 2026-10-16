@@ -27,6 +27,10 @@ SOFTWARE.
 #if defined(WRENCH_WIN32_TCP) \
 	|| defined(WRENCH_LINUX_TCP)
 
+#ifdef WRENCH_LINUX_TCP
+#include <sys/ioctl.h>
+#endif
+
 //------------------------------------------------------------------------------
 const unsigned int c_legalMasks[33] = 
 {
@@ -250,10 +254,19 @@ static char* ipFromAddress( const char* hostname, sockaddr_in* location, char* s
 	*((int *)&location->sin_addr) = isIp( hostname );
 	if ( !*((int *)&location->sin_addr) )
 	{
-		struct addrinfo *result;
+		// only IPv4 results can be stored in a sockaddr_in
+		struct addrinfo hints;
+		memset( &hints, 0, sizeof(hints) );
+		hints.ai_family = AF_INET;
 
-		if ( getaddrinfo(hostname, NULL, NULL, &result) )
+		struct addrinfo *result = 0;
+
+		if ( getaddrinfo(hostname, NULL, &hints, &result) || !result || !result->ai_addr )
 		{
+			if ( result )
+			{
+				freeaddrinfo( result );
+			}
 			return 0;
 		}
 
@@ -329,8 +342,11 @@ int wr_connectTCPEx( const char* address, const int port )
 	memset( &location, 0, sizeof(location) );
 
 	char ret[21];
-	ipFromAddress( address, &location, ret );
-	
+	if ( !ipFromAddress(address, &location, ret) )
+	{
+		return -1; // host lookup failed, do not connect to 0.0.0.0
+	}
+
 	location.sin_family = AF_INET;
 	location.sin_port = htons( port );
 
@@ -374,7 +390,7 @@ void wr_connectTCP( WRValue* stackTop, const int argn, WRContext* c )
 void wr_closeTCPEx( const int socket )
 {
 #ifdef WRENCH_WIN32_TCP
-	_close( socket );
+	closesocket( (SOCKET)socket ); // a winsock socket is not a CRT file descriptor
 #endif
 #ifdef WRENCH_LINUX_TCP
 	close( socket );
@@ -400,7 +416,12 @@ void wr_closeTCP( WRValue* stackTop, const int argn, WRContext* c )
 //------------------------------------------------------------------------------
 int wr_sendTCPEx( const int socket, const char* data, const int toSend )
 {
+#ifdef MSG_NOSIGNAL
+	// a peer that went away must not raise SIGPIPE and kill the host
+	return send( socket, data, toSend, MSG_NOSIGNAL );
+#else
 	return send( socket, data, toSend, 0 );
+#endif
 }
 
 //------------------------------------------------------------------------------
@@ -415,8 +436,9 @@ void wr_sendTCP( WRValue* stackTop, const int argn, WRContext* c )
 
 	WRValue* args = stackTop - argn;
 
-	unsigned int len;
-	char* data = args[0].asMallocString( &len );
+	// (socket, data): the data is the second argument
+	unsigned int len = 0;
+	char* data = args[1].asMallocString( &len );
 	if ( data )
 	{
 		stackTop->i = wr_sendTCPEx( args[0].asInt(), data, len );
@@ -430,22 +452,22 @@ int wr_receiveTCPEx( const int socket, char* data, const int toRead, const int t
 {
 #ifdef WRENCH_WIN32_TCP
 	DWORD timeout = timeoutMilliseconds;
-	setsockopt( socket, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(timeout) );
-	return _read( socket, data, toRead );
+	setsockopt( (SOCKET)socket, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(timeout) );
+	return recv( (SOCKET)socket, data, toRead, 0 ); // sockets are not CRT descriptors
 #endif
 #ifdef WRENCH_LINUX_TCP
 	struct timeval timeout;
-	timeout.tv_sec = timeoutMilliseconds;
-	timeout.tv_usec = 0;
+	timeout.tv_sec = timeoutMilliseconds / 1000;
+	timeout.tv_usec = (timeoutMilliseconds % 1000) * 1000;
 	setsockopt( socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-	return read( socket, data, toRead );
+	return (int)recv( socket, data, toRead, 0 );
 #endif
 }
 
 //------------------------------------------------------------------------------
 void wr_receiveTCP( WRValue* stackTop, const int argn, WRContext* c )
 {
-	if ( argn < 2 )
+	if ( argn < 1 )
 	{
 		return;
 	}
@@ -457,12 +479,30 @@ void wr_receiveTCP( WRValue* stackTop, const int argn, WRContext* c )
 		toRead = args[1].asInt();
 	}
 
+	if ( toRead <= 0 )
+	{
+		toRead = 8192;
+	}
+	else if ( toRead > 0x100000 )
+	{
+		toRead = 0x100000; // recv may return less anyway, do not allocate absurd sizes
+	}
+
 	stackTop->va = c->getSVA( toRead, SV_CHAR, false );
+#ifdef WRENCH_HANDLE_MALLOC_FAIL
+	if ( !stackTop->va )
+	{
+		stackTop->init();
+		return;
+	}
+#endif
 	stackTop->p2 = INIT_AS_ARRAY;
 
 	int ret = wr_receiveTCPEx( args[0].asInt(), (char*)stackTop->va->m_Cdata, toRead );
 
-	if ( !ret )
+	// 0 is a closed connection and negative an error or timeout, neither
+	// may become the array size
+	if ( ret <= 0 )
 	{
 		stackTop->init();
 	}
@@ -473,30 +513,76 @@ void wr_receiveTCP( WRValue* stackTop, const int argn, WRContext* c )
 }
 
 //------------------------------------------------------------------------------
+// waits up to timeoutMilliseconds for data; returns the number of bytes
+// that can be read without blocking, 0 if none arrived, or -1 on error or
+// when the connection was closed by the peer
 int wr_peekTCPEx( const int socket, const int timeoutMilliseconds )
 {
+	// poll() silently skips a negative descriptor and would report "no
+	// data" forever, so an invalid socket is an error on every platform
+	if ( socket < 0 )
+	{
+		return -1;
+	}
+
 #ifdef WRENCH_WIN32_TCP
 
-	DWORD timeout = timeoutMilliseconds;
-	setsockopt( socket, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(timeout) );
-	int retval = recv( socket, 0, 65000, MSG_PEEK );
-	
-	return retval == SOCKET_ERROR ? -1 : retval;
+	fd_set readSet;
+	FD_ZERO( &readSet );
+	FD_SET( (SOCKET)socket, &readSet );
+
+	timeval timeout;
+	timeout.tv_sec = timeoutMilliseconds / 1000;
+	timeout.tv_usec = (timeoutMilliseconds % 1000) * 1000;
+
+	// negative waits forever, like poll()
+	int retval = select( 0, &readSet, 0, 0, (timeoutMilliseconds < 0) ? 0 : &timeout );
+	if ( retval == SOCKET_ERROR )
+	{
+		return -1;
+	}
+	else if ( retval == 0 )
+	{
+		return 0;
+	}
+
+	u_long available = 0;
+	if ( ioctlsocket((SOCKET)socket, FIONREAD, &available) == SOCKET_ERROR )
+	{
+		return -1;
+	}
+
+	return available ? (int)available : -1; // readable with nothing to read: closed
 
 #endif
 #ifdef WRENCH_LINUX_TCP
 
-	int retval = 0;
-
-	short poll_events = POLLIN;
-
 	pollfd readfd;
 	readfd.fd = socket;
-	readfd.events = poll_events;
+	readfd.events = POLLIN;
 	readfd.revents = 0;
-	retval = ::poll( &readfd, 1, timeoutMilliseconds );
+	int retval = ::poll( &readfd, 1, timeoutMilliseconds );
+	if ( retval < 0 )
+	{
+		return -1;
+	}
+	else if ( retval == 0 )
+	{
+		return 0;
+	}
 
-	return retval;
+	if ( readfd.revents & (POLLNVAL | POLLERR) )
+	{
+		return -1; // not an open descriptor, or the socket failed
+	}
+
+	int available = 0;
+	if ( ioctl(socket, FIONREAD, &available) < 0 )
+	{
+		return -1;
+	}
+
+	return available > 0 ? available : -1; // readable with nothing to read: closed
 
 #endif
 }

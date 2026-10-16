@@ -36,12 +36,15 @@ void wr_mboxRead( WRValue* stackTop, const int argn, WRContext* c )
 		WRValue* args = stackTop - argn;
 		int clear = (argn > 1) ? args[1].asInt() : 0;
 
-		WRValue* msg = c->w->globalRegistry.exists( args[0].getHash(), clear != 0 );
-
+		// read first, removing clears the slot
+		WRValue* msg = c->w->mailbox.exists( args[0].getHash(), false );
 		if ( msg )
 		{
 			*stackTop = *msg;
-			return;
+			if ( clear )
+			{
+				c->w->mailbox.exists( args[0].getHash(), true );
+			}
 		}
 	}
 }
@@ -55,7 +58,7 @@ void wr_mboxWrite( WRValue* stackTop, const int argn, WRContext* c )
 	{
 		WRValue* args = stackTop - argn;
 
-		WRValue* msg = c->w->globalRegistry.getAsRawValueHashTable( args[0].getHash() );
+		WRValue* msg = c->w->mailbox.getAsRawValueHashTable( args[0].getHash() );
 		msg->ui = args[1].getHash();
 		msg->p2 = INIT_AS_INT;
 	}
@@ -67,7 +70,7 @@ void wr_mboxClear( WRValue* stackTop, const int argn, WRContext* c )
 {
 	if ( argn > 0 )
 	{
-		c->w->globalRegistry.exists((stackTop - argn)->getHash(), true );
+		c->w->mailbox.exists((stackTop - argn)->getHash(), true );
 	}
 }
 
@@ -78,7 +81,7 @@ void wr_mboxClear( WRValue* stackTop, const int argn, WRContext* c )
 void wr_mboxPeek( WRValue* stackTop, const int argn, WRContext* c )
 {
 	if ( argn > 0
-		 && c->w->globalRegistry.exists((stackTop - argn)->getHash(), false) )
+		&& c->w->mailbox.exists((stackTop - argn)->getHash(), false) )
 	{
 		stackTop->i = 1;
 	}

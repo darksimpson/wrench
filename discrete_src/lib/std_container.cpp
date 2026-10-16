@@ -57,17 +57,23 @@ void wr_arrayClear( WRValue* stackTop, const int argn, WRContext* c )
 	{
 		WRValue* args = stackTop - argn;
 
-		WRValue* A = &(args->deref());
-
-		A->p2 = INIT_AS_ARRAY;
-
-		unsigned int count = 0;
+		int count = 0;
 		if ( argn > 1 )
 		{
 			count = args[1].asInt();
 		}
-		
-		A->va = c->getSVA( count, SV_VALUE, false );
+
+		if ( count < 0 || count > WRENCH_MAX_ARRAY_ELEMENTS )
+		{
+			count = 0; // refuse absurd sizes rather than overflow the allocation
+		}
+
+		WRValue* A = &(args->deref());
+
+		A->p2 = INIT_AS_ARRAY;
+
+		// cleared: the new elements must read back as 0, not heap garbage
+		A->va = c->getSVA( count, SV_VALUE, true );
 #ifdef WRENCH_HANDLE_MALLOC_FAIL
 		if ( !A->va )
 		{
@@ -89,10 +95,11 @@ void wr_arrayPeek( WRValue* stackTop, const int argn, WRContext* c )
 		return;
 	}
 
+	// return a copy of the element: A may be the argument slot itself,
+	// which is gone as soon as this call returns
 	if ( A->va->m_size > 0 )
 	{
-		stackTop->p2 = INIT_AS_CONTAINER_MEMBER;// | ENCODE_ARRAY_ELEMENT_TO_P2( 0 );
-		stackTop->r = A;
+		*stackTop = A->va->m_Vdata[0].deref();
 	}
 }
 
@@ -107,8 +114,7 @@ void wr_arrayPeekBack( WRValue* stackTop, const int argn, WRContext* c )
 
 	if ( A->va->m_size > 0 )
 	{
-		stackTop->p2 = INIT_AS_CONTAINER_MEMBER | ENCODE_ARRAY_ELEMENT_TO_P2( A->va->m_size - 1 );
-		stackTop->r = A;
+		*stackTop = A->va->m_Vdata[A->va->m_size - 1].deref();
 	}
 }
 
@@ -170,6 +176,12 @@ void wr_arrayTruncate( WRValue* stackTop, const int argn, WRContext* c )
 
 	if( (argn < 1) || !(A = wr_ifValueArray(args)) )
 	{
+		return;
+	}
+
+	if ( argn < 2 )
+	{
+		*stackTop = *A; // no size given, leave the array alone
 		return;
 	}
 
@@ -310,7 +322,8 @@ void wr_arrayPushBack( WRValue* stackTop, const int argn, WRContext* c )
 	{
 		return;
 	}
-	A->va->m_Vdata[where] = args[1];
+	// store the value, never a reference to the caller's variable
+	A->va->m_Vdata[where] = args[1].deref();
 }
 
 //------------------------------------------------------------------------------
@@ -328,7 +341,7 @@ void wr_arrayPush( WRValue* stackTop, const int argn, WRContext* c )
 	{
 		return;
 	}
-	A->va->m_Vdata[0] = args[1];
+	A->va->m_Vdata[0] = args[1].deref();
 }
 
 //------------------------------------------------------------------------------
@@ -394,7 +407,8 @@ void wr_hashExistEx( WRValue* stackTop, const int argn, bool remove )
 	WRValue* args = stackTop - argn;
 	if( (argn >= 2) && (H = wr_ifHash(args)) )
 	{
-		stackTop->p = H->va->exists( args[1].getHash(), remove );
+		stackTop->p2 = INIT_AS_INT;
+		stackTop->i = H->va->exists( args[1].getHash(), remove ) ? 1 : 0;
 	}
 }
 

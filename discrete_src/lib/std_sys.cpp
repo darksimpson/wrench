@@ -34,7 +34,8 @@ void wr_isFunction( WRValue* stackTop, const int argn, WRContext* c )
 	{
 		WRValue* arg = stackTop - argn;
 		uint32_t hash = arg->getHash();
-		if ( c->w->globalRegistry.exists(hash, false) )
+		WRValue* entry = c->w->globalRegistry.exists( hash, false );
+		if ( entry && (entry->p2 & INIT_AS_LIB_CONST) != INIT_AS_LIB_CONST ) // constants are no functions
 		{
 			stackTop->i = 1;
 		}
@@ -46,24 +47,43 @@ void wr_isFunction( WRValue* stackTop, const int argn, WRContext* c )
 }
 
 //------------------------------------------------------------------------------
+// returns 0 when the code was imported, -1 when it is not a string or not
+// valid bytecode for this version (the script keeps running either way)
 void wr_importByteCode( WRValue* stackTop, const int argn, WRContext* c )
 {
+	stackTop->init();
+	stackTop->i = -1;
+
 	if ( argn > 0 )
 	{
 		unsigned int len;
 		char* data = (char *)((stackTop - argn)->array( &len, SV_CHAR ));
-		if ( data )
+		if ( !data || !wr_isBytecodeValid((const uint8_t*)data, len) )
 		{
-			uint8_t* import = (uint8_t*)g_malloc( len );
-#ifdef WRENCH_HANDLE_MALLOC_FAIL
-			if(!import) { g_mallocFailed = true; return; }
-#endif
-			memcpy( (char*)import, data, len );
-			wr_import( c, import, len, true );
+			return;
 		}
-		else
+
+		uint8_t* import = (uint8_t*)g_malloc( len );
+		if ( !import )
 		{
-			stackTop->i = -1;
+#ifdef WRENCH_HANDLE_MALLOC_FAIL
+			g_mallocFailed = true;
+#endif
+			return;
+		}
+
+		memcpy( (char*)import, data, len );
+
+		const WRError before = (WRError)c->w->err;
+		if ( wr_import(c, import, len, true) )
+		{
+			stackTop->i = 0;
+		}
+		else if ( before == WR_ERR_None && c->w->err == WR_ERR_bad_bytecode_CRC )
+		{
+			// the image passed the CRC but its header does not fit: that is
+			// invalid bytecode too, report it instead of stopping the script
+			c->w->err = WR_ERR_None;
 		}
 	}
 }

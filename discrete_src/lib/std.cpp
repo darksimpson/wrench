@@ -89,97 +89,196 @@ uint32_t wr_hashStr( const char* dat, uint32_t serial )
 }
 
 //------------------------------------------------------------------------------
+// writes at most 'len' characters plus a terminating null, so 'string'
+// must hold len + 1 bytes
 int wr_itoa( int i, char* string, size_t len )
 {
 	char buf[12];
 	size_t pos = 0;
-	int val;
+	unsigned int val;
 	if ( i < 0 )
 	{
-		string[pos++] = '-';
-		val = -i;
+		if ( pos < len )
+		{
+			string[pos++] = '-';
+		}
+		val = 0u - (unsigned int)i; // well defined for INT_MIN too
 	}
 	else
 	{
-		val = i;
+		val = (unsigned int)i;
 	}
 
 	int digit = 0;
 	do
 	{
-		buf[digit++] = (val % 10) + '0';
+		buf[digit++] = (char)((val % 10) + '0');
 	} while( val /= 10 );
 
-	--digit;
-
-	for( ; digit>=0 && pos < len; --digit )
+	while( digit > 0 && pos < len )
 	{
-		string[pos++] = buf[digit];
+		string[pos++] = buf[--digit];
 	}
 	string[pos] = 0;
+	return (int)pos;
+}
+
+// number of decimals printed for non-negative 'd': six significant
+// digits (like %g, a float only carries about seven, so more would print
+// representation noise such as 90.10001 for 90.1) and never more than five
+static int wr_ftoaDecimals( double d )
+{
+	int decimals = 5;
+	double limit = 10.0;
+	while( decimals > 0 && d >= limit )
+	{
+		--decimals;
+		limit *= 10.0;
+	}
+	return decimals;
+}
+
+// half a unit of the last printed decimal, added to round instead of truncate
+static double wr_ftoaHalf( int decimals )
+{
+	double half = 0.5;
+	for( ; decimals > 0; --decimals )
+	{
+		half /= 10.0;
+	}
+	return half;
+}
+
+// 'd' is non-negative, already rounded and below 2^31: append the integer
+// part, a decimal point and 'decimals' digits, then trim trailing zeros
+static int wr_ftoaFixed( double d, const int decimals, char* buf )
+{
+	int pos = 0;
+	int i = (int)d;
+	d -= i;
+	pos += wr_itoa( i, buf, 11 );
+
+	buf[pos++] = '.';
+
+	for( int p=0; p<decimals; ++p )
+	{
+		d *= 10.0;
+		int c = (int)d;
+		if ( c > 9 )
+		{
+			c = 9;
+		}
+		buf[pos++] = (char)('0' + c);
+		d -= c;
+	}
+
+	// knock off trailing zeros
+	for( --pos; pos > 0 && buf[pos] == '0'; --pos )
+	{
+	}
+
+	if ( buf[pos] != '.' )
+	{
+		++pos; // and the decimal point if nothing is left after it
+	}
+
 	return pos;
 }
 
 //------------------------------------------------------------------------------
+// writes at most 'len' characters plus a terminating null, so 'string'
+// must hold len + 1 bytes
 int wr_ftoa( float f, char* string, size_t len )
 {
-	size_t pos = 0;
+	char buf[32];
+	int pos = 0;
+	double d = f;
 
-	// sign stuff
-	if (f < 0)
+	if ( d != d )
 	{
-		f = -f;
-		string[pos++] = '-';
-	}
-
-	if ( pos > len )
-	{
-		string[0] = 0;
-		return 0;
-	}
-
-	f += 5.f / (float)10e6; // round value to 5 places
-
-	int i = (int)f;
-
-	if ( i )
-	{
-		f -= i;
-		pos += wr_itoa( i, string + pos, len - pos );
+		buf[pos++] = 'n';
+		buf[pos++] = 'a';
+		buf[pos++] = 'n';
 	}
 	else
 	{
-		string[pos++] = '0';
+		if ( d < 0 )
+		{
+			d = -d;
+			buf[pos++] = '-';
+		}
+
+		if ( d - d != 0 ) // only infinity fails this
+		{
+			buf[pos++] = 'i';
+			buf[pos++] = 'n';
+			buf[pos++] = 'f';
+		}
+		else if ( d < 2147483647.5 )
+		{
+			const int decimals = wr_ftoaDecimals( d );
+			pos += wr_ftoaFixed( d + wr_ftoaHalf(decimals), decimals, buf + pos );
+		}
+		else
+		{
+			// too large for the integer part, use d.ddddde+XX
+			int exp10 = 0;
+			while( d >= 10.0 )
+			{
+				d /= 10.0;
+				++exp10;
+			}
+
+			d += 0.000005;
+			if ( d >= 10.0 )
+			{
+				d /= 10.0;
+				++exp10;
+			}
+
+			pos += wr_ftoaFixed( d, 5, buf + pos );
+			buf[pos++] = 'e';
+			buf[pos++] = '+';
+			pos += wr_itoa( exp10, buf + pos, 3 );
+		}
 	}
 
-	string[pos++] = '.';
-
-	for( int p=0; pos < len && p<5; ++p ) // convert non-integer to 5 digits of precision
-	{
-		f *= 10.0;
-		char c = (char)f;
-		string[pos++] = '0' + c;
-		f -= c;
-	}
-
-	for( --pos; pos > 0 && string[pos] == '0' && string[pos] != '.' ; --pos ); // knock off trailing zeros and decimal if appropriate
-
-	if ( string[pos] != '.' )
-	{
-		++pos;
-	}
-
-	string[pos] = 0;
-	return pos;
+	size_t n = ((size_t)pos < len) ? (size_t)pos : len;
+	memcpy( string, buf, n );
+	string[n] = 0;
+	return (int)n;
 }
 
 //------------------------------------------------------------------------------
 const int32_t wr_randEx( const int32_t from, const int32_t to )
 {
+	if ( wr_Seed == 0 )
+	{
+		wr_Seed = 0xA5EED; // zero is a fixed point of the generator
+	}
+
 	const int32_t k = wr_Seed / 127773;
 	wr_Seed = 16807 * (wr_Seed - k * 127773) - 2836 * k;
 
-	return (from >= to) ? from : ((uint32_t)wr_Seed % ((to - from) + 1)) + from;
+	if ( from >= to )
+	{
+		return from;
+	}
+
+	// unsigned math: the span of a full 32-bit range does not fit an int
+	// and wraps to 0, which must not be used as a divisor
+	const uint32_t range = (uint32_t)to - (uint32_t)from + 1u;
+	uint32_t r = (uint32_t)wr_Seed;
+	if ( range == 0 )
+	{
+		// the generator only yields 31 bits, mix in a second draw
+		const int32_t k2 = wr_Seed / 127773;
+		wr_Seed = 16807 * (wr_Seed - k2 * 127773) - 2836 * k2;
+		r ^= ((uint32_t)wr_Seed) << 16;
+		return (int32_t)(r + (uint32_t)from);
+	}
+
+	return (int32_t)((r % range) + (uint32_t)from);
 }
 
 //------------------------------------------------------------------------------

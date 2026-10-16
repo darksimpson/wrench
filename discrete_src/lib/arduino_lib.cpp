@@ -200,12 +200,19 @@ void wr_loadArduinoLCDLib( WRState* w )
 }
 
 //------------------------------------------------------------------------------
-void wr_loadArduinoLib( WRState* w )
+// declared in wrench.h
+void wr_loadAllArduinoLibs( WRState* w )
 {
 	wr_loadArduinoLCDLib( w );
 	wr_loadArduinoIOLib( w );
 	wr_loadArduinoSTDLib( w );
 	wr_loadArduinoWireLib( w );
+}
+
+// the old name, kept for sketches that call it directly
+void wr_loadArduinoLib( WRState* w )
+{
+	wr_loadAllArduinoLibs( w );
 }
 
 #endif
