@@ -2,9 +2,9 @@
 
 Two reviews of the compiler, VM, libraries, debugger and tools found a number
 of real defects. Most are fixed (see CHANGELIST, section "next"); each fix
-has a regression check in `tests/029_library_fixes.c`,
-`tests/030_compiler_fixes.c`, `tests/031_vm_fixes.c`,
-`tests/032_audit_fixes.c`, `tests/033_library_audit.c`, the internal tests
+has a regression check in `tests/029_library_fixes.w`,
+`tests/030_compiler_fixes.w`, `tests/031_vm_fixes.w`,
+`tests/032_audit_fixes.w`, `tests/033_library_audit.w`, the internal tests
 of `wrench t`, the debugger test suite or the tool tests in `tools/test`.
 This page records what was fixed in the second review, what is still open
 and what would be worth improving next.

@@ -6,9 +6,10 @@ win32/wrench/Release
 win32/wrench.vcxproj.user
 objs_linux/*.o
 objs_linux/*.d
-_serialize_test.bin
-_std_file_test.txt
-_cross_module_test.log
+# scratch files the tests write into their folder
+/tests/_serialize_test.bin
+/tests/_std_file_test.txt
+/tests/_cross_module_test.log
 test_wrench_cross_module_globals
 /wrench
 /wrench_v

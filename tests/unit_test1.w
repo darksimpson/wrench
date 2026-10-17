@@ -1,4 +1,8 @@
-sys::importCompile(io::readFile( "tests/unit_test_lib.c"));
+/*~ done
+~*/
+
+// the runner starts scripts in the test folder
+sys::importCompile(io::readFile( "unit_test_lib.w"));
 
 
 var q = {"a" : 1, "b" : 2, "c" : 3};
@@ -126,3 +130,5 @@ var array = {1, 2, 3};
 assertNotEqual(v1, y1, "V(1, 2, 3) and {a: 1, b: 2, c: {d, e}} Struct and HashTable are equal");
 assertNotEqual(y1, v1, "{a: 1, b: 2, c: 3} and V(1, 2, 3) HashTable and Struct are equal");
 assertNotEqual(array, v1, "{1, 2, 3} and V(1, 2, 3) Array and Struct are equal");
+
+println( "done" );

@@ -1,0 +1,47 @@
+# Test scripts run by "wrench t [testdir]", in this order. Paths are relative
+# to this folder, which is also the current directory while they run (scratch
+# files they write stay here). "wrench t <n>" runs only the n-th entry.
+# Blank lines and lines starting with # are ignored.
+#
+# Every script holds its expected output between /*~ and ~*/ at the top; a
+# script that prints anything else fails.
+
+001_operations.w
+002_parsing.w
+003_if.w
+004_functions.w
+005_loops.w
+006_logic.w
+007_arrays.w
+008_userData.w
+009_library.w
+010_structs.w
+011_dicts.w
+012_enums.w
+013_files.w
+014_foreach.w
+015_switch.w
+016_bug9.w
+017_bug12.w
+018_this.w
+019_serialize.w
+020_yield.w
+021_hashes.w
+022_strings.w
+023_container.w
+024_numbers.w
+025_bug54.w
+026_yield_state.w
+027_arithmetic_corners.w
+028_ternary.w
+029_library_fixes.w
+030_compiler_fixes.w
+031_vm_fixes.w
+032_audit_fixes.w
+033_library_audit.w
+
+# equality of numbers, strings, arrays, hash tables and structs, through an
+# imported assertion library (unit_test_lib.w, not a test by itself)
+unit_test1.w
+# string concatenation with globals and :: inside functions
+unit_test2.w

@@ -1,3 +1,6 @@
+/*~ done
+~*/
+
 var gh;
 var gt;
 var tt = "tail";
@@ -55,3 +58,5 @@ function binaryAddTail( tail )
 	::gh += tail;
 	if ( ::gh != "headtail" ) println( "fail6" );
 }
+
+println( "done" );

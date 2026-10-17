@@ -6,6 +6,14 @@ Distribution:
   release; "make dist" (or "wrench release src dist") writes it to dist/
 - discrete_src/ is now src/: the sources live in src/, the generated single file build
   in dist/
+- tests: the scripts are .w files; the list is tests/test_files.txt (entries relative to
+  it, # comments, numbered from 1 without the old placeholder line); "wrench t
+  [testdir] [number]" runs from any folder and the scripts run inside the test folder, so
+  their scratch files no longer land in the repository root; a listed script that is
+  missing counts as a failure, a missing list is an error instead of a crash; the
+  internal host-seeded-global test read its file inside assert() and did nothing in
+  release builds; unit_test1 (equality of all value kinds) and unit_test2 (string
+  concatenation with globals) were never run and are part of the list now
 - CI builds and tests Linux (default, compact, really compact, sanitizers) and Windows
   (Debug, Release, debugger / language server / extension tests) on every push
 - the single file build compiles with WRENCH_WIN32_SERIAL and WRENCH_WIN32_TCP together

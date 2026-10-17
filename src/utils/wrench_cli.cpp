@@ -30,6 +30,32 @@ SOFTWARE.
 #include <stdio.h>
 #include <assert.h>
 #include <stdlib.h>
+#include <ctype.h>
+#ifdef _WIN32
+#include <direct.h>
+#else
+#include <unistd.h>
+#endif
+
+// the test scripts run with their folder as the current directory, so the
+// scratch files they write stay there
+static bool cliGetDir( char* dir, int size )
+{
+#ifdef _WIN32
+	return _getcwd( dir, size ) != 0;
+#else
+	return getcwd( dir, size ) != 0;
+#endif
+}
+
+static bool cliSetDir( const char* dir )
+{
+#ifdef _WIN32
+	return _chdir( dir ) == 0;
+#else
+	return chdir( dir ) == 0;
+#endif
+}
 
 #ifdef WRENCH_INCLUDE_DEBUG_CLIENT
 #include "debug/debugger.h"
@@ -52,7 +78,8 @@ public:
 
 WRContext* g_context = 0;
 
-int runTests( int number =0 );
+int runTests( const char* testDir, int number );
+static WRstr g_testDir; // the folder with test_files.txt, while runTests runs
 void testGlobalValues( WRState* w );
 void setup();
 void eventMain();
@@ -497,8 +524,9 @@ int usage()
 	"v\n"
 	"  show the version and this help\n"
 	"\n"
-	"t\n"
-	"  run the internal tests, from the repository root\n"
+	"t [testdir] [number]\n"
+	"  run the test scripts listed in testdir/test_files.txt (default: tests),\n"
+	"  then the internal tests; number runs only that entry of the list\n"
 	"\n"
 	"release <fromdir> <todir>\n"
 	"  write the single file build (wrench.h, wrench.cpp) into the existing\n"
@@ -670,7 +698,22 @@ int main( int argn, char* argv[] )
 
 	if ( SimpleArgs::get(argn, argv, "t") )
 	{
-		int err = runTests( (argn >= 3) ? atoi(argv[2]) : 0 );
+		// wrench t [testdir] [number], in either order: a number picks one
+		// entry of the list, anything else names the test folder
+		const char* testDir = "tests";
+		int number = 0;
+		for( int a = 2; a < argn; ++a )
+		{
+			if ( isdigit((unsigned char)argv[a][0]) )
+			{
+				number = atoi( argv[a] );
+			}
+			else
+			{
+				testDir = argv[a];
+			}
+		}
+		int err = runTests( testDir, number );
 		printf("\n");
 		return err;
 	}
@@ -2085,7 +2128,7 @@ void testStateContextOpaquePointer()
 
 
 //------------------------------------------------------------------------------
-int runTests( int number )
+int runTests( const char* testDir, int number )
 {
 	int err = 0;
 
@@ -2093,6 +2136,24 @@ int runTests( int number )
 	setvbuf( stdout, 0, _IONBF, 0 );
 
 #ifndef WRENCH_WITHOUT_COMPILER
+	g_testDir = testDir;
+	WRstr listName;
+	listName.format( "%s/test_files.txt", testDir );
+	FILE* tfile = fopen( listName.c_str(), "r" );
+	if ( !tfile )
+	{
+		printf( "cannot open [%s]: run from the repository root, or name the test folder: wrench t <testdir>\n", listName.c_str() );
+		return -1;
+	}
+
+	char previousDir[4096];
+	if ( !cliGetDir(previousDir, sizeof(previousDir)) || !cliSetDir(testDir) )
+	{
+		printf( "cannot change into the test folder [%s]\n", testDir );
+		fclose( tfile );
+		return -1;
+	}
+
 	WRstr code;
 	WRstr codeName;
 
@@ -2138,8 +2199,6 @@ int runTests( int number )
 	};
 	buildContainer( false );
 
-	FILE* tfile = fopen( "test_files.txt", "r" );
-
 	WRState* w = wr_newState( 128 );
 
 	wr_loadAllLibs( w );
@@ -2167,11 +2226,17 @@ int runTests( int number )
 	int outLen;
 	while( fgets(buf, 255, tfile) && (err==0) )
 	{
+		codeName = buf;
+		codeName.trim();
+		if ( !codeName.size() || codeName.c_str()[0] == '#' )
+		{
+			continue; // blank line or comment
+		}
+
+		++fileNumber; // entries count from 1, "wrench t <n>" runs the n-th
 		if ( !number || (number == fileNumber) )
 		{
 			WRstr expect;
-			codeName = buf;
-			codeName.trim();
 
 			if ( code.fileToBuffer(codeName) )
 			{
@@ -2330,14 +2395,15 @@ int runTests( int number )
 					wr_destroyContext( context );
 				}
 			}
-			else if ( fileNumber != 0 )
+			else
 			{
 				printf( "test [%d][%s]: FILE NOT FOUND\n", fileNumber, codeName.c_str() );
+				++failures;
 			}
 		}
-		
-		fileNumber++;
 	}
+
+	cliSetDir( previousDir );
 
 #ifdef WIN32_C17
 	TESTmain();
@@ -2366,14 +2432,19 @@ int runTests( int number )
 	testCompilerArrayCopiesAndRemoval();
 #ifdef WRENCH_ENABLE_CROSS_MODULE_EXTERNAL_TEST
 	printf( "test [x][src/utils/test_wrench_cross_module_globals.cpp]: " );
+	// the log goes next to the test scripts, like their scratch files
+	WRstr crossModuleLog;
+	crossModuleLog.format( "%s/_cross_module_test.log", testDir );
+	WRstr crossModuleCommand;
 #ifdef _WIN32
-	int crossModuleResult = system( ".\\test_wrench_cross_module_globals.exe > _cross_module_test.log 2>&1" );
+	crossModuleCommand.format( ".\\test_wrench_cross_module_globals.exe > \"%s\" 2>&1", crossModuleLog.c_str() );
 #else
-	int crossModuleResult = system( "./test_wrench_cross_module_globals > _cross_module_test.log 2>&1" );
+	crossModuleCommand.format( "./test_wrench_cross_module_globals > \"%s\" 2>&1", crossModuleLog.c_str() );
 #endif
+	int crossModuleResult = system( crossModuleCommand.c_str() );
 	if ( crossModuleResult != 0 )
 	{
-		printf( "FAIL (exit=%d, see _cross_module_test.log)\n", crossModuleResult );
+		printf( "FAIL (exit=%d, see %s)\n", crossModuleResult, crossModuleLog.c_str() );
 		err = err ? err : -1;
 	}
 	else
@@ -2530,8 +2601,16 @@ void testGlobalValues( WRState* w )
 //------------------------------------------------------------------------------
 void testHostSeededGlobalValue( WRState* w )
 {
+	// read outside assert(): release builds drop the whole expression
 	WRstr code;
-	assert( code.fileToBuffer( "tests/024_numbers.c" ) );
+	WRstr path;
+	path.format( "%s/024_numbers.w", g_testDir.c_str() );
+	if ( !code.fileToBuffer(path) )
+	{
+		printf( "test [-][host seeded global]: cannot read [%s]\n", path.c_str() );
+		assert(0);
+		return;
+	}
 
 	unsigned char* out = 0;
 	int outLen = 0;
