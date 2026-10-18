@@ -160,6 +160,46 @@ Debugger and tools:
   `LLValues` / `LGValues` / `GLValues` / `GGValues` opcodes for one byte;
   they have two operand bytes.
 
+## Open issues: VM, done
+
+`tests/036_vm_robustness.w` and the internal test
+`[vm: callback errors, bad opcodes, copies, stack, threads]` cover this round.
+
+* The value stack is checked on every push by default
+  (`WRENCH_PROTECT_STACK_FROM_OVERFLOW` is now defined unless
+  `WRENCH_UNPROTECTED_STACK` is): a deep expression or a call with many
+  arguments fails with `WR_ERR_stack_overflow` instead of overwriting the
+  memory behind the stack. `WRENCH_UNPROTECTED_STACK` drops the check for
+  scripts known to fit; CI builds and tests that configuration too.
+* Arrays grow with spare room (half their size, at most 65535 elements),
+  kept in `m_mod` and marked by `GCFlag_Slack`, so appending in a loop is
+  amortized linear. Room reused after `array::truncate` reads as zeros.
+  Structs keep their exact size (their `m_mod` holds the member table).
+* The hash table key equal to the empty marker `WRENCH_NULL_HASH`
+  (0xABABABAB, the int -1414812757) is stored in one extra slot behind the
+  table (`hashSlots()` is `m_mod + 1` for hash tables); iteration,
+  printing, serialization, the GC and the debugger walk it.
+* The scratch values behind `deref()` / `singleValue()` and
+  `g_mallocFailed` are thread local (`WRENCH_THREAD_LOCAL`) on Windows,
+  Linux, macOS and ESP-IDF, so states on different threads or cores do not
+  race; bare metal targets keep plain statics, and defining
+  `WRENCH_THREAD_LOCAL` overrides the choice.
+* A native callback or library function that sets `w->err` stops the
+  script with that error, also when the error comes from a call back into
+  the script that failed; clearing `w->err` in the callback goes on.
+* `wr_returnValueFromLastCall()` returns the resolved value, never a
+  reference into a finished frame.
+* An opcode the VM does not know (the unused values 253 to 255, or an
+  unknown extended opcode) fails with `WR_ERR_unknown_opcode` in both
+  interpreters instead of being undefined behaviour.
+* GC marking uses a small fixed mark stack (`WRENCH_GC_MARK_STACK_SIZE`, 32
+  entries) instead of recursion; containers that do not fit are rescanned
+  afterwards, so a structure of any depth is marked with bounded native
+  stack.
+* Values handed between unrelated contexts: `wrench.h` documents that a
+  string, array or hash table belongs to the context that created them,
+  and `wr_copyValue()` makes a deep copy owned by another context.
+
 ## Open issues
 
 Language and compiler:
@@ -172,38 +212,19 @@ Language and compiler:
   number still replaces it with a container (`var n = 5; n.k = 1;`); only
   reads were changed. A runtime error there was considered and left out.
 * Reading an element past the end of an array grows the array.
+* `{ }` on its own yields the int 0, not an empty hash table.
+* A string variable assigned from a literal ignores writes to its
+  characters (`var s = "ab"; s[1] = 'z';` leaves "ab"), and a write past
+  its end grows it with zeros without storing the character.
 
 VM:
 
-* Without `WRENCH_PROTECT_STACK_FROM_OVERFLOW` the VM does not check its value
-  stack on every push. A deep expression (around 120 nested initializers with
-  the CLI's 128 entry stack) overruns it and corrupts memory. With the define
-  every push is checked and fails with `WR_ERR_stack_overflow`.
-* Arrays grow to exactly the size needed, so appending in a loop is
-  quadratic; a capacity field would make it amortized linear.
-* A hash key equal to the internal empty marker `WRENCH_NULL_HASH`
-  (0xABABABAB, also the int -1414812757) cannot be stored.
-* `WRValue::deref()` and `singleValue()` return shared static temporaries,
-  and `g_mallocFailed` is a global: two `WRState`s running on different
-  cores (ESP32 dual core, RTOS tasks) race on them. Returning copies and
-  moving the flag into `WRState` would make the VM reentrant across states.
-* Errors set by native callbacks (`w->err`) are not checked after the call,
-  the script keeps running with a stale error code (not-found handlers are
-  checked).
-* `wr_returnValueFromLastCall()` returns the raw return slot, which can be a
-  reference into a finished frame; it should return a dereferenced copy.
-* An unknown opcode from corrupt bytecode is undefined behaviour
-  (`__assume(0)` in the switch interpreter). Bytecode is CRC checked on load,
-  but a cheap validation pass would make it safe to run images from untrusted
-  sources.
-* GC marking is recursive. Cycles are handled, but a very deep structure (a
-  long linked list built from nested arrays) can exhaust a small native stack
-  on a microcontroller; an explicit mark stack would bound it.
-* Values handed between unrelated contexts by native code (not imports) can
-  keep GC mark bits set in another context's objects; imports are collected
-  as one group, other contexts are not.
 * Calling a function by its name as a value (`var f = name; f();`) is not
   supported (see 7.0.1 notes).
+* Opcodes are validated only as they execute: a corrupt image whose CRC
+  matches can still read operands out of range before reaching an unknown
+  opcode. A validation pass at load time would make images from untrusted
+  sources safe.
 
 Debugger:
 

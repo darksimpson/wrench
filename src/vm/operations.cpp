@@ -178,11 +178,17 @@ bool wr_growValueArray( WRGCObject* va, uint32_t newMinIndex )
 	return true;
 }
 
-static WRValue s_temp1;
+// scratch values singleValue() and deref() return: per thread (see
+// WRENCH_THREAD_LOCAL), held as raw words since a thread local object must
+// not need a constructor, which WRValue has
+static WRENCH_THREAD_LOCAL uintptr_t s_temp1Words[2];
+static WRENCH_THREAD_LOCAL uintptr_t s_temp2Words[2];
 
 //------------------------------------------------------------------------------
 WRValue& WRValue::singleValue() const
 {
+	(void)sizeof( char[(sizeof(WRValue) == sizeof(s_temp1Words)) ? 1 : -1] );
+	WRValue& s_temp1 = *(WRValue*)s_temp1Words;
 	if ( (s_temp1 = deref()).type > WR_FLOAT )
 	{
 		s_temp1.ui = s_temp1.getHash();
@@ -191,8 +197,6 @@ WRValue& WRValue::singleValue() const
 
 	return s_temp1;
 }
-
-static WRValue s_temp2;
 
 //------------------------------------------------------------------------------
 WRValue& WRValue::deref() const
@@ -207,6 +211,7 @@ WRValue& WRValue::deref() const
 		return const_cast<WRValue&>(*this);
 	}
 
+	WRValue& s_temp2 = *(WRValue*)s_temp2Words;
 	s_temp2.p2 = INIT_AS_INT;
 	unsigned int s = DECODE_ARRAY_ELEMENT_FROM_P2(p2);
 

@@ -31,6 +31,7 @@ SOFTWARE.
 #include <assert.h>
 #include <stdlib.h>
 #include <ctype.h>
+#include <thread>
 #ifdef _WIN32
 #include <direct.h>
 #else
@@ -1812,6 +1813,225 @@ bool testLongJumps()
 	return ok;
 }
 
+static void robustFail( WRContext* c, const WRValue* argv, const int argn, WRValue& retVal, void* usr )
+{
+	c->w->err = (WRError)(WR_USER + 1);
+}
+
+static void robustLibFail( WRValue* stackTop, const int argn, WRContext* context )
+{
+	context->w->err = (WRError)(WR_USER + 2);
+}
+
+// calls the script function "inner", which fails; usr set means the
+// callback handles that and clears the error
+static void robustRelay( WRContext* c, const WRValue* argv, const int argn, WRValue& retVal, void* usr )
+{
+	wr_callFunction( c, "inner" );
+	if ( usr )
+	{
+		c->w->err = WR_ERR_None;
+		retVal.init( 4 );
+	}
+}
+
+// runs the program with its first code bytes replaced (the image carries
+// no globals and no functions, so its code starts at byte 3)
+static bool runPatchedImage( const char* src, const unsigned char* patch, int patchLen, WRError expected )
+{
+	unsigned char* out = 0;
+	int outLen = 0;
+	if ( wr_compile(src, (int)strlen(src), &out, &outLen, 0, 0) != WR_ERR_None )
+	{
+		return false;
+	}
+	if ( out[1] != 0 || outLen < 3 + patchLen + 4 )
+	{
+		free( out );
+		return false;
+	}
+
+	memcpy( out + 3, patch, patchLen );
+	uint32_t crc = wr_hash_read8( out, outLen - 4 ) + WRENCH_VERSION_MAJOR;
+	out[outLen - 4] = (unsigned char)crc;
+	out[outLen - 3] = (unsigned char)(crc >> 8);
+	out[outLen - 2] = (unsigned char)(crc >> 16);
+	out[outLen - 1] = (unsigned char)(crc >> 24);
+
+	WRState* w = wr_newState();
+	WRContext* c = wr_run( w, out, outLen, true );
+	bool ok = !c && wr_getLastError( w ) == expected;
+	wr_destroyState( w );
+	return ok;
+}
+
+static WRContext* runSource( WRState* w, const char* src )
+{
+	unsigned char* out = 0;
+	int outLen = 0;
+	if ( wr_compile(src, (int)strlen(src), &out, &outLen, 0, WR_INCLUDE_GLOBALS) != WR_ERR_None )
+	{
+		return 0;
+	}
+	return wr_run( w, out, outLen, true );
+}
+
+static const char* c_threadScript =
+	"var total = 0;\n"
+	"for( var i = 0; i < 3000; ++i ) { var h = { \"k\": \"v\" + i }; var a[] = { i, h }; total += a[0] + h.k._count; }\n";
+
+static void runThreadScript( const unsigned char* image, int imageLen, int* total )
+{
+	WRState* w = wr_newState();
+	WRContext* c = wr_run( w, image, imageLen );
+	WRValue* value = c ? wr_getGlobalRef( c, "total" ) : 0;
+	*total = value ? value->asInt() : -1;
+	wr_destroyState( w );
+}
+
+bool testVmRobustness()
+{
+	printf( "test [-][vm: callback errors, bad opcodes, copies, stack, threads]: " );
+	bool ok = true;
+
+	// a callback or library function that sets an error stops the script
+	{
+		WRState* w = wr_newState();
+		wr_registerFunction( w, "fail", robustFail );
+		wr_registerLibraryFunction( w, "robust::fail", robustLibFail );
+		ok = ok && !runSource( w, "var a = 1; fail(); a = 2;" ) && wr_getLastError( w ) == (WRError)(WR_USER + 1);
+		ok = ok && !runSource( w, "var a = 1; robust::fail(); a = 2;" ) && wr_getLastError( w ) == (WRError)(WR_USER + 2);
+		wr_destroyState( w );
+	}
+
+	// a call back into the script that failed stops the outer call too,
+	// unless the callback clears the error (calling back is possible once
+	// wr_run() is done)
+	{
+		const char* src = "function inner() { return missing(); } function outer() { return relay() + 1; }";
+		WRState* w = wr_newState();
+		wr_registerFunction( w, "relay", robustRelay );
+		WRContext* c = runSource( w, src );
+		ok = ok && c && !wr_callFunction( c, "outer" ) && wr_getLastError( w ) == WR_ERR_function_not_found;
+		wr_destroyState( w );
+
+		w = wr_newState();
+		wr_registerFunction( w, "relay", robustRelay, (void*)1 );
+		c = runSource( w, src );
+		WRValue* r = c ? wr_callFunction( c, "outer" ) : 0;
+		ok = ok && r && r->asInt() == 5 && wr_getLastError( w ) == WR_ERR_None;
+		wr_destroyState( w );
+	}
+
+	// the last return value comes back resolved, not as a reference
+	{
+		WRState* w = wr_newState();
+		WRContext* c = runSource( w, "var g = 7; var h = { \"k\": 9 }; function f() { return g; } function f2() { return h.k; }" );
+		ok = ok && c && wr_callFunction( c, "f" );
+		WRValue* v = c ? wr_returnValueFromLastCall( c ) : 0;
+		ok = ok && v && v->type == WR_INT && v->i == 7;
+		ok = ok && c && wr_callFunction( c, "f2" );
+		v = c ? wr_returnValueFromLastCall( c ) : 0;
+		ok = ok && v && v->type == WR_INT && v->i == 9;
+		wr_destroyState( w );
+	}
+
+	// opcodes the VM does not know fail the run instead of jumping anywhere
+	{
+		const char* src = "var a = 1; a = a + 2; a = a * 3;";
+		const unsigned char placeholder253[] = { 253 };
+		const unsigned char placeholder254[] = { 254 };
+		const unsigned char last[] = { 255 };
+		const unsigned char extended[] = { O_Extended, 200 };
+		ok = ok && runPatchedImage( src, placeholder253, 1, WR_ERR_unknown_opcode );
+		ok = ok && runPatchedImage( src, placeholder254, 1, WR_ERR_unknown_opcode );
+		ok = ok && runPatchedImage( src, last, 1, WR_ERR_unknown_opcode );
+		ok = ok && runPatchedImage( src, extended, 2, WR_ERR_unknown_opcode );
+	}
+
+	// a value copied into another context lives on after its source is gone
+	{
+		const char* fromSource =
+			"var t = { \"k\": \"text\", 3: 4.5 }; var arr[] = { 1, \"two\", 3 }; var n = 12;"
+			"struct S { var x; } var s = new S;";
+		const char* toSource =
+			"var t; var arr; var n; var s = 5;"
+			"function check() { for( var i = 0; i < 2000; ++i ) { var junk = \"junk\" + i; }"
+			"return t[\"k\"] == \"text\" && t[3] == 4.5 && t._count == 2 && arr[1] == \"two\" && arr._count == 3 && n == 12 ? 1 : 0; }";
+		WRState* w = wr_newState();
+		WRContext* from = runSource( w, fromSource );
+		WRContext* to = runSource( w, toSource );
+		ok = ok && from && to;
+		if ( from && to )
+		{
+			ok = ok && wr_copyValue( to, *wr_getGlobalRef(to, "t"), *wr_getGlobalRef(from, "t") );
+			ok = ok && wr_copyValue( to, *wr_getGlobalRef(to, "arr"), *wr_getGlobalRef(from, "arr") );
+			ok = ok && wr_copyValue( to, *wr_getGlobalRef(to, "n"), *wr_getGlobalRef(from, "n") );
+
+			// a struct cannot be copied, the destination is cleared
+			WRValue* s = wr_getGlobalRef( to, "s" );
+			ok = ok && !wr_copyValue( to, *s, *wr_getGlobalRef(from, "s") ) && s->type == WR_INT && s->i == 0;
+
+			wr_destroyContext( from );
+			WRValue* r = wr_callFunction( to, "check" );
+			ok = ok && r && r->asInt() == 1;
+		}
+		wr_destroyState( w );
+	}
+
+	// pushing deeper than the stack (here the arguments of one call) fails
+	// the run instead of overwriting the memory behind it
+	{
+		WRstr src( "function f() { return 3; } var a = 1; var b = f( a" );
+		for( int i=1; i<60; ++i )
+		{
+			src += ", a";
+		}
+		src += " );";
+#ifdef WRENCH_PROTECT_STACK_FROM_OVERFLOW
+		WRState* small = wr_newState( 32 );
+		ok = ok && !runSource( small, src.c_str() ) && wr_getLastError( small ) == WR_ERR_stack_overflow;
+		wr_destroyState( small );
+#endif
+
+		WRState* w = wr_newState();
+		WRContext* c = runSource( w, src.c_str() );
+		WRValue* b = c ? wr_getGlobalRef( c, "b" ) : 0;
+		ok = ok && b && b->asInt() == 3;
+		wr_destroyState( w );
+	}
+
+	// states running at the same time on different threads
+	{
+		unsigned char* image = 0;
+		int imageLen = 0;
+		if ( wr_compile(c_threadScript, (int)strlen(c_threadScript), &image, &imageLen, 0, WR_INCLUDE_GLOBALS) == WR_ERR_None )
+		{
+			int totals[4] = { 0, 0, 0, 0 };
+			std::thread threads[4];
+			for( int i=0; i<4; ++i )
+			{
+				threads[i] = std::thread( runThreadScript, image, imageLen, totals + i );
+			}
+			// 0 + 1 + ... + 2999, plus the lengths of "v0" ... "v2999"
+			int expected = 4498500 + 10 * 2 + 90 * 3 + 900 * 4 + 2000 * 5;
+			for( int i=0; i<4; ++i )
+			{
+				threads[i].join();
+				ok = ok && totals[i] == expected;
+			}
+			free( image );
+		}
+		else
+		{
+			ok = false;
+		}
+	}
+
+	printf( ok ? "PASS\n" : "FAIL\n" );
+	return ok;
+}
+
 //------------------------------------------------------------------------------
 void testLibFunctionNotFoundErrors()
 {
@@ -2562,6 +2782,10 @@ int runTests( const char* testDir, int number )
 		++failures;
 	}
 	if ( !testLongJumps() )
+	{
+		++failures;
+	}
+	if ( !testVmRobustness() )
 	{
 		++failures;
 	}

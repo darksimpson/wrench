@@ -23,6 +23,27 @@ Language and compiler:
 - the disassembler and the debugger's line table took LLValues, LGValues, GLValues and
   GGValues for one byte instead of three
 
+VM:
+- behaviour change: the stack is checked for overflow by default
+  (WRENCH_PROTECT_STACK_FROM_OVERFLOW is defined unless WRENCH_UNPROTECTED_STACK is); a
+  deep expression or a call with many arguments overran it and corrupted memory
+- behaviour change: a callback or library function that sets w->err stops the script with
+  that error (it went on with a stale error code); that includes a failed call back into
+  the script, the callback can clear w->err to go on
+- arrays grow with spare room (half their size, up to 65535 elements), appending in a
+  loop is no longer quadratic
+- the key WRENCH_NULL_HASH (0xABABABAB, the int -1414812757) can be stored in a hash table
+- the scratch values of deref() / singleValue() and g_mallocFailed are thread local on
+  Windows, Linux, macOS and ESP-IDF (WRENCH_THREAD_LOCAL), states on different threads or
+  cores no longer race on them
+- wr_returnValueFromLastCall() returns the resolved value, not a reference into a
+  finished frame
+- an unknown opcode fails with WR_ERR_unknown_opcode instead of undefined behaviour
+- GC marking uses a fixed size mark stack (WRENCH_GC_MARK_STACK_SIZE) instead of
+  recursion, deep structures no longer exhaust a small native stack
+- new wr_copyValue() copies a value into another context; wrench.h documents which values
+  belong to which context
+
 Distribution:
 - the single file build (wrench.h + wrench.cpp) is no longer kept in git: the old
   src/wrench.h|cpp and the copies in examples/arduino are gone. CI

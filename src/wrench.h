@@ -591,8 +591,21 @@ void wr_registerFunction( WRState* w, const char* name, WR_C_CALLBACK function, 
 
 // serialize WRValues to and from binary
 // NOTE: on success, wr_serialize returns a malloc()'d buffer that must be freed!
-bool wr_serialize( char** buf, int* len, const WRValue& value ); 
+bool wr_serialize( char** buf, int* len, const WRValue& value );
 bool wr_deserialize( WRContext* context, WRValue& value, const char* buf, const int len );
+
+// Strings, arrays and hash tables belong to the context that created them
+// and are collected by it. A context and the contexts it imported share
+// their objects, any other two contexts must not: a value that came from
+// one context (a return value, a global, an argument a callback got) and is
+// handed to a different one, as a wr_callFunction() argument or stored in
+// its globals or containers, has to be copied into that context first.
+// Ints and floats need no copy.
+// wr_copyValue() makes "dest" a deep copy of "src" owned by "context",
+// false when "src" holds something the serializer cannot copy (a struct, a
+// raw array of host memory, an array of more than 65535 elements, a
+// container that holds itself)
+bool wr_copyValue( WRContext* context, WRValue& dest, const WRValue& src );
 
 /***************************************************************/
 /***************************************************************/
@@ -885,8 +898,25 @@ enum WRGCObjectType
   #error "Endian-ness not detected! Please contact curt.hartung@gmail.com so it can be added <01>"
 #endif
 
+// the little state the VM keeps outside a WRState (the malloc failure flag,
+// scratch values) is thread local where the platform supports it, so states
+// running on different cores or tasks do not race on it. Bare metal targets
+// run one state at a time and keep plain statics; define WRENCH_THREAD_LOCAL
+// (empty to turn it off) to choose otherwise
+#ifndef WRENCH_THREAD_LOCAL
+#if defined(_WIN32) || defined(__linux__) || defined(__APPLE__) || defined(ESP_PLATFORM)
+  #ifdef _MSC_VER
+    #define WRENCH_THREAD_LOCAL __declspec(thread)
+  #else
+    #define WRENCH_THREAD_LOCAL __thread
+  #endif
+#else
+  #define WRENCH_THREAD_LOCAL
+#endif
+#endif
+
 #ifdef WRENCH_HANDLE_MALLOC_FAIL
-extern bool g_mallocFailed; // used as an internal global flag for when a malloc came back null
+extern WRENCH_THREAD_LOCAL bool g_mallocFailed; // set when a malloc came back null, per thread
 #endif
 
 extern WR_ALLOC g_malloc;

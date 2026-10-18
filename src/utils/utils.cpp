@@ -1229,6 +1229,29 @@ WRValue* wr_returnValueFromLastCall( WRContext* context )
 	return &(context->stack->deref());
 }
 
+bool wr_copyValue( WRContext* context, WRValue& dest, const WRValue& src )
+{
+	const WRValue& value = src.deref();
+	if ( value.type != WR_EX )
+	{
+		dest = value; // an int or a float is a copy already
+		return true;
+	}
+
+	// a container goes through the serializer, which rebuilds it in the
+	// target context
+	char* buf = 0;
+	int len = 0;
+	if ( !wr_serialize(&buf, &len, value) )
+	{
+		dest.init();
+		return false;
+	}
+	bool copied = wr_deserialize( context, dest, buf, len );
+	g_free( buf );
+	return copied;
+}
+
 //------------------------------------------------------------------------------
 WRFunction* wr_getFunction( WRContext* context, const uint32_t functionHash )
 {

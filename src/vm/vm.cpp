@@ -248,7 +248,7 @@ static void dumpStack( const WRValue* bottom, const WRValue* top )
 
 //------------------------------------------------------------------------------
 #ifdef WRENCH_HANDLE_MALLOC_FAIL
-  bool g_mallocFailed = false;
+  WRENCH_THREAD_LOCAL bool g_mallocFailed = false;
   #define MALLOC_FAIL_CHECK {if( g_mallocFailed ) { g_mallocFailed = false; WR_VM_FAIL( WR_ERR_malloc_failed ); } }
 #else
   #define MALLOC_FAIL_CHECK
