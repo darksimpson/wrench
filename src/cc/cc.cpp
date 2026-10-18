@@ -144,12 +144,12 @@ WRError WRCompilationContext::compile( const char* source,
 
 		msg.appendFormat( "     ^\n" );
 
+		// the message is only returned, the caller decides whether and where
+		// it is shown
 		if ( errorMsg )
 		{
 			(*errorMsg) = msg;
 		}
-
-		printf( "%s", msg.c_str() );
 
 		return m_err;
 	}
@@ -181,12 +181,10 @@ WRError WRCompilationContext::compile( const char* source,
 
 	if ( m_err )
 	{
-		printf( "link error: %s[%d]\n", c_errStrings[m_err], m_err );
 		if ( errorMsg )
 		{
 			errorMsg->format( "link error: %s[%d]\n", c_errStrings[m_err], m_err );
 		}
-
 	}
 
 	return m_err;

@@ -713,10 +713,13 @@ char WRCompilationContext::parseExpressionBody( WRExpression& expression )
 				
 				if ( !m_quoted && token == ":" )
 				{
+					// a label may appear once per function: earlier statements
+					// already moved theirs into the unit's bytecode
 					uint32_t hash = wr_hashStr( label );
-					for( unsigned int i=0; i<expression.bytecode.jumpOffsetTargets.count(); ++i )
+					WRBytecode& unitCode = m_units[m_unitTop].bytecode;
+					for( unsigned int i=0; i<unitCode.jumpOffsetTargets.count(); ++i )
 					{
-						if ( expression.bytecode.jumpOffsetTargets[i].gotoHash == hash )
+						if ( unitCode.jumpOffsetTargets[i].gotoHash == hash )
 						{
 							m_err = WR_ERR_bad_goto_label;
 							return false;

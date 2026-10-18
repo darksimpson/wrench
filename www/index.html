@@ -698,6 +698,46 @@ behaves as:
 <p>You can also nest ternaries or use them inside array and hash
 expressions. Parentheses are recommended when nesting them for clarity.
 
+<p><code>&&</code> and <code>||</code> work like c too: the right side
+is evaluated only when the left side does not decide the result, and
+both yield 1 or 0. A guard protects what follows it:
+<code><pre>if ( i &lt a._count && a[i] == 5 ) // a[i] is not read when i is out of range
+var ok = ready() || retry();      // retry() runs only when ready() returns 0
+</code></pre>
+
+<p>Only a variable, a member or an element can be assigned to (or
+incremented). Assigning to a literal, a function's return value or the
+result of an operation is a compile error (WR_ERR_not_assignable), since
+the change would be lost:
+<code><pre>3 = 4;           // error
+getPoint().x = 1; // error, assign the result to a variable first
+a + b = 7;       // error
+</code></pre>
+
+<p>Assigning to a member or element of a variable that is not a
+container yet makes it one, so tables and arrays can be built without
+declaring them first. Reading never does: a member or element of a value
+that is no container reads as 0 and the value stays what it was. A
+member of a literal is a compile error (WR_ERR_member_of_literal), use
+<code>._count</code> or <code>str::strlen()</code> for the length of a
+string:
+<code><pre>var h;
+h.k = 5;              // h is now a hash table
+var a;
+a[2] = 1;             // a is now an array of 3
+var s = "abc";
+var n = s.length;     // n is 0, s is still "abc"
+var len = s._count;   // 3
+</code></pre>
+
+<p><b>strings</b>
+<p>string and character literals accept these escapes:
+<code><pre>\n \r \t \a \b \f \v \\ \" \'
+\xH \xHH  one or two hex digits
+\0NNN   a DECIMAL character code: "\097" is "a", "\0" is a zero byte
+</code></pre>
+Note that <code>\0NNN</code> differs from c, where the digits are octal.
+
 <p><b>comments</b>
 <code><pre>var A = 10; // single-line c++ comments are supported
 /*

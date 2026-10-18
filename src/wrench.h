@@ -363,7 +363,8 @@ inline void* wr_getLocalContext( WRContext* c );
 // for wr_run(), this memory must be manually wr_free'ed
 // return value is a WRError
 // optionally an "errMsg" buffer can be passed which will output a
-//     human-readable string of what went wrong and where.
+//     human-readable string of what went wrong and where. The compiler
+//     prints nothing itself, it stops at the first error.
 // compilerOptionFlags : OR'ed mask of of WrenchCompilerOptionFlags:
 enum WrenchCompilerFlags
 {

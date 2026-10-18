@@ -726,14 +726,15 @@ int main( int argn, char* argv[] )
 
 		unsigned char* out;
 		int outLen;
-		int err = wr_compile( infile, infile.size(), &out, &outLen, 0, flags );
+		WRstr errMsg;
+		int err = wr_compile( infile, infile.size(), &out, &outLen, &errMsg, flags );
 		
 		if ( err )
 		{
 #ifdef WRENCH_WITHOUT_COMPILER
 			printf( "compile error [#%d]\n", err );
 #else
-			printf( "compile error [%s]\n", c_errStrings[err] );
+			printf( "%scompile error [%s]\n", errMsg.c_str(), c_errStrings[err] );
 #endif
 			return -1;
 		}
@@ -771,7 +772,8 @@ int main( int argn, char* argv[] )
 		unsigned char* out;
 		int outLen;
 		
-		int err = wr_compile( infile, infile.size(), &out, &outLen, 0, flags );
+		WRstr errMsg;
+		int err = wr_compile( infile, infile.size(), &out, &outLen, &errMsg, flags );
 		
 //		WRstr str;
 //		wr_asciiDump( out, outLen, str );
@@ -779,7 +781,7 @@ int main( int argn, char* argv[] )
 		
 		if ( err )
 		{
-			printf( "compile error [%s]\n", c_errStrings[err] );
+			printf( "%scompile error [%s]\n", errMsg.c_str(), c_errStrings[err] );
 			return -1;
 		}
 
@@ -850,11 +852,12 @@ int main( int argn, char* argv[] )
 			return usage();
 		}
 
-		int err = wr_compile( code, code.size(), &out, &outLen, 0, flags );
+		WRstr errMsg;
+		int err = wr_compile( code, code.size(), &out, &outLen, &errMsg, flags );
 
 		if ( err )
 		{
-			printf( "compile error [%s]\n", c_errStrings[err] );
+			printf( "%scompile error [%s]\n", errMsg.c_str(), c_errStrings[err] );
 			return -1;
 		}
 
@@ -897,11 +900,12 @@ int main( int argn, char* argv[] )
 			return usage();
 		}
 		
-		int err = wr_compile( code, code.size(), &out, &outLen, 0, flags );
+		WRstr errMsg;
+		int err = wr_compile( code, code.size(), &out, &outLen, &errMsg, flags );
 		
 		if ( err )
 		{
-			printf( "compile error [%s]\n", c_errStrings[err] );
+			printf( "%scompile error [%s]\n", errMsg.c_str(), c_errStrings[err] );
 			return -1;
 		}
 
@@ -1413,7 +1417,6 @@ void testFunctionNameHashAsArgument()
 void testNamedEnumUnqualifiedError()
 {
 	printf( "test [-][named enum member without qualifier is a compile error]:\n" );
-	printf( "     (the compile error below is expected)\n" );
 
 	// A script that declares a named enum then uses the bare member name.
 	// The bare 'RED' must not be accepted as a function-hash literal.
@@ -1436,7 +1439,6 @@ void testNamedEnumUnqualifiedError()
 void testBlankVariablesCannotBeInitialized()
 {
 	printf( "test [-][blank variables cannot be initialized]:\n" );
-	printf( "     (the compile errors below are expected)\n" );
 
 	const char* src[] =
 	{
@@ -1640,7 +1642,6 @@ static WRstr repeated( const char* open, int count, const char* middle, const ch
 bool testCompilerLimits()
 {
 	printf( "test [-][compiler limits are errors, not crashes]:\n" );
-	printf( "     (the compile errors below are expected)\n" );
 	bool ok = true;
 
 	// the argument count is one byte
@@ -1708,6 +1709,10 @@ bool testCompilerLimits()
 	ok = ok && compileOnly( "var n = 'c'.x;" ) == WR_ERR_member_of_literal;
 	ok = ok && compileOnly( "var n = io::O_CREAT.x;" ) == WR_ERR_member_of_literal;
 	ok = ok && compileOnly( "var n = \"abc\"._count; var c = \"abc\"[1];" ) == WR_ERR_None;
+
+	// a goto label once per function
+	ok = ok && compileOnly( "var i = 0;\nfirst:\ni++;\nfirst:\ni++;\n" ) == WR_ERR_bad_goto_label;
+	ok = ok && compileOnly( "function f() { here: return 1; } function g() { here: return 2; }" ) == WR_ERR_None;
 
 	printf( ok ? "PASS\n" : "FAIL\n" );
 	return ok;
@@ -2400,7 +2405,7 @@ int runTests( const char* testDir, int number )
 	#ifdef WRENCH_WITHOUT_COMPILER
 						printf( "compile error [#%d]\n", err );
 	#else
-						printf( "compile error [%s]\n", c_errStrings[err] );
+						printf( "%scompile error [%s]\n", errMsg.c_str(), c_errStrings[err] );
 	#endif
 						return -1;
 					}

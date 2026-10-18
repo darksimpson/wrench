@@ -1,9 +1,34 @@
 next (unreleased) ----------------------------------------------------------------------
+Language and compiler:
+- behaviour change: && and || short circuit, the right side runs only when the left side
+  does not decide the result (results are still 1 or 0)
+- behaviour change: assigning to a literal, a library constant, a call result, the result
+  of an operation or a member / element of a call result is WR_ERR_not_assignable (it
+  used to change a copy or nothing)
+- jumps and switch cases farther than 16 bits compile: a jump found too far is emitted in
+  a long form (OX_RelativeJump32) in a further pass, far switch cases go through
+  trampolines after the table; a switch past 32KB of code stored truncated positions
+- extended opcodes: the prefix O_Extended is followed by a second opcode byte
+  (WRExtendedOpcode), room for 256 more rarely executed opcodes now that the one byte
+  space is full; OX_RelativeJump32 is the first
+- a goto label defined twice in a function is WR_ERR_bad_goto_label
+- the compiler prints nothing, the error message is only returned (errMsg); wrench c, ch,
+  p and r print it
+- string escapes documented on the website (\0NNN is a decimal character code)
+- behaviour change: reading a member or element of a value that is no container gives 0
+  and leaves the value alone (it turned the variable into an empty hash table or array);
+  assignments still create containers (new opcodes O_IndexCreate, O_StackIndexHashCreate;
+  images from older compilers keep the old behaviour, told apart by the new image flag
+  WR_READS_KEEP_VALUES); a member of a literal is WR_ERR_member_of_literal
+- the disassembler and the debugger's line table took LLValues, LGValues, GLValues and
+  GGValues for one byte instead of three
+
 Distribution:
 - the single file build (wrench.h + wrench.cpp) is no longer kept in git: the old
-  src/wrench.h|cpp and the copies in examples/arduino are gone. CI (.github/workflows/ci.yml) generates it, checks
-  that it compiles with GCC and MSVC in several configurations, and attaches it to every
-  release; "make dist" (or "wrench release src dist") writes it to dist/
+  src/wrench.h|cpp and the copies in examples/arduino are gone. CI
+  (.github/workflows/ci.yml) generates it, checks that it compiles with GCC and MSVC in
+  several configurations, and attaches it to every release; "make dist" (or "wrench
+  release src dist") writes it to dist/
 - discrete_src/ is now src/: the sources live in src/, the generated single file build
   in dist/
 - tests: the scripts are .w files; the list is tests/test_files.txt (entries relative to

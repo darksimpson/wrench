@@ -117,28 +117,61 @@ Debugger and tools:
 * Examples, protocol documentation, comments and packaging notes; the code
   style of the new work.
 
+## Open issues: language and compiler, done
+
+* `&&` and `||` short circuit: the right side is parsed into the operator
+  node and compiled behind a branch, so `if ( i < a._count && a[i] == x )`
+  no longer reads (and grows) `a[i]` out of range. They still yield 1 or 0.
+  `tests/034_short_circuit.w` covers order, values, precedence, ternaries,
+  loops and guards.
+* Jumps farther than 16 bits: a jump found too far is recorded by its source
+  position and the source compiled again with that jump in a long form
+  (the extended opcode `OX_RelativeJump32`, conditional branches reach one
+  placed next to them); programs whose jumps fit compile in one pass,
+  unchanged. Switch cases out of reach of the table go through trampolines
+  after it, and a switch past 32KB of code no longer stores truncated
+  positions. Old images still run, the new opcode only appears where a jump
+  needs it.
+* The one byte opcode space was full (255 values with the opcodes of this
+  round). The prefix `O_Extended` opens a second table: the next byte is a
+  `WRExtendedOpcode`, at one byte and one dispatch more, for rarely executed
+  opcodes; `OX_RelativeJump32` is the first. New single byte opcodes go after
+  `O_Extended` so its value stays fixed; rare ones belong in the second table.
+* Assigning to a literal, a library constant, a call result or the result of
+  an operation (`3 = 4`, `io::O_CREAT = 1`, `f() = 1`, `a + b = 7`, `5++`) is
+  `WR_ERR_not_assignable`, and so is assigning to a member or element of a
+  call result (`f().x = 3`, `f()[0] = 1`, also `(f()).x = 3`), which used to
+  change a copy. Parentheses around a variable and the ternary stay
+  assignable, they write through (`(t).x = 1`, `(c ? a : b).x = 1`).
+* A goto label defined twice in a function is `WR_ERR_bad_goto_label`.
+* The compiler prints nothing; the message comes back through `errMsg` and
+  the command line tool prints it. It stops at the first error, so there is
+  only ever one message per run.
+* `\0NNN` escapes stay decimal (`"\097"` is `a`); the website documents the
+  escapes now.
+* Reading a member or element of a value that is no container turned that
+  variable into an empty hash table or array, losing its value (`s.length`
+  wiped a string). Reads now give 0 and leave the value alone; only the
+  member and element steps of an assignment target create containers (new
+  opcodes `O_StackIndexHashCreate` and `O_IndexCreate`). Images from older
+  compilers lack `WR_READS_KEEP_VALUES` in their flags and keep the old
+  behaviour. `"abc".length` is `WR_ERR_member_of_literal`.
+* The disassembler and the debug client's line table walk took the
+  `LLValues` / `LGValues` / `GLValues` / `GGValues` opcodes for one byte;
+  they have two operand bytes.
+
 ## Open issues
 
 Language and compiler:
 
-* `&&` and `||` evaluate both operands (no short circuit): `if ( p && p.x )`
-  still evaluates `p.x`. Either document it prominently or compile them to
-  conditional jumps (`O_BLA` / `O_BLO` exist).
-* Relative jumps are 16 bit, so a single function, loop or switch case larger
-  than about 32KB of bytecode fails with `WR_ERR_bad_goto_location`. A long
-  jump opcode would lift that.
-* Assigning to a literal (`3 = 4;`) compiles to an assignment into a
-  temporary without an error.
-* A goto label defined twice is not reported, the first one wins.
-* Assigning to a member of a computed value (`f().x = 3`, `(t).x = 3`)
-  changes a copy: the result replaces the only stack slot that holds the
-  container, so a reference into it would not keep it alive. Reading works.
-  A member of a non-container (`"abc".length`) reads as 0.
-* A character escape `\0NNN` is decimal (`"\097"` is `a`), unlike C's octal.
-  This is the documented behaviour and kept.
-* The compiler `printf`s its error message to stdout in addition to
-  returning it; library users on a device may not want that (the tools move
-  stdout aside while they speak LSP or DAP).
+* A program is limited to 64KB of bytecode (`WR_ERR_code_too_large`): function
+  offsets and other fixups in the image are 16 bit. Lifting it would change
+  the bytecode format; jumps and switches inside that limit are not limited
+  any more.
+* Assigning to a member or element of a variable that holds a string or a
+  number still replaces it with a container (`var n = 5; n.k = 1;`); only
+  reads were changed. A runtime error there was considered and left out.
+* Reading an element past the end of an array grows the array.
 
 VM:
 
