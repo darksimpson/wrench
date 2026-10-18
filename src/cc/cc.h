@@ -38,7 +38,11 @@ enum WROperationType
 	WR_OPER_BINARY_COMMUTE, // binary but operation order doesn't matter
 	WR_OPER_POST,
 	WR_OPER_TERNARY, // conditional operator with embedded true/false expression bytecode
+	WR_OPER_LOGICAL, // && and ||, the right side is embedded and only evaluated when it decides
 };
+
+// what parseExpression returns when a stopPrecedence ended it
+const char c_endAtOperator = 1;
 
 //------------------------------------------------------------------------------
 struct WROperation
@@ -72,8 +76,8 @@ const WROperation c_operations[] =
 	{ "<=",   9, O_CompareLE,           true,  WR_OPER_BINARY, O_CompareGE },
 	{ ">",    9, O_CompareGT,           true,  WR_OPER_BINARY, O_CompareLT },
 	{ "<",    9, O_CompareLT,           true,  WR_OPER_BINARY, O_CompareGT },
-	{ "&&",  14, O_LogicalAnd,          true,  WR_OPER_BINARY_COMMUTE, O_LAST },
-	{ "||",  15, O_LogicalOr,           true,  WR_OPER_BINARY_COMMUTE, O_LAST },
+	{ "&&",  14, O_LogicalAnd,          true,  WR_OPER_LOGICAL, O_LAST },
+	{ "||",  15, O_LogicalOr,           true,  WR_OPER_LOGICAL, O_LAST },
 	{ "?",   16, O_LAST,               false,  WR_OPER_TERNARY, O_LAST },
 
 	{ "++",   3, O_PreIncrement,        true,  WR_OPER_PRE, O_LAST },
@@ -270,6 +274,11 @@ public:
 	bool allowFunctionNameHashLiteral;
 	bool allowLabelDeclarations;
 
+	// non-zero for the right side of && and ||: parsing stops in front of a
+	// binary operator of this precedence or a lower one (a higher number) and
+	// returns c_endAtOperator, the operator is left for the enclosing parse
+	int stopPrecedence;
+
 	//------------------------------------------------------------------------------
 	void pushToStack( int index )
 	{
@@ -363,6 +372,7 @@ public:
 		lValue = false;
 		allowFunctionNameHashLiteral = false;
 		allowLabelDeclarations = true;
+		stopPrecedence = 0;
 	}
 };
 

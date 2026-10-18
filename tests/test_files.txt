@@ -39,6 +39,7 @@
 031_vm_fixes.w
 032_audit_fixes.w
 033_library_audit.w
+034_short_circuit.w
 
 # equality of numbers, strings, arrays, hash tables and structs, through an
 # imported assertion library (unit_test_lib.w, not a test by itself)

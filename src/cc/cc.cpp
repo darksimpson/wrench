@@ -1544,8 +1544,67 @@ unsigned int WRCompilationContext::resolveExpressionEx( WRExpression& expression
 
 			break;
 		}
+
+		case WR_OPER_LOGICAL:
+		{
+			ret = 1;
+
+			if ( o == 0 )
+			{
+				m_err = WR_ERR_bad_expression;
+				return 0;
+			}
+
+			// the left side is on the stack, the node holds the right side;
+			// the result is 1 or 0 as with the old opcodes
+			if ( expression.context[o - 1].stackPosition == -1 )
+			{
+				loadExpressionContext( expression, o - 1, o );
+			}
+			else if ( expression.context[o - 1].stackPosition != 0 )
+			{
+				expression.swapWithTop( expression.context[o - 1].stackPosition );
+			}
+
+			unsigned char one = 1;
+			int falseMarker = addRelativeJumpTarget( expression.bytecode );
+			int endMarker = addRelativeJumpTarget( expression.bytecode );
+
+			if ( expression.context[o].operation->opcode == O_LogicalAnd )
+			{
+				// left; BZ false; right; BZ false; 1; jump end; false: 0; end:
+				addRelativeJumpSource( expression.bytecode, O_BZ, falseMarker );
+				appendBytecode( expression.bytecode, expression.context[o].bytecode );
+				addRelativeJumpSource( expression.bytecode, O_BZ, falseMarker );
+			}
+			else
+			{
+				// left; BZ right; 1; jump end; right: right; BZ false; 1; jump end; false: 0; end:
+				int rightMarker = addRelativeJumpTarget( expression.bytecode );
+				addRelativeJumpSource( expression.bytecode, O_BZ, rightMarker );
+				pushOpcode( expression.bytecode, O_LiteralInt8 );
+				pushData( expression.bytecode, &one, 1 );
+				addRelativeJumpSource( expression.bytecode, O_RelativeJump, endMarker );
+
+				setRelativeJumpTarget( expression.bytecode, rightMarker );
+				appendBytecode( expression.bytecode, expression.context[o].bytecode );
+				addRelativeJumpSource( expression.bytecode, O_BZ, falseMarker );
+			}
+
+			pushOpcode( expression.bytecode, O_LiteralInt8 );
+			pushData( expression.bytecode, &one, 1 );
+			addRelativeJumpSource( expression.bytecode, O_RelativeJump, endMarker );
+			setRelativeJumpTarget( expression.bytecode, falseMarker );
+			pushOpcode( expression.bytecode, O_LiteralZero );
+			setRelativeJumpTarget( expression.bytecode, endMarker );
+
+			expression.context.remove( o, 1 );
+			expression.pushToStack( o - 1 );
+
+			break;
+		}
 	}
-	
+
 	return ret;
 }
 

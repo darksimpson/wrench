@@ -56,6 +56,32 @@ static bool wr_expressionHasBlankDeclaration( WRarray<WRExpressionContext>& cont
 	return false;
 }
 
+// true when the node completes an operand: a value, a postfix operator, or an
+// && / || node (its right side is embedded in it)
+static bool wr_completesOperand( const WRExpressionContext& node )
+{
+	return node.type != EXTYPE_OPERATION
+			|| (node.operation
+				&& (node.operation->type == WR_OPER_POST || node.operation->type == WR_OPER_LOGICAL));
+}
+
+// the operator a token stands for when it follows an operand
+static const WROperation* wr_infixOperation( WRstr const& token )
+{
+	for( int i=0; c_operations[i].token; ++i )
+	{
+		if ( token == c_operations[i].token
+				&& (c_operations[i].type == WR_OPER_BINARY
+					|| c_operations[i].type == WR_OPER_BINARY_COMMUTE
+					|| c_operations[i].type == WR_OPER_TERNARY
+					|| c_operations[i].type == WR_OPER_LOGICAL) )
+		{
+			return c_operations + i;
+		}
+	}
+	return 0;
+}
+
 //------------------------------------------------------------------------------
 char WRCompilationContext::parseExpressionBody( WRExpression& expression )
 {
@@ -138,14 +164,92 @@ char WRCompilationContext::parseExpressionBody( WRExpression& expression )
 			return 0;
 		}
 
+		// the right side of && or || ends in front of an operator that binds
+		// as loosely or looser, which the enclosing expression then takes
+		if ( expression.stopPrecedence
+				&& !m_quoted
+				&& depth > 0
+				&& wr_completesOperand(expression.context[depth - 1]) )
+		{
+			const WROperation* infix = wr_infixOperation( token );
+			if ( infix && infix->precedence >= expression.stopPrecedence )
+			{
+				m_loadedToken = token;
+				m_loadedValue = value;
+				m_loadedQuoted = m_quoted;
+				end = c_endAtOperator;
+				break;
+			}
+		}
+
+		if ( !m_quoted && (token == "&&" || token == "||") )
+		{
+			// short circuit: the right side is parsed into the operator node
+			// and only runs when the left side does not decide the result
+			if ( depth == 0 || !wr_completesOperand(expression.context[depth - 1]) )
+			{
+				m_err = WR_ERR_bad_expression;
+				return 0;
+			}
+
+			if ( !operatorFound(token, expression.context, depth) )
+			{
+				m_err = WR_ERR_bad_expression;
+				return 0;
+			}
+
+			expression.context[depth].bytecode.clear(); // the node holds the right side only
+			int precedence = expression.context[depth].operation->precedence;
+
+			WRstr& token2 = expression.context[depth].token;
+			WRValue& value2 = expression.context[depth].value;
+
+			if ( !getToken(expression.context[depth]) )
+			{
+				m_err = WR_ERR_unexpected_EOF;
+				return 0;
+			}
+
+			WRExpression rightSide( expression.bytecode.localSpace, expression.bytecode.isStructSpace );
+			rightSide.allowFunctionNameHashLiteral = expression.allowFunctionNameHashLiteral;
+			rightSide.allowLabelDeclarations = false;
+			rightSide.stopPrecedence = precedence;
+			rightSide.context[0].token = token2;
+			rightSide.context[0].value = value2;
+			m_loadedToken = token2;
+			m_loadedValue = value2;
+			m_loadedQuoted = m_quoted;
+
+			char rightEnd = parseExpression( rightSide );
+			if ( !rightEnd || m_err )
+			{
+				m_err = m_err ? m_err : WR_ERR_unexpected_EOF;
+				return 0;
+			}
+
+			if ( !rightSide.bytecode.all.size() )
+			{
+				m_err = WR_ERR_bad_expression;
+				return 0;
+			}
+
+			expression.context[depth].bytecode = rightSide.bytecode;
+			++depth;
+
+			if ( rightEnd == c_endAtOperator )
+			{
+				continue; // the operator that ended it is parsed next
+			}
+
+			end = rightEnd;
+			break;
+		}
+
 		if ( !m_quoted && token == "?" )
 		{
 			// ternary is parsed as a single operator node with recursive true/false expression branches.
-			// a postfix operator (i++ ? a : b) completes its operand
-			if ( (depth == 0)
-					|| ((expression.context[depth - 1].type == EXTYPE_OPERATION)
-						&& (!expression.context[depth - 1].operation
-							|| expression.context[depth - 1].operation->type != WR_OPER_POST)) )
+			// a postfix operator (i++ ? a : b) or an && / || completes its operand
+			if ( depth == 0 || !wr_completesOperand(expression.context[depth - 1]) )
 			{
 				m_err = WR_ERR_bad_expression;
 				return 0;
