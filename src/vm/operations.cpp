@@ -115,28 +115,65 @@ bool wr_growValueArray( WRGCObject* va, uint32_t newMinIndex )
 		return false;
 	}
 
-	// create new array to hold the data, and g_free the existing one
-	uint8_t* grown = (uint8_t *)g_malloc( elements * size_of );
+	// an earlier growth left room behind m_size: use it, cleared (it may
+	// hold elements that were removed since)
+	if ( (va->m_flags & GCFlag_Slack) && elements <= (size_t)va->m_size + va->m_mod )
+	{
+		memset( va->m_Cdata + size_el, 0, (elements * size_of) - size_el );
+		va->m_mod = (uint16_t)(va->m_mod - (elements - va->m_size));
+		va->m_size = (uint32_t)elements;
+		return true;
+	}
 
-#ifdef WRENCH_HANDLE_MALLOC_FAIL
+	// grow by about half again, so appending in a loop is not quadratic; the
+	// spare count lives in m_mod, which a struct uses for its member table:
+	// an object with m_mod in use and no slack flag grows exactly
+	bool slack = (va->m_flags & GCFlag_Slack) || va->m_mod == 0;
+	size_t allocate = elements;
+	if ( slack )
+	{
+		size_t extra = elements / 2;
+		if ( extra > 0xFFFF )
+		{
+			extra = 0xFFFF;
+		}
+		if ( va->m_type == SV_VALUE && elements + extra > WRENCH_MAX_ARRAY_ELEMENTS )
+		{
+			extra = WRENCH_MAX_ARRAY_ELEMENTS - elements;
+		}
+		if ( elements + extra > ((size_t)-1) / size_of )
+		{
+			extra = 0;
+		}
+		allocate = elements + extra;
+	}
+
+	// create new array to hold the data, and g_free the existing one
+	uint8_t* grown = (uint8_t *)g_malloc( allocate * size_of );
 	if ( !grown )
 	{
+#ifdef WRENCH_HANDLE_MALLOC_FAIL
 		g_mallocFailed = true;
+#endif
 		return false;
 	}
-#endif
-	
+
 	if ( size_el )
 	{
 		memcpy( grown, va->m_Cdata, size_el );
 	}
 	g_free( va->m_Cdata );
 	va->m_Cdata = grown;
-	
-	va->m_size = newMinIndex + 1;
 
-	// clear new entries
-	memset( va->m_Cdata + size_el, 0, (va->m_size * size_of) - size_el );
+	va->m_size = (uint32_t)elements;
+	if ( slack )
+	{
+		va->m_mod = (uint16_t)(allocate - elements);
+		va->m_flags |= GCFlag_Slack;
+	}
+
+	// clear the new entries and the spare room
+	memset( va->m_Cdata + size_el, 0, (allocate * size_of) - size_el );
 
 	return true;
 }
@@ -247,10 +284,10 @@ uint32_t WRValue::getHashLevel( const int depth ) const
 	else if (xtype == WR_EX_HASH_TABLE)
 	{
 		// start with a hash of the key hashes
-		uint32_t hash = wr_hash(va->m_hashTable, va->m_mod * sizeof(uint32_t));
+		uint32_t hash = wr_hash(va->m_hashTable, va->hashSlots() * sizeof(uint32_t));
 
 		// hash each element, positionally dependant
-		for (uint32_t e = 0; e < va->m_mod; ++e)
+		for (uint32_t e = 0; e < va->hashSlots(); ++e)
 		{
 			if (va->m_hashTable[e] != WRENCH_NULL_HASH)
 			{

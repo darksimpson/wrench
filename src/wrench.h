@@ -143,6 +143,13 @@ depending on usage. (consumes 8 bytes per stack entry)
 #define WRENCH_MAX_PARSE_DEPTH 256
 #endif
 
+// how many containers the garbage collector keeps on its mark stack (on
+// the native stack, one pointer each). Nesting deeper than this still
+// works, the collector then makes additional passes over the objects
+#ifndef WRENCH_GC_MARK_STACK_SIZE
+#define WRENCH_GC_MARK_STACK_SIZE 32
+#endif
+
 // the value stack is checked on every push, so a deep expression or a
 // runaway recursion fails with WR_ERR_stack_overflow instead of writing
 // past the stack. The check costs a compare per push: define
@@ -851,6 +858,7 @@ enum WRGCFlags
 	GCFlag_NoContext = 1<<0,
 	GCFlag_Marked = 1<<1,
 	GCFlag_Perm = 1<<2,
+	GCFlag_Slack = 1<<3, // an array allocated beyond m_size: m_mod more elements (see wr_growValueArray)
 };
 
 //------------------------------------------------------------------------------
@@ -1212,6 +1220,12 @@ public:
 	int scanLargest( const uint32_t hash, const bool inserting );
 	bool atLargestSize() const;
 
+	// how many slots to walk: a script hash table has one more after the
+	// m_mod hashed ones, for the key whose hash is WRENCH_NULL_HASH (the
+	// marker of an empty slot); like the others it is empty while its
+	// m_hashTable entry is WRENCH_NULL_HASH
+	uint32_t hashSlots() const { return (m_type == SV_HASH_TABLE) ? (uint32_t)m_mod + 1 : m_mod; }
+
 private:
 
 	WRGCObject& operator= ( WRGCObject& A );
@@ -1265,8 +1279,6 @@ struct WRContext
 
 	WRContext* nextStateContextLink;
 
-	void markBase( WRGCBase* svb );
-	void mark( WRValue* s );
 	void gc( WRValue* stackTop );
 
 	WRGCObject* getSVA( int size, WRGCObjectType type, bool init );

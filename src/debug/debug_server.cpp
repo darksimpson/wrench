@@ -416,7 +416,7 @@ bool WrenchDebugServerImpl::readValue( WrenchDebugServerPrivate* I, WrenchDebugR
 uint32_t WrenchDebugServerImpl::hashEntryCount( const WRGCObject* va )
 {
 	uint32_t count = 0;
-	for ( uint32_t i = 0; i < va->m_mod; ++i )
+	for ( uint32_t i = 0; i < va->hashSlots(); ++i )
 	{
 		if ( va->m_hashTable[i] != WRENCH_NULL_HASH )
 		{
@@ -429,7 +429,7 @@ uint32_t WrenchDebugServerImpl::hashEntryCount( const WRGCObject* va )
 int WrenchDebugServerImpl::hashSlotForIndex( const WRGCObject* va, uint32_t index )
 {
 	uint32_t seen = 0;
-	for ( uint32_t i = 0; i < va->m_mod; ++i )
+	for ( uint32_t i = 0; i < va->hashSlots(); ++i )
 	{
 		if ( va->m_hashTable[i] != WRENCH_NULL_HASH )
 		{

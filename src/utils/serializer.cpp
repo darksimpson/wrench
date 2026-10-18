@@ -90,10 +90,10 @@ bool wr_serializeEx( WRValueSerializer& serializer, const WRValue& val, const in
 
 				case WR_EX_HASH_TABLE:
 				{
-					temp16 = wr_x16( value.va->m_mod );
+					temp16 = wr_x16( (uint16_t)value.va->hashSlots() );
 					serializer.write( (char *)&temp16, 2 );
 
-					for( uint32_t i=0; i<value.va->m_mod; ++i )
+					for( uint32_t i=0; i<value.va->hashSlots(); ++i )
 					{
 						if ( value.va->m_hashTable[i] == WRENCH_NULL_HASH )
 						{
@@ -276,7 +276,9 @@ static bool wr_deserializeValue( WRValue& value, WRValueSerializer& serializer, 
 						largestMod = c_primeTable[p];
 					}
 
-					if ( temp16 == 0 || temp16 > largestMod )
+					// the slot count, one more than the table size since the
+					// slot for the empty marker as a key came (see hashSlots)
+					if ( temp16 == 0 || temp16 > largestMod + 1 )
 					{
 						return false; // corrupt table size
 					}

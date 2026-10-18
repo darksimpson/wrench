@@ -121,7 +121,19 @@ WRValue* WRGCObject::getAsRawValueHashTable( const uint32_t hash, int* index )
 //------------------------------------------------------------------------------
 WRValue* WRGCObject::exists( const uint32_t hash, bool removeIfPresent )
 {
-	uint32_t index = hash % m_mod;
+	uint32_t index;
+	if ( hash == WRENCH_NULL_HASH && m_type == SV_HASH_TABLE )
+	{
+		// the empty marker as a key lives in the slot after the others
+		if ( m_hashTable[m_mod] == WRENCH_NULL_HASH )
+		{
+			return 0;
+		}
+		index = m_mod;
+		goto foundExists;
+	}
+
+	index = hash % m_mod;
 
 	if ( m_hashTable[index] != hash )
 	{
@@ -200,6 +212,17 @@ void* WRGCObject::get( const uint32_t l, int* index )
 //------------------------------------------------------------------------------
 uint32_t WRGCObject::getIndexOfHit( const uint32_t hash, const bool inserting )
 {
+	if ( hash == WRENCH_NULL_HASH && m_type == SV_HASH_TABLE )
+	{
+		// the empty marker as a key: it has its own slot after the others
+		if ( m_hashTable[m_mod] == WRENCH_NULL_HASH )
+		{
+			++m_size;
+			m_hashTable[m_mod] = 0; // anything but the marker: occupied
+		}
+		return m_mod;
+	}
+
 	uint32_t index = hash % m_mod;
 	if ( m_hashTable[index] == hash )
 	{
@@ -239,6 +262,24 @@ uint32_t WRGCObject::getIndexOfHit( const uint32_t hash, const bool inserting )
 }
 
 //------------------------------------------------------------------------------
+// moves a value and its key to a grown table, the old pair forwards to them
+static void wr_moveHashPair( WRValue* to, WRValue* from )
+{
+	// value
+	to->p2 = from->p2;
+	to->p = from->p;
+	from->p2 = INIT_AS_REF;
+	from->r = to;
+
+	// key
+	++to;
+	++from;
+	to->p2 = from->p2;
+	to->p = from->p;
+	from->p2 = INIT_AS_REF;
+	from->r = to;
+}
+
 uint32_t WRGCObject::growHash( const uint32_t hash, const uint16_t sizeHint, int* sizeAllocated )
 {
 	// there was a collision with the passed hash, grow until the
@@ -275,20 +316,23 @@ tryAgain:
 			return 0;
 		}
 
+		// a script hash table has one slot more (see hashSlots)
+		int slots = (m_type == SV_HASH_TABLE) ? newMod + 1 : newMod;
+
 		int newSize;
 		if ( m_type == SV_VOID_HASH_TABLE )
 		{
-			newSize = newMod;
+			newSize = slots;
 		}
 		else
 		{
-			newSize = newMod << 1;
+			newSize = slots << 1;
 		}
 
 		newSize *= sizeof(WRValue);
 		newSize += sizeof(WRGCBase);
-	
-		int total = newMod*sizeof(uint32_t) + newSize;
+
+		int total = slots*sizeof(uint32_t) + newSize;
 		if ( sizeAllocated )
 		{
 			*sizeAllocated = total;
@@ -307,7 +351,7 @@ tryAgain:
 
 		uint32_t* proposed = (uint32_t *)((char*)base + newSize);
 
-		for( int n = 0; n<newMod; ++n )
+		for( int n = 0; n<slots; ++n )
 		{
 			proposed[n] = WRENCH_NULL_HASH;
 		}
@@ -369,23 +413,15 @@ tryAgain:
 			else
 			{
 				// copy all the new hashes to their new locations
-				WRValue* to = newValues + (newPos<<1);
-				WRValue* from = m_Vdata + (v<<1);
-
-				// value
-				to->p2 = from->p2;
-				to->p = from->p;
-				from->p2 = INIT_AS_REF;
-				from->r = to;
-
-				// key
-				++to;
-				++from;
-				to->p2 = from->p2;
-				to->p = from->p;
-				from->p2 = INIT_AS_REF;
-				from->r = to;
+				wr_moveHashPair( newValues + (newPos<<1), m_Vdata + (v<<1) );
 			}
+		}
+
+		// the slot for the empty marker as a key moves along
+		if ( m_type == SV_HASH_TABLE && oldHashTable && oldMod && oldHashTable[oldMod] != WRENCH_NULL_HASH )
+		{
+			m_hashTable[newMod] = oldHashTable[oldMod];
+			wr_moveHashPair( newValues + (newMod<<1), m_Vdata + (oldMod<<1) );
 		}
 
 		// the superseded block forwards its entries to this one; link it
@@ -398,12 +434,15 @@ tryAgain:
 
 		m_Vdata = newValues;
 
+		// the marker as the hash means no key to add (the first allocation)
+		if ( hash == WRENCH_NULL_HASH )
+		{
+			return 0;
+		}
+
 		// the new key was placed in 'proposed' already, so the lookup below
 		// hits at once and would not count it
-		if ( hash != WRENCH_NULL_HASH )
-		{
-			++m_size;
-		}
+		++m_size;
 
 		return getIndexOfHit( hash, true );
 	}

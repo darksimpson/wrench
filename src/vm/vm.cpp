@@ -36,7 +36,7 @@ inline bool wr_getNextValue( WRValue* iterator, WRValue* value, WRValue* key )
 
 	if ( iterator->va->m_type == SV_HASH_TABLE )
 	{
-		for( ; element<iterator->va->m_mod; ++element )
+		for( ; element<iterator->va->hashSlots(); ++element )
 		{
 			if ( iterator->va->m_hashTable[element] != WRENCH_NULL_HASH )
 			{

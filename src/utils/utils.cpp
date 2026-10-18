@@ -926,7 +926,7 @@ static size_t wr_technicalAsStringDepth( char* string, const WRValue* value, siz
 		pos = wr_technicalPut( string, pos, maxLen, "{ " );
 
 		bool first = true;
-		for( int32_t element=0; pos + 1 < maxLen && element<value->va->m_mod; ++element )
+		for( int32_t element=0; pos + 1 < maxLen && element<(int32_t)value->va->hashSlots(); ++element )
 		{
 			if ( value->va->m_hashTable[element] != WRENCH_NULL_HASH )
 			{
@@ -1096,7 +1096,7 @@ const WRValue::Iterator WRValue::Iterator::operator++()
 		if ( m_current.type == SV_HASH_TABLE || m_current.type == SV_VOID_HASH_TABLE )
 		{
 			int temp = m_element;
-			for( ; temp < m_va->m_mod; ++temp )
+			for( ; temp < (int)m_va->hashSlots(); ++temp )
 			{
 				if ( m_va->m_hashTable[temp] != WRENCH_NULL_HASH )
 				{

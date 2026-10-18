@@ -25,48 +25,34 @@ SOFTWARE.
 #include "wrench.h"
 
 //------------------------------------------------------------------------------
-void WRContext::markBase( WRGCBase* svb )
+// Marking keeps the containers still to be scanned on a small fixed stack
+// instead of recursing, so a deep structure (a long chain of nested arrays)
+// cannot exhaust the native stack. A container that does not fit is marked
+// but left unscanned; wr_finishMarking() then rescans the marked objects
+// until nothing was left out.
+struct WRMarkStack
 {
-	// mark before descending so a container that (indirectly) holds itself
-	// does not recurse forever
+	WRGCBase* items[WRENCH_GC_MARK_STACK_SIZE];
+	int top;
+	bool overflowed;
+};
+
+static void wr_pushMark( WRMarkStack& stack, WRGCBase* svb )
+{
+	// marked before it is scanned, so a container that (indirectly) holds
+	// itself is pushed only once
 	svb->m_flags |= GCFlag_Marked;
-
-	if ( svb->m_type == SV_VALUE )
+	if ( stack.top < WRENCH_GC_MARK_STACK_SIZE )
 	{
-		WRValue* top = ((WRGCObject*)svb)->m_Vdata + ((WRGCObject*)svb)->m_size;
-
-		for( WRValue* V = ((WRGCObject*)svb)->m_Vdata; V<top; ++V )
-		{
-			mark( V );
-		}
+		stack.items[stack.top++] = svb;
 	}
-	else if ( svb->m_type == SV_HASH_TABLE )
+	else
 	{
-		// hash table points one WRGCBase size PAST the actual pointer,
-		// recover it and mark it
-		((WRGCBase*)(((WRGCObject*)svb)->m_Vdata) - 1)->m_flags |= GCFlag_Marked;
-
-		for( uint32_t i=0; i<((WRGCObject*)svb)->m_mod; ++i )
-		{
-			if ( ((WRGCObject*)svb)->m_hashTable[i] != WRENCH_NULL_HASH )
-			{
-				uint32_t item = i<<1;
-				mark( ((WRGCObject*)svb)->m_Vdata + item++ );
-				mark( ((WRGCObject*)svb)->m_Vdata + item );
-			}
-		}
+		stack.overflowed = true;
 	}
-	else if ( svb->m_type == SV_HASH_ENTRY )
-	{
-		// mark the referenced table so it is not collected
-		((WRGCBase*)svb)->m_referencedTable->m_flags |= GCFlag_Marked;
-	}
-
-	svb->m_flags |= GCFlag_Marked;
 }
 
-//------------------------------------------------------------------------------
-void WRContext::mark( WRValue* s )
+static void wr_markValue( WRMarkStack& stack, WRValue* s )
 {
 	if ( IS_CONTAINER_MEMBER(s->xtype) )
 	{
@@ -96,7 +82,7 @@ void WRContext::mark( WRValue* s )
 		else if ( IS_EXARRAY_TYPE(s->r->xtype) )
 		{
 			// we don't mark this type, but we might mark it's target
-			mark( s->r );
+			wr_markValue( stack, s->r );
 		}
 		return;
 	}
@@ -108,7 +94,78 @@ void WRContext::mark( WRValue* s )
 
 	assert( !IS_RAW_ARRAY(s->xtype) );
 
-	markBase( s->vb );
+	wr_pushMark( stack, s->vb );
+}
+
+// marks what a container holds
+static void wr_scanChildren( WRMarkStack& stack, WRGCBase* svb )
+{
+	if ( svb->m_type == SV_VALUE )
+	{
+		WRValue* top = ((WRGCObject*)svb)->m_Vdata + ((WRGCObject*)svb)->m_size;
+
+		for( WRValue* V = ((WRGCObject*)svb)->m_Vdata; V<top; ++V )
+		{
+			wr_markValue( stack, V );
+		}
+	}
+	else if ( svb->m_type == SV_HASH_TABLE )
+	{
+		// hash table points one WRGCBase size PAST the actual pointer,
+		// recover it and mark it
+		((WRGCBase*)(((WRGCObject*)svb)->m_Vdata) - 1)->m_flags |= GCFlag_Marked;
+
+		for( uint32_t i=0; i<((WRGCObject*)svb)->hashSlots(); ++i )
+		{
+			if ( ((WRGCObject*)svb)->m_hashTable[i] != WRENCH_NULL_HASH )
+			{
+				uint32_t item = i<<1;
+				wr_markValue( stack, ((WRGCObject*)svb)->m_Vdata + item++ );
+				wr_markValue( stack, ((WRGCObject*)svb)->m_Vdata + item );
+			}
+		}
+	}
+	else if ( svb->m_type == SV_HASH_ENTRY )
+	{
+		// mark the referenced table so it is not collected
+		((WRGCBase*)svb)->m_referencedTable->m_flags |= GCFlag_Marked;
+	}
+}
+
+static void wr_drainMarks( WRMarkStack& stack )
+{
+	while( stack.top )
+	{
+		wr_scanChildren( stack, stack.items[--stack.top] );
+	}
+}
+
+// scans the marked objects of a context (and, for a group, the contexts it
+// imported) again as long as the mark stack overflowed: every pass marks
+// what the left out containers hold
+static void wr_finishMarking( WRMarkStack& stack, WRContext* first, bool group )
+{
+	wr_drainMarks( stack );
+	while( stack.overflowed )
+	{
+		stack.overflowed = false;
+
+		WRContext* member = first;
+		int guard = 0;
+		do
+		{
+			for( WRGCBase* a=member->svAllocated; a; a = a->m_nextGC )
+			{
+				if ( (a->m_flags & GCFlag_Marked) && (a->m_type == SV_VALUE || a->m_type == SV_HASH_TABLE) )
+				{
+					wr_scanChildren( stack, a );
+					wr_drainMarks( stack );
+				}
+			}
+			member = group ? member->imported : 0;
+
+		} while( member && member != first && ++guard < 256 );
+	}
 }
 
 // free everything in the list that was not marked, clear the marks of the rest
@@ -156,6 +213,10 @@ void WRContext::gc( WRValue* stackTop )
 
 	allocatedMemoryHint = 0;
 
+	WRMarkStack marks;
+	marks.top = 0;
+	marks.overflowed = false;
+
 	if ( !stackTop )
 	{
 		// zero stacktop means collect EVERYTHING this context owns that its
@@ -163,8 +224,10 @@ void WRContext::gc( WRValue* stackTop )
 		WRValue* globalSpace = (WRValue *)(this + 1); // globals are allocated directly after this context
 		for( unsigned int i=0; i<globals; ++i, ++globalSpace )
 		{
-			mark( globalSpace );
+			wr_markValue( marks, globalSpace );
+			wr_drainMarks( marks );
 		}
+		wr_finishMarking( marks, this, false );
 		wr_sweepGC( &svAllocated );
 		return;
 	}
@@ -181,14 +244,16 @@ void WRContext::gc( WRValue* stackTop )
 		{
 			if ( (a->m_flags & GCFlag_Perm) && !(a->m_flags & GCFlag_Marked) )
 			{
-				markBase( a );
+				wr_pushMark( marks, a );
+				wr_drainMarks( marks );
 			}
 		}
 
 		WRValue* globalSpace = (WRValue *)(member + 1);
 		for( unsigned int i=0; i<member->globals; ++i, ++globalSpace )
 		{
-			mark( globalSpace );
+			wr_markValue( marks, globalSpace );
+			wr_drainMarks( marks );
 		}
 
 		member = member->imported;
@@ -199,8 +264,11 @@ void WRContext::gc( WRValue* stackTop )
 	// call that re-entered this context from native code
 	for( WRValue* s=stack; s<stackTop; ++s )
 	{
-		mark( s );
+		wr_markValue( marks, s );
+		wr_drainMarks( marks );
 	}
+
+	wr_finishMarking( marks, this, true );
 
 	member = this;
 	guard = 0;
