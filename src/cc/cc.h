@@ -241,6 +241,12 @@ struct WRExpressionContext
 	bool global;
 	bool varSeen;
 	bool blankSeen;
+	// a value rather than a variable (literal, call result, arithmetic
+	// result): assigning to it would change a copy
+	bool temporary;
+	// a member or element step that leads to an assignment: it may turn a
+	// value that is no container into one, a read never does
+	bool createsContainer;
 	WRstr prefix;
 	WRstr token;
 	WRValue value;
@@ -259,6 +265,8 @@ struct WRExpressionContext
 		bytecode.localSpace.clear();
 		bytecode.isStructSpace = isStructSpace;
 		type = EXTYPE_NONE;
+		temporary = false;
+		createsContainer = false;
 	}
 
 	WRExpressionContext* reset()
@@ -266,6 +274,8 @@ struct WRExpressionContext
 		type = EXTYPE_NONE;
 		varSeen = false;
 		blankSeen = false;
+		temporary = false;
+		createsContainer = false;
 		spaceBefore = false;
 		spaceAfter = false;
 		global = false;
@@ -540,6 +550,7 @@ private:
 	bool isNamedEnumMember( WRstr const& token );
 	void addFunctionToHashSpace( WRBytecode& result, WRstr& token );
 	void loadExpressionContext( WRExpression& expression, int depth, int operation );
+	void markWriteChains( WRExpression& expression );
 	void resolveExpression( WRExpression& expression );
 	unsigned int resolveExpressionEx( WRExpression& expression, int o, int p );
 

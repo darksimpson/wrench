@@ -318,6 +318,8 @@ enum WRError
 	WR_ERR_yield_in_native_call, // script code a native callback called back into tried to yield
 	WR_ERR_too_many_arguments, // a call passes more than 255 arguments
 	WR_ERR_nesting_too_deep, // statements, expressions or initializers nest deeper than WRENCH_MAX_PARSE_DEPTH
+	WR_ERR_not_assignable, // assignment or ++ / -- to a literal, a call result or a computed value
+	WR_ERR_member_of_literal, // "abc".length: a literal has no members
 
 	WR_warning_enums_follow,
 
@@ -374,6 +376,11 @@ enum WrenchCompilerFlags
 	WR_EMBED_SOURCE_CODE = 1<<2, // include a copy of the source code
 	
 	WR_NON_STRICT_VAR    = 1<<3, // require 'var' to declare a variable (disabled by default)
+
+	// set by the compiler in every image: reading an element or member of a
+	// value that is not a container gives 0 and leaves the value alone, only
+	// assignments turn it into a container (images without it convert on reads too)
+	WR_READS_KEEP_VALUES = 1<<4,
 };
 
 WRError wr_compile( const char* source,

@@ -116,6 +116,7 @@ char WRCompilationContext::parseExpressionBody( WRExpression& expression )
 
 			// it's a literal
 			expression.context[depth].type = EXTYPE_LITERAL;
+			expression.context[depth].temporary = true; // a literal is a value, not a variable
 			if ( (uint8_t)value.type == WR_COMPILER_LITERAL_STRING )
 			{
 				expression.context[depth].literalString = *(WRstr*)value.p;
@@ -632,6 +633,8 @@ char WRCompilationContext::parseExpressionBody( WRExpression& expression )
 				{
 					expression.context[depth].type = EXTYPE_BYTECODE_RESULT;
 					expression.context[depth].bytecode = nex.bytecode;
+					// (t) is still t, (f()), (a + b) or (5) is still a value
+					expression.context[depth].temporary = nex.context.count() == 1 && nex.context[0].temporary;
 				}
 			}
 
@@ -740,6 +743,7 @@ char WRCompilationContext::parseExpressionBody( WRExpression& expression )
 			
 
 			expression.context[depth].type = isLibConstant ? EXTYPE_LIB_CONSTANT : EXTYPE_LABEL;
+			expression.context[depth].temporary = isLibConstant;
 			expression.context[depth].token = label;
 			expression.context[depth].global = isGlobal;
 			expression.context[depth].prefix = prefix;
@@ -798,6 +802,7 @@ char WRCompilationContext::parseExpressionBody( WRExpression& expression )
 		}
 	}
 
+	markWriteChains( expression );
 	resolveExpression( expression );
 
 	return end;

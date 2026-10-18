@@ -47,6 +47,8 @@ enum WRContextFlags
 	WRC_ForceYielded = 1<<1, // the last yield was forced by a time slice
 	WRC_Import = 1<<2, // created by wr_import(), runs on its parent's stack
 	WRC_InNative = 1<<3, // a native callback of this context is running, calls back into it cannot yield
+	WRC_IndexConverts = 1<<4, // image from an older compiler: any element or member access turns a non-container into a container
+	WRC_IndexCreates = 1<<5, // set around O_IndexCreate: this element access may turn its value into a container
 };
 
 //------------------------------------------------------------------------------

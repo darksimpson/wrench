@@ -52,15 +52,23 @@ zero = 0;
 if( 10 / zero ) {}
 if( 10.1 / zero ) {}
 
-if ( 10 /= 0 ){}
-if ( 10.1 /= 0 ){}
+// dividing by zero through /= must not crash either (a literal cannot be
+// assigned to, so each case divides a fresh variable)
+var dz = 10;
+if ( dz /= 0 ){}
+var dzf = 10.1;
+if ( dzf /= 0 ){}
 zero = 0;
-if( 10 /= zero ) {}
-if( 10.1 /= zero ) {}
+dz = 10;
+if( dz /= zero ) {}
+dzf = 10.1;
+if( dzf /= zero ) {}
 zero = 0.5;
 zero = 0;
-if( 10 /= zero ) {}
-if( 10.1 /= zero ) {}
+dz = 10;
+if( dz /= zero ) {}
+dzf = 10.1;
+if( dzf /= zero ) {}
 
 
 

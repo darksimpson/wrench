@@ -119,7 +119,7 @@ void WRCompilationContext::link( unsigned char** out, int* outLen, const uint8_t
 		return;
 	}
 	code += (uint8_t)(m_units.count() - 1); // function count (for VM allocation)
-	code += (uint8_t)compilerOptionFlags;
+	code += (uint8_t)(compilerOptionFlags | WR_READS_KEEP_VALUES); // the VM tells new images from old ones by it
 
 	// push function signatures
 	for( unsigned int u=1; u<m_units.count(); ++u )

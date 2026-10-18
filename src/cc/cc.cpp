@@ -1372,6 +1372,169 @@ void WRCompilationContext::resolveExpression( WRExpression& expression )
 	}
 }
 
+static bool wr_isAssignmentOpcode( const WROpcode opcode )
+{
+	switch( opcode )
+	{
+		case O_Assign:
+		case O_AddAssign:
+		case O_SubtractAssign:
+		case O_ModAssign:
+		case O_MultiplyAssign:
+		case O_DivideAssign:
+		case O_ORAssign:
+		case O_ANDAssign:
+		case O_XORAssign:
+		case O_RightShiftAssign:
+		case O_LeftShiftAssign:
+		case O_PreIncrement:
+		case O_PreDecrement:
+		case O_PostIncrement:
+		case O_PostDecrement:
+		{
+			return true;
+		}
+
+		default:
+		{
+			return false;
+		}
+	}
+}
+
+// a variable, a member or an element can be assigned; a literal, a call
+// result or the result of an operation is a value, a change to it would be
+// lost silently
+static bool wr_isAssignable( const WRExpressionContext& target )
+{
+	if ( target.temporary )
+	{
+		return false;
+	}
+	return !( target.stackPosition == -1
+				&& (target.type == EXTYPE_LITERAL || target.type == EXTYPE_LIB_CONSTANT) );
+}
+
+// an element step [i] whose value may become a container: its trailing index
+// opcode gets the creating form (the literal forms are unfolded first)
+static void wr_makeElementCreate( WRExpressionContext& element )
+{
+	WRBytecode& b = element.bytecode;
+	if ( !b.opcodes.size() || element.createsContainer )
+	{
+		return;
+	}
+
+	unsigned int i = b.opcodes.size() - 1;
+	unsigned int a = b.all.size() - 1;
+	switch( (WROpcode)b.opcodes[i] )
+	{
+		case O_Index:
+		{
+			b.all[a] = O_IndexCreate;
+			b.opcodes[i] = O_IndexCreate;
+			break;
+		}
+
+		case O_IndexLiteral8:
+		{
+			b.all[a - 1] = O_LiteralInt8;
+			b.opcodes[i] = O_LiteralInt8;
+			b.all += O_IndexCreate;
+			b.opcodes += O_IndexCreate;
+			break;
+		}
+
+		case O_IndexLiteral16:
+		{
+			b.all[a - 2] = O_LiteralInt16;
+			b.opcodes[i] = O_LiteralInt16;
+			b.all += O_IndexCreate;
+			b.opcodes += O_IndexCreate;
+			break;
+		}
+
+		default:
+		{
+			return; // no other form is built at this point
+		}
+	}
+	element.createsContainer = true;
+}
+
+static bool wr_isMemberStep( const WRExpressionContext& c )
+{
+	return c.type == EXTYPE_OPERATION && c.operation && c.operation->opcode == O_HASH_PLACEHOLDER;
+}
+
+static bool wr_isElementStep( const WRExpressionContext& c )
+{
+	return c.type == EXTYPE_OPERATION && c.operation && c.operation->opcode == O_Index;
+}
+
+// the member and element steps that lead to an assignment target (a.b[i] in
+// "a.b[i] = v", "a.b[i]++", "++a.b[i]") may create containers; every other
+// member or element access is a read, which leaves its value alone
+void WRCompilationContext::markWriteChains( WRExpression& expression )
+{
+	WRarray<WRExpressionContext>& c = expression.context;
+	int count = c.count();
+	for( int o=0; o<count; ++o )
+	{
+		if ( c[o].type != EXTYPE_OPERATION
+				|| !c[o].operation
+				|| !wr_isAssignmentOpcode(c[o].operation->opcode) )
+		{
+			continue;
+		}
+
+		if ( c[o].operation->type == WR_OPER_PRE )
+		{
+			// the target follows: an operand, then members and elements
+			int j = o + 2;
+			for(;;)
+			{
+				if ( j < count && wr_isMemberStep(c[j]) )
+				{
+					c[j].createsContainer = true;
+					j += 2;
+				}
+				else if ( j < count && wr_isElementStep(c[j]) )
+				{
+					wr_makeElementCreate( c[j] );
+					++j;
+				}
+				else
+				{
+					break;
+				}
+			}
+		}
+		else
+		{
+			// the target precedes, walk back to its base
+			int j = o - 1;
+			while( j >= 0 )
+			{
+				if ( wr_isElementStep(c[j]) )
+				{
+					wr_makeElementCreate( c[j] );
+					--j;
+				}
+				else if ( c[j].type != EXTYPE_OPERATION && j >= 2 && wr_isMemberStep(c[j - 1]) )
+				{
+					c[j - 1].createsContainer = true;
+					j -= 2;
+				}
+				else
+				{
+					break;
+				}
+			}
+		}
+	}
+}
+
 //------------------------------------------------------------------------------
 unsigned int WRCompilationContext::resolveExpressionEx( WRExpression& expression, int o, int p )
 {
@@ -1381,6 +1544,19 @@ unsigned int WRCompilationContext::resolveExpressionEx( WRExpression& expression
 		case WR_OPER_PRE:
 		{
 			ret = 1;
+
+			if ( (unsigned int)(o + 1) >= expression.context.count() )
+			{
+				m_err = WR_ERR_bad_expression;
+				return 0;
+			}
+
+			if ( wr_isAssignmentOpcode(expression.context[o].operation->opcode)
+					&& !wr_isAssignable(expression.context[o + 1]) )
+			{
+				m_err = WR_ERR_not_assignable;
+				return 0;
+			}
 
 			if ( expression.context[o + 1].stackPosition == -1 )
 			{
@@ -1394,6 +1570,7 @@ unsigned int WRCompilationContext::resolveExpressionEx( WRExpression& expression
 			appendBytecode( expression.bytecode, expression.context[o].bytecode );  // apply operator
 			expression.context.remove( o, 1 ); // knock off operator
 			expression.pushToStack(o);
+			expression.context[o].temporary = true; // the result is a value
 			break;
 		}
 
@@ -1473,6 +1650,7 @@ unsigned int WRCompilationContext::resolveExpressionEx( WRExpression& expression
 
 			expression.context.remove( o - 1, 2 ); // knock off operator and arg
 			expression.pushToStack(o - 1);
+			expression.context[o - 1].temporary = true; // the result is a value
 
 			break;
 		}
@@ -1490,6 +1668,55 @@ unsigned int WRCompilationContext::resolveExpressionEx( WRExpression& expression
 			int second = o + 1; // push first
 			int first = o - 1;  // push second
 			bool useAlt = false;
+
+			if ( wr_isAssignmentOpcode(expression.context[o].operation->opcode)
+					&& !wr_isAssignable(expression.context[first]) )
+			{
+				m_err = WR_ERR_not_assignable;
+				return 0;
+			}
+
+			// a member of a variable is a variable, of a value a value; every
+			// other operation yields a value
+			bool resultTemporary = true;
+			if ( expression.context[o].operation->opcode == O_HASH_PLACEHOLDER )
+			{
+				resultTemporary = !wr_isAssignable( expression.context[first] );
+
+				// "abc".length: always a mistake, a literal has no members
+				if ( expression.context[first].stackPosition == -1
+						&& (expression.context[first].type == EXTYPE_LITERAL
+							|| expression.context[first].type == EXTYPE_LIB_CONSTANT) )
+				{
+					m_err = WR_ERR_member_of_literal;
+					return 0;
+				}
+
+				if ( expression.context[o].createsContainer )
+				{
+					// assigned to: the base goes on the stack and the creating
+					// member access replaces it
+					if ( expression.context[first].stackPosition == -1 )
+					{
+						loadExpressionContext( expression, first, o );
+					}
+					else if ( expression.context[first].stackPosition != 0 )
+					{
+						expression.swapWithTop( expression.context[first].stackPosition );
+					}
+
+					unsigned char hashData[4];
+					pushOpcode( expression.bytecode, O_StackIndexHashCreate );
+					pushData( expression.bytecode,
+								wr_pack32(wr_hash(expression.context[second].token, expression.context[second].token.size()), hashData),
+								4 );
+
+					expression.context.remove( o - 1, 2 );
+					expression.pushToStack( o - 1 );
+					expression.context[o - 1].temporary = resultTemporary;
+					break;
+				}
+			}
 			// so
 			// 1 - first
 			// [oper]
@@ -1608,6 +1835,7 @@ unsigned int WRCompilationContext::resolveExpressionEx( WRExpression& expression
 
 			expression.context.remove( o - 1, 2 ); // knock off operator and arg
 			expression.pushToStack(o - 1);
+			expression.context[o - 1].temporary = resultTemporary;
 
 			break;
 		}
@@ -1622,6 +1850,25 @@ unsigned int WRCompilationContext::resolveExpressionEx( WRExpression& expression
 				return 0;
 			}
 
+			WROpcode postOpcode = expression.context[o].operation->opcode;
+			if ( wr_isAssignmentOpcode(postOpcode) && !wr_isAssignable(expression.context[o - 1]) )
+			{
+				m_err = WR_ERR_not_assignable;
+				return 0;
+			}
+
+			// an element of a variable is a variable, of a value a value;
+			// declarations and markers leave it alone, the rest yield values
+			bool resultTemporary = true;
+			if ( postOpcode == O_Index )
+			{
+				resultTemporary = !wr_isAssignable( expression.context[o - 1] );
+			}
+			else if ( postOpcode == O_InitArray || postOpcode == O_LAST )
+			{
+				resultTemporary = expression.context[o - 1].temporary;
+			}
+
 			if ( expression.context[o - 1].stackPosition == -1 )
 			{
 				loadExpressionContext( expression, o - 1, o ); // load argument
@@ -1634,6 +1881,7 @@ unsigned int WRCompilationContext::resolveExpressionEx( WRExpression& expression
 			appendBytecode( expression.bytecode, expression.context[o].bytecode );
 			expression.context.remove( o, 1 ); // knock off operator
 			expression.pushToStack( o - 1 );
+			expression.context[o - 1].temporary = resultTemporary;
 
 			break;
 		}
@@ -1672,6 +1920,9 @@ unsigned int WRCompilationContext::resolveExpressionEx( WRExpression& expression
 
 			expression.context.remove( o, 1 );
 			expression.pushToStack( o - 1 );
+			// the arms decide what the result is, (c ? a : b).x = 1 writes
+			// through to a or b
+			expression.context[o - 1].temporary = false;
 
 			break;
 		}
@@ -1731,6 +1982,7 @@ unsigned int WRCompilationContext::resolveExpressionEx( WRExpression& expression
 
 			expression.context.remove( o, 1 );
 			expression.pushToStack( o - 1 );
+			expression.context[o - 1].temporary = true; // the result is a value
 
 			break;
 		}
@@ -1778,6 +2030,7 @@ bool WRCompilationContext::parseCallFunction( WRExpression& expression, WRstr fu
 	WRstr prefix = expression.context[depth].prefix;
 
 	expression.context[depth].type = EXTYPE_BYTECODE_RESULT;
+	expression.context[depth].temporary = true; // a returned value, not a variable
 	
 	unsigned char argsPushed = 0;
 
@@ -2072,6 +2325,7 @@ int WRCompilationContext::parseInitializerBody( WRExpression& expression, int de
 	WRstr& token = expression.context[depth].token;
 
 	expression.context[depth].type = EXTYPE_BYTECODE_RESULT;
+	expression.context[depth].temporary = true;
 
 	pushOpcode( expression.context[depth].bytecode, O_LiteralZero ); // push the value we're going to create
 

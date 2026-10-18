@@ -106,12 +106,9 @@ int wr_operandSizeForOpcode( const uint8_t* opPtr, const uint8_t* end, const uin
 		case O_Dereference:
 		case O_Index:
 		case O_IndexSkipLoad:
+		case O_IndexCreate:
 		case O_CountOf:
 		case O_HashOf:
-		case O_LLValues:
-		case O_LGValues:
-		case O_GLValues:
-		case O_GGValues:
 		case O_BinaryRightShiftSkipLoad:
 		case O_BinaryLeftShiftSkipLoad:
 		case O_BinaryAndSkipLoad:
@@ -244,6 +241,10 @@ int wr_operandSizeForOpcode( const uint8_t* opPtr, const uint8_t* end, const uin
 		case O_SwapTwoToTop:
 		case O_GPushIterator:
 		case O_LPushIterator:
+		case O_LLValues: // two variable indexes
+		case O_LGValues:
+		case O_GLValues:
+		case O_GGValues:
 		{
 			return 2;
 		}
@@ -273,6 +274,7 @@ int wr_operandSizeForOpcode( const uint8_t* opPtr, const uint8_t* end, const uin
 		case O_LoadLibConstant:
 		case O_AssignToObjectTableByHash:
 		case O_StackIndexHash:
+		case O_StackIndexHashCreate:
 		{
 			return 4;
 		}
@@ -480,9 +482,17 @@ void wr_decodeOperands( const uint8_t op,
 						  (unsigned int)opPtr[0], (unsigned int)opPtr[1], (unsigned int)opPtr[2] );
 		return;
 	}
-	if ( op == O_LoadLibConstant || op == O_AssignToObjectTableByHash || op == O_StackIndexHash )
+	if ( op == O_LoadLibConstant || op == O_AssignToObjectTableByHash || op == O_StackIndexHash || op == O_StackIndexHashCreate )
 	{
 		ops.appendFormat( "hash=0x%08X", (unsigned int)READ_32_FROM_PC(opPtr) );
+		return;
+	}
+
+	if ( (op == O_LLValues || op == O_LGValues || op == O_GLValues || op == O_GGValues) && opLen >= 2 )
+	{
+		char first = (op == O_LLValues || op == O_LGValues) ? 'l' : 'g';
+		char second = (op == O_LLValues || op == O_GLValues) ? 'l' : 'g';
+		ops.appendFormat( "%c[0x%02X] %c[0x%02X]", first, (unsigned int)opPtr[0], second, (unsigned int)opPtr[1] );
 		return;
 	}
 

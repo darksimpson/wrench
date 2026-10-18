@@ -358,6 +358,11 @@ WRContext* wr_createContext( WRState* w, const unsigned char* block, const int b
 
 	uint8_t compilerFlags = READ_8_FROM_PC( block + 2 );
 
+	if ( !(compilerFlags & WR_READS_KEEP_VALUES) )
+	{
+		C->flags |= WRC_IndexConverts; // an older image keeps the old behaviour
+	}
+
 	if ( compilerFlags & WR_INCLUDE_GLOBALS )
 	{
 		C->codeStart += C->globals * sizeof(uint32_t); // these are lazily loaded, just skip over them for now
@@ -1751,6 +1756,8 @@ const char* c_opcodeName[] =
 
 	"Extended",
 
+	"IndexCreate",
+	"StackIndexHashCreate",
 };
 
 // names of the opcodes behind O_Extended, by WRExtendedOpcode
@@ -1837,6 +1844,8 @@ const char* c_errStrings[]=
 	"WR_ERR_yield_in_native_call",
 	"WR_ERR_too_many_arguments",
 	"WR_ERR_nesting_too_deep",
+	"WR_ERR_not_assignable",
+	"WR_ERR_member_of_literal",
 };
 
 #endif

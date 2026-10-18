@@ -111,8 +111,22 @@ void wr_doIndexHash( WRValue* index, WRValue* value, WRValue* target )
 }
 
 //------------------------------------------------------------------------------
+// only an element that is assigned to (O_IndexCreate), or any element in an
+// image from an older compiler, turns a value that is no container into one;
+// a read gives 0 and leaves the value alone
+static bool wr_indexMayCreate( WRContext* c )
+{
+	return (c->flags & (WRC_IndexConverts | WRC_IndexCreates)) != 0;
+}
+
 void doIndex_I_X( WRContext* c, WRValue* index, WRValue* value, WRValue* target )
 {
+	if ( !wr_indexMayCreate(c) )
+	{
+		target->init();
+		return;
+	}
+
 	// all we know is the value is not an array, so make it one
 	value->va = c->getSVA( index->ui + 1, SV_VALUE, true );
 #ifdef WRENCH_HANDLE_MALLOC_FAIL
@@ -159,6 +173,12 @@ void doIndex_I_E( WRContext* c, WRValue* index, WRValue* value, WRValue* target 
 		}
 		else if ( !(value->xtype == WR_EX_ARRAY) )
 		{
+			if ( !wr_indexMayCreate(c) )
+			{
+				target->init();
+				return;
+			}
+
 			// nope, make it one of this size and return a ref
 			WRValue* I = &index->deref();
 
@@ -213,6 +233,12 @@ boundsFailed:
 //------------------------------------------------------------------------------
 void doIndex_E_I( WRContext* c, WRValue* index, WRValue* value, WRValue* target )
 {
+	if ( !wr_indexMayCreate(c) )
+	{
+		target->init();
+		return;
+	}
+
 	// a float or int is being indexed, make it a hash table and "index" it
 	WRValue* V = &(value->deref());
 

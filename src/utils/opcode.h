@@ -337,6 +337,9 @@ enum WROpcode
 	// in WRExtendedOpcode
 	O_Extended,
 
+	O_IndexCreate, // an element access that is assigned to: may turn the value into an array or hash table
+	O_StackIndexHashCreate, // a member access that is assigned to: may turn the value into a hash table
+
 	// non-interpreted opcodes
 	O_HASH_PLACEHOLDER,
 	O_FUNCTION_CALL_PLACEHOLDER,

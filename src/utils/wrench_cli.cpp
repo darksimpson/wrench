@@ -1673,6 +1673,42 @@ bool testCompilerLimits()
 	ok = ok && compileOnly( "function f() { var a = 1;\na = 2;\nreturn a; }", WR_INCLUDE_GLOBALS | WR_EMBED_DEBUG_CODE, &listing ) == WR_ERR_None;
 	ok = ok && listing.find( "imm=0x01" ) != WRstr::npos;
 
+	// a literal, a call result or a computed value cannot be assigned to
+	const char* notAssignable[] =
+	{
+		"3 = 4;",
+		"5++;",
+		"++3;",
+		"\"s\" += 1;",
+		"var a = 1; var b = 2; a + b = 7;",
+		"var a = 1; -a = 5;",
+		"function f() { return 3; } f() = 4;",
+		"struct S { var x; } var t = new S; function ft() { return t; } ft().x = 4;",
+		"struct S { var x; } var t = new S; function ft() { return t; } ft().x++;",
+		"var arr[] = { 1 }; function fa() { return arr; } fa()[0] = 9;",
+		"var h = { \"k\":1 }; function fh() { return h; } fh().k += 8;",
+		"(5) = 3;",
+		"struct S { var x; } var t = new S; function ft() { return t; } (ft()).x = 4;",
+		"io::O_CREAT = 3;",
+		0
+	};
+	for( int i=0; notAssignable[i]; ++i )
+	{
+		ok = ok && compileOnly( notAssignable[i] ) == WR_ERR_not_assignable;
+	}
+
+	// variables, members and elements still are, also through parentheses
+	// or a ternary, which write through
+	ok = ok && compileOnly( "struct S { var x; } var t = new S; var u = new S; var c = 1;"
+							"var arr[] = { 1, 2 }; var h = { \"k\":1 }; var m = { \"a\": { \"b\": 1 } };"
+							"(t).x = 2; (c ? t : u).x = 3; arr[1] = 5; h.k = 6; t.x++; arr[0] += 2; m.a.b = 9; (c) = 2;" ) == WR_ERR_None;
+
+	// a literal has no members, its count and characters stay readable
+	ok = ok && compileOnly( "var n = \"abc\".length;" ) == WR_ERR_member_of_literal;
+	ok = ok && compileOnly( "var n = 'c'.x;" ) == WR_ERR_member_of_literal;
+	ok = ok && compileOnly( "var n = io::O_CREAT.x;" ) == WR_ERR_member_of_literal;
+	ok = ok && compileOnly( "var n = \"abc\"._count; var c = \"abc\"[1];" ) == WR_ERR_None;
+
 	printf( ok ? "PASS\n" : "FAIL\n" );
 	return ok;
 }

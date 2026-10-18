@@ -681,6 +681,8 @@ WRValue* wr_callFunction( WRContext* context, WRFunction* function, const WRValu
 		&&GlobalBZ8,
 
 		&&Extended,
+		&&IndexCreate,
+		&&StackIndexHashCreate,
 	};
 #endif
 
@@ -1416,6 +1418,17 @@ callFunction:
 				FASTCONTINUE;
 			}
 
+			CASE(IndexCreate):
+			{
+				// the element is assigned to, its value may become a container
+				register0 = --stackTop;
+				register1 = --stackTop;
+				context->flags |= WRC_IndexCreates;
+				wr_index[(register0->type<<2)|register1->type]( context, register0, register1, stackTop++ );
+				context->flags &= ~WRC_IndexCreates;
+				CONTINUE;
+			}
+
 			CASE(Index):
 			{
 				register0 = --stackTop;
@@ -1459,15 +1472,45 @@ callFunction:
 				goto hashIndexJump;
 			}
 
+			CASE(StackIndexHashCreate):
+			{
+				// the member is assigned to: a value that is no container
+				// becomes a hash table first
+				register0 = &(stackTop - 1)->deref();
+				if ( !EXPECTS_HASH_INDEX(register0->xtype) )
+				{
+					// typed only once the table exists (see InitArray)
+					WRGCObject* table = context->getSVA( 0, SV_HASH_TABLE, false );
+					if ( !table )
+					{
+						register0->init();
+						WR_VM_FAIL( WR_ERR_malloc_failed );
+					}
+					register0->va = table;
+					register0->p2 = INIT_AS_HASH_TABLE;
+					context->gc( stackTop );
+				}
+				register1 = register0;
+				goto hashIndexJump;
+			}
+
 			CASE(StackIndexHash):
 			{
 				register0 = &(stackTop - 1)->deref();
 				register1 = register0;
-hashIndexJump:				
+hashIndexJump:
 				stackTop->ui = READ_32_FROM_PC(pc);
 				pc += 4;
 				if ( !EXPECTS_HASH_INDEX(register0->xtype) )
 				{
+					if ( !(context->flags & WRC_IndexConverts) )
+					{
+						// reading a member of a value that is no container:
+						// 0, and the value stays what it was
+						(stackTop - 1)->init();
+						CONTINUE;
+					}
+
 					// typed only once the table exists (see InitArray)
 					WRGCObject* table = context->getSVA( 0, SV_HASH_TABLE, false );
 					if ( !table )
@@ -1743,7 +1786,10 @@ doAssignToLocalAndPop:
 				register1 = stackTop - 1; // value
 				register0 = stackTop - 2; // array
 
+				// an initializer builds its array, so this access may create it
+				context->flags |= WRC_IndexCreates;
 				wr_index[(WR_INT<<2)|register0->type]( context, stackTop, register0, stackTop + 1 );
+				context->flags &= ~WRC_IndexCreates;
 				register0 = stackTop-- + 1;
 
 #ifdef WRENCH_COMPACT
