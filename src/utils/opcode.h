@@ -332,6 +332,11 @@ enum WROpcode
 	O_GlobalBZ,
 	O_GlobalBZ8,
 
+	// prefix: the next byte is a WRExtendedOpcode. Its value stays fixed, a
+	// new single byte opcode goes after it; rarely used new opcodes belong
+	// in WRExtendedOpcode
+	O_Extended,
+
 	// non-interpreted opcodes
 	O_HASH_PLACEHOLDER,
 	O_FUNCTION_CALL_PLACEHOLDER,
@@ -340,5 +345,16 @@ enum WROpcode
 };
 
 extern const char* c_opcodeName[];
+
+// the second opcode byte after O_Extended: one byte and one dispatch more
+// than a single byte opcode, for opcodes that are rarely executed
+enum WRExtendedOpcode
+{
+	OX_RelativeJump32 =0, // a jump that does not fit 16 bits: 32-bit relative vector
+
+	OX_LAST,
+};
+
+extern const char* c_extendedOpcodeName[];
 
 #endif

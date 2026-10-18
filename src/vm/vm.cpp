@@ -679,6 +679,8 @@ WRValue* wr_callFunction( WRContext* context, WRFunction* function, const WRValu
 		&&LocalBZ8,
 		&&GlobalBZ,
 		&&GlobalBZ8,
+
+		&&Extended,
 	};
 #endif
 
@@ -1571,6 +1573,25 @@ hashIndexJump:
 				pc += (int8_t)READ_8_FROM_PC(pc);
 				CHECK_FORCE_YIELD;
 				FASTCONTINUE;
+			}
+
+			CASE(Extended):
+			{
+				// the rarely executed opcodes, the second byte says which
+				switch( READ_8_FROM_PC(pc++) )
+				{
+					case OX_RelativeJump32:
+					{
+						pc += READ_32_FROM_PC(pc);
+						CHECK_FORCE_YIELD;
+						FASTCONTINUE;
+					}
+
+					default:
+					{
+						WR_VM_FAIL( WR_ERR_unknown_opcode );
+					}
+				}
 			}
 
 			CASE(BZ):

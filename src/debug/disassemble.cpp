@@ -78,6 +78,17 @@ const char* wr_safeOpcodeName( const uint8_t op )
 	return (op < O_HASH_PLACEHOLDER) ? c_opcodeName[op] : "<meta>";
 }
 
+// the name of the instruction at "opPtr - 1": an extended one is named by its
+// second byte
+static const char* wr_instructionName( const uint8_t op, const uint8_t* opPtr, const uint8_t* end )
+{
+	if ( op == O_Extended && opPtr < end && opPtr[0] < OX_LAST )
+	{
+		return c_extendedOpcodeName[opPtr[0]];
+	}
+	return wr_safeOpcodeName( op );
+}
+
 //------------------------------------------------------------------------------
 int wr_operandSizeForOpcode( const uint8_t* opPtr, const uint8_t* end, const uint8_t op )
 {
@@ -264,6 +275,27 @@ int wr_operandSizeForOpcode( const uint8_t* opPtr, const uint8_t* end, const uin
 		case O_StackIndexHash:
 		{
 			return 4;
+		}
+
+		case O_Extended:
+		{
+			// the second opcode byte, then its own operands
+			if ( opPtr >= end )
+			{
+				return -1;
+			}
+			switch( opPtr[0] )
+			{
+				case OX_RelativeJump32:
+				{
+					return 5;
+				}
+
+				default:
+				{
+					return -1;
+				}
+			}
 		}
 
 		case O_LiteralInt32ToLocal:
@@ -501,6 +533,14 @@ void wr_decodeOperands( const uint8_t op,
 		return;
 	}
 
+	if ( op == O_Extended && opLen >= 5 && opPtr[0] == OX_RelativeJump32 )
+	{
+		// relative to the vector, which follows the two opcode bytes
+		int rel32 = (int)READ_32_FROM_PC(opPtr + 1);
+		ops.appendFormat( "rel32=0x%08X ->0x%04X", (unsigned int)rel32, (unsigned int)(instOffset + 2 + rel32) );
+		return;
+	}
+
 	if ( op == O_RelativeJump || op == O_BZ
 		 || (wr_startsWith(name, "CompareB") && !wr_endsWith(name, "8"))
 		 || (wr_startsWith(name, "BLA") && !wr_endsWith(name, "8"))
@@ -702,7 +742,7 @@ void wr_disassembleRange( WRstr& out,
 
 		out.appendFormat( "  %04X: ", (unsigned int)(inst - base) );
 		wr_appendBytes( out, inst, opLen + 1 );
-		out.appendFormat( "%-30s ", wr_safeOpcodeName(op) );
+		out.appendFormat( "%-30s ", wr_instructionName(op, pc, end) );
 		out.appendFormat( "%-44s", ops.c_str() );
 		if ( includeComments && note.size() && op != O_LiteralString )
 		{

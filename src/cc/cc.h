@@ -168,16 +168,33 @@ struct BytecodeJumpOffset
 {
 	int offset;
 	WRarray<int> references;
+	WRarray<uint32_t> keys; // per reference: which jump it is (see nextJumpKey)
 	uint32_t gotoHash;
-	
+
 	BytecodeJumpOffset() : offset(0), gotoHash(0) {}
 };
+
+// the key of a jump the compiler adds for itself next to its target, which
+// never needs a long form
+const uint32_t c_nearJumpKey = 0xFFFFFFFF;
+
+// a long jump is O_Extended, OX_RelativeJump32 and a 32-bit vector: true when
+// "vector" is the offset of such a vector (the byte in front of a near jump's
+// vector is its opcode, never 0 as OX_RelativeJump32 is)
+const int c_longJumpSize = 6;
+
+inline bool wr_isLongJumpVector( WROpcodeStream& all, int vector )
+{
+	return vector >= 2 && all[vector - 1] == OX_RelativeJump32 && all[vector - 2] == O_Extended;
+}
 
 //------------------------------------------------------------------------------
 struct GotoSource
 {
 	uint32_t hash;
 	int offset;
+	uint32_t key;
+	bool isLong; // 6 bytes reserved for an extended long jump, else 3
 };
 
 //------------------------------------------------------------------------------
@@ -458,7 +475,22 @@ public:
 	int m_errLine;
 	int m_errColumn;
 
+	// relative jumps are 16 bit; one that turns out farther is recorded and
+	// the source compiled again, emitting that jump in a long form (see
+	// wr_compileEx). Input: the keys to emit long; output: new ones found
+	WRarray<uint32_t> m_longJumps;
+	bool m_newLongJumps;
+	bool m_lastLongJumpPass; // a jump still too far is an error then
+
 private:
+
+	uint32_t nextJumpKey();
+	bool isLongJump( uint32_t key );
+	void needLongJump( uint32_t key );
+	void addLongJumpSource( WRBytecode& bytecode, WROpcode opcode, int relativeJumpTarget, const unsigned char* data, const int dataSize );
+	void addNearJumpSource( WRBytecode& bytecode, WROpcode opcode, int relativeJumpTarget, const unsigned char* data, const int dataSize, uint32_t key );
+	int m_jumpKeyPos;
+	int m_jumpKeyIndex;
 
 	void checkNamesAsHashes();
 	WRarray<WRNameAsHash> m_namesAsHashes;

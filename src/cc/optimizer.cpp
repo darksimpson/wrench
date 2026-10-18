@@ -1612,6 +1612,8 @@ void WRCompilationContext::appendBytecode( WRBytecode& bytecode, WRBytecode& add
 		GotoSource* G = &bytecode.gotoSource.append();
 		G->hash = addMe.gotoSource[u].hash;
 		G->offset = addMe.gotoSource[u].offset + bytecode.all.size();
+		G->key = addMe.gotoSource[u].key;
+		G->isLong = addMe.gotoSource[u].isLong;
 	}
 
 	if ( bytecode.all.size() > 1

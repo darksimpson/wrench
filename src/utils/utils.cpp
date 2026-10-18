@@ -1748,6 +1748,15 @@ const char* c_opcodeName[] =
 	"LocalBZ8",
 	"GlobalBZ",
 	"GlobalBZ8",
+
+	"Extended",
+
+};
+
+// names of the opcodes behind O_Extended, by WRExtendedOpcode
+const char* c_extendedOpcodeName[] =
+{
+	"RelativeJump32",
 };
 
 //------------------------------------------------------------------------------

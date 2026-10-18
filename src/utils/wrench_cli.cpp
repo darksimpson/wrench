@@ -1677,6 +1677,100 @@ bool testCompilerLimits()
 	return ok;
 }
 
+static WRstr manyStatements( int count )
+{
+	WRstr s;
+	for( int i=0; i<count; ++i )
+	{
+		s += "a = a + 3;\n";
+	}
+	return s;
+}
+
+// compiles and runs the program, then compares an integer global
+static bool globalAfterRun( WRstr const& src, const char* global, int expected )
+{
+	unsigned char* out = 0;
+	int outLen = 0;
+	if ( wr_compile(src.c_str(), src.size(), &out, &outLen, 0, WR_INCLUDE_GLOBALS) != WR_ERR_None )
+	{
+		return false;
+	}
+
+	WRState* w = wr_newState();
+	WRContext* context = wr_run( w, out, outLen, true );
+	WRValue* value = context ? wr_getGlobalRef( context, global ) : 0;
+	bool ok = value && value->asInt() == expected;
+	wr_destroyState( w );
+	return ok;
+}
+
+bool testLongJumps()
+{
+	printf( "test [-][jumps and switches farther than 16 bits]: " );
+	bool ok = true;
+
+	// 9000 statements are about 54KB of code to jump over
+	WRstr big = manyStatements( 9000 );
+	WRstr half = manyStatements( 4500 );
+	WRstr part = manyStatements( 3500 );
+	WRstr small = manyStatements( 1500 );
+
+	WRstr src;
+	src = "var a = 0; var s = 0; for( var i = 0; i < 2; ++i ) { if ( i == 1 ) { continue; }\n";
+	src += big;
+	src += "s++; }";
+	ok = ok && globalAfterRun( src, "a", 27000 ) && globalAfterRun( src, "s", 1 );
+
+	WRstr listing;
+	ok = ok && compileOnly( src, WR_INCLUDE_GLOBALS, &listing ) == WR_ERR_None;
+	ok = ok && listing.find( "RelativeJump32" ) != WRstr::npos;
+
+	src = "var a = 0; var c = 0; if ( c ) {\n";
+	src += half;
+	src += "} else { a = -1; }\nif ( !c ) {\n";
+	src += half;
+	src += "}";
+	ok = ok && globalAfterRun( src, "a", 13499 );
+
+	src = "var a = 0; var n = 0; while ( n < 2 ) { n++; if ( n == 3 ) { break; }\n";
+	src += big;
+	src += "}";
+	ok = ok && globalAfterRun( src, "a", 54000 );
+
+	src = "var a = 0; var arr[] = { 1, 2 }; var e; for( e : arr ) {\n";
+	src += big;
+	src += "}";
+	ok = ok && globalAfterRun( src, "a", 54000 );
+
+	src = "var a = 0; goto skip;\n";
+	src += big;
+	src += "skip:\na = a + 1;";
+	ok = ok && globalAfterRun( src, "a", 1 );
+
+	// far cases reached through trampolines after the switch table
+	src = "var a = 0; var k = 0; var r = 0; while( k < 3 ) { switch( k ) { case 0: r += 1;\n";
+	src += part;
+	src += "break; case 1: r += 10;\n";
+	src += part;
+	src += "break; default: r += 100;\n";
+	src += small;
+	src += "} k++; }";
+	ok = ok && globalAfterRun( src, "r", 111 );
+
+	src = "var a = 0; var r = 0; var h = 7777; switch( h ) { case 7777: r = 7;\n";
+	src += big;
+	src += "break; case 12345: r = 9; break; }";
+	ok = ok && globalAfterRun( src, "r", 7 );
+
+	// a near jump stays 16 bits
+	ok = ok && compileOnly( "var a = 0; while( a < 3 ) { a++; }", WR_INCLUDE_GLOBALS, &listing ) == WR_ERR_None;
+	ok = ok && listing.find( "RelativeJump32" ) == WRstr::npos;
+
+	printf( ok ? "PASS\n" : "FAIL\n" );
+	return ok;
+}
+
 //------------------------------------------------------------------------------
 void testLibFunctionNotFoundErrors()
 {
@@ -2423,6 +2517,10 @@ int runTests( const char* testDir, int number )
 		++failures;
 	}
 	if ( !testCompilerLimits() )
+	{
+		++failures;
+	}
+	if ( !testLongJumps() )
 	{
 		++failures;
 	}

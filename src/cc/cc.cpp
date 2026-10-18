@@ -85,6 +85,9 @@ WRError WRCompilationContext::compile( const char* source,
 	m_unitTop = 0;
 	m_foreachHash = 0;
 	m_parseDepth = 0;
+	m_newLongJumps = false; // m_longJumps and m_lastLongJumpPass come from the caller
+	m_jumpKeyPos = -1;
+	m_jumpKeyIndex = 0;
 
 	m_units.setCount(1);
 	m_namesAsHashes.setCount(0);
@@ -162,6 +165,20 @@ WRError WRCompilationContext::compile( const char* source,
 	pushOpcode( m_units[0].bytecode, O_Stop );
 
 	link( out, outLen, compilerOptionFlags );
+
+	if ( !m_err && m_newLongJumps )
+	{
+		// the image has 16-bit jumps that do not reach, it is only good for
+		// finding them: the caller compiles again with them in long form
+		g_free( *out );
+		*out = 0;
+		*outLen = 0;
+		if ( m_lastLongJumpPass )
+		{
+			m_err = WR_ERR_bad_goto_location;
+		}
+	}
+
 	if ( m_err )
 	{
 		printf( "link error: %s[%d]\n", c_errStrings[m_err], m_err );
@@ -205,15 +222,7 @@ WRError wr_compile( const char* source,
 					WRstr* errMsg,
 					const uint8_t compilerOptionFlags )
 {
-	assert( sizeof(float) == 4 );
-	assert( sizeof(int) == 4 );
-	assert( sizeof(char) == 1 );
-	assert( O_LAST < 255 );
-
-	// create a compiler context that has all the necessary stuff so it's completely unloaded when complete
-	WRCompilationContext comp;
-
-	return comp.compile( source, size, out, outLen, errMsg, compilerOptionFlags );
+	return wr_compileEx( source, size, out, outLen, errMsg, compilerOptionFlags, 0, 0 );
 }
 
 WRError wr_compileEx( const char* source,
@@ -225,16 +234,42 @@ WRError wr_compileEx( const char* source,
 	int* errorLine,
 	int* errorColumn )
 {
-	WRCompilationContext comp;
-	WRError err = comp.compile( source, size, out, outLen, errMsg, compilerOptionFlags );
-	if ( errorLine )
+	assert( sizeof(float) == 4 );
+	assert( sizeof(int) == 4 );
+	assert( sizeof(char) == 1 );
+	assert( O_LAST <= 255 ); // every opcode, the compile-time placeholders included, is one byte
+
+	// a program whose jumps all fit 16 bits compiles in one pass; each further
+	// pass emits the jumps found too far in a long form, which can push other
+	// jumps out of reach, so a few passes may be needed
+	const int maxPasses = 8;
+	WRarray<uint32_t> longJumps;
+	WRError err = WR_ERR_None;
+	for( int pass = 0; pass < maxPasses; ++pass )
 	{
-		*errorLine = comp.m_errLine;
+		// a fresh compiler context per pass, completely unloaded when complete
+		WRCompilationContext comp;
+		comp.m_longJumps = longJumps;
+		comp.m_lastLongJumpPass = (pass == maxPasses - 1);
+
+		err = comp.compile( source, size, out, outLen, errMsg, compilerOptionFlags );
+		if ( errorLine )
+		{
+			*errorLine = comp.m_errLine;
+		}
+		if ( errorColumn )
+		{
+			*errorColumn = comp.m_errColumn;
+		}
+
+		if ( err || !comp.m_newLongJumps )
+		{
+			break;
+		}
+
+		longJumps = comp.m_longJumps;
 	}
-	if ( errorColumn )
-	{
-		*errorColumn = comp.m_errColumn;
-	}
+
 	return err;
 }
 
@@ -427,6 +462,7 @@ int WRCompilationContext::addRelativeJumpTarget( WRBytecode& bytecode )
 {
 	BytecodeJumpOffset& J = bytecode.jumpOffsetTargets.append();
 	J.references.clear();
+	J.keys.clear();
 	J.offset = -1; // not yet placed
 	J.gotoHash = 0;
 	return bytecode.jumpOffsetTargets.count() - 1;
@@ -439,28 +475,107 @@ void WRCompilationContext::setRelativeJumpTarget( WRBytecode& bytecode, int rela
 	bytecode.opcodes.clear(); // basic-block boundary: keyhole must not merge across it
 }
 
+// a jump is known by where in the source it was emitted, which stays the same
+// when an earlier jump changes size in the next pass
+uint32_t WRCompilationContext::nextJumpKey()
+{
+	if ( m_pos != m_jumpKeyPos )
+	{
+		m_jumpKeyPos = m_pos;
+		m_jumpKeyIndex = 0;
+	}
+	return ((uint32_t)m_pos << 8) | (uint32_t)(m_jumpKeyIndex++ & 0xFF);
+}
+
+bool WRCompilationContext::isLongJump( uint32_t key )
+{
+	for( unsigned int i=0; i<m_longJumps.count(); ++i )
+	{
+		if ( m_longJumps[i] == key )
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+void WRCompilationContext::needLongJump( uint32_t key )
+{
+	if ( !isLongJump(key) )
+	{
+		m_longJumps.append() = key;
+	}
+	m_newLongJumps = true;
+}
+
+// a jump farther than 16 bits: an unconditional one becomes the extended
+// OX_RelativeJump32, a conditional one keeps its form and reaches a long jump
+// next to it
+//     branch tramp; jump over; tramp: jump32 target; over:
+void WRCompilationContext::addLongJumpSource( WRBytecode& bytecode, WROpcode opcode, int relativeJumpTarget, const unsigned char* data, const int dataSize )
+{
+	int over = -1;
+	if ( opcode != O_RelativeJump || data )
+	{
+		int tramp = addRelativeJumpTarget( bytecode );
+		over = addRelativeJumpTarget( bytecode );
+		addNearJumpSource( bytecode, opcode, tramp, data, dataSize, c_nearJumpKey );
+		addNearJumpSource( bytecode, O_RelativeJump, over, 0, 0, c_nearJumpKey );
+		setRelativeJumpTarget( bytecode, tramp );
+	}
+
+	pushOpcode( bytecode, O_Extended );
+	unsigned char extended = OX_RelativeJump32;
+	pushData( bytecode, &extended, 1 );
+	bytecode.jumpOffsetTargets[relativeJumpTarget].references.append() = bytecode.all.size();
+	bytecode.jumpOffsetTargets[relativeJumpTarget].keys.append() = c_nearJumpKey;
+	pushData( bytecode, "\0\0\0\0", 4 ); // 32-bit relative vector
+
+	if ( over != -1 )
+	{
+		setRelativeJumpTarget( bytecode, over );
+	}
+}
+
 //------------------------------------------------------------------------------
 void WRCompilationContext::addRelativeJumpSourceEx( WRBytecode& bytecode, WROpcode opcode, int relativeJumpTarget, const unsigned char* data, const int dataSize )
 {
-	pushOpcode( bytecode, opcode );
-
-	int offset = bytecode.all.size();
-	
-	if ( dataSize ) // additional data
+	uint32_t key = nextJumpKey();
+	if ( isLongJump(key) )
 	{
-		pushData( bytecode, data, dataSize );
+		addLongJumpSource( bytecode, opcode, relativeJumpTarget, data, dataSize );
 	}
-
-	bytecode.jumpOffsetTargets[relativeJumpTarget].references.append() = offset;
-
-	pushData( bytecode, "\t\t", 2 ); // 16-bit relative vector
+	else
+	{
+		addNearJumpSource( bytecode, opcode, relativeJumpTarget, data, dataSize, key );
+	}
 }
-
 
 //------------------------------------------------------------------------------
 // add a jump FROM with whatever opcode is supposed to do it
 void WRCompilationContext::addRelativeJumpSource( WRBytecode& bytecode, WROpcode opcode, int relativeJumpTarget )
 {
+	addRelativeJumpSourceEx( bytecode, opcode, relativeJumpTarget, 0, 0 );
+}
+
+// a jump with a 16-bit relative vector (resolveRelativeJumps picks 8 bits
+// when it fits); "data" goes between the opcode and the vector
+void WRCompilationContext::addNearJumpSource( WRBytecode& bytecode, WROpcode opcode, int relativeJumpTarget, const unsigned char* data, const int dataSize, uint32_t key )
+{
+	if ( data )
+	{
+		pushOpcode( bytecode, opcode );
+
+		int dataOffset = bytecode.all.size();
+		pushData( bytecode, data, dataSize );
+
+		bytecode.jumpOffsetTargets[relativeJumpTarget].references.append() = dataOffset;
+		bytecode.jumpOffsetTargets[relativeJumpTarget].keys.append() = key;
+
+		pushData( bytecode, "\t\t", 2 ); // 16-bit relative vector
+		return;
+	}
+
 	pushOpcode( bytecode, opcode );
 
 	int offset = bytecode.all.size();
@@ -506,6 +621,7 @@ void WRCompilationContext::addRelativeJumpSource( WRBytecode& bytecode, WROpcode
 	}
 	
 	bytecode.jumpOffsetTargets[relativeJumpTarget].references.append() = offset;
+	bytecode.jumpOffsetTargets[relativeJumpTarget].keys.append() = key;
 	pushData( bytecode, "\t\t", 2 );
 }
 
@@ -526,6 +642,12 @@ void WRCompilationContext::resolveRelativeJumps( WRBytecode& bytecode )
 			int offset = bytecode.jumpOffsetTargets[j].references[t];
 			WROpcode o = (WROpcode)bytecode.all[offset - 1];
 			bool no8version = false;
+
+			if ( wr_isLongJumpVector(bytecode.all, offset) )
+			{
+				wr_pack32( (uint32_t)diff, bytecode.all.p_str(offset) );
+				continue;
+			}
 
 			switch( o )
 			{
@@ -718,8 +840,17 @@ void WRCompilationContext::resolveRelativeJumps( WRBytecode& bytecode )
 			{
 				if ( diff < -32768 || diff > 32767 )
 				{
-					m_err = WR_ERR_bad_goto_location;
-					return;
+					// too far for 16 bits: the next pass emits this jump long
+					uint32_t key = (t < bytecode.jumpOffsetTargets[j].keys.count())
+									? bytecode.jumpOffsetTargets[j].keys[t]
+									: c_nearJumpKey;
+					if ( key == c_nearJumpKey )
+					{
+						m_err = WR_ERR_bad_goto_location;
+						return;
+					}
+					needLongJump( key );
+					continue;
 				}
 				switch( o )
 				{
@@ -3025,8 +3156,47 @@ struct WRSwitchCase
 	uint32_t hash; // hash to get this case
 	bool occupied; // null hash is legal and common, must mark occupation of a node with extra flag
 	bool defaultCase;
-	int16_t jumpOffset; // where to go to get to this case
+	int jumpOffset; // where to go to get to this case
 };
+
+// the 16-bit vector from the switch table (at "base") to a case; a case
+// farther away is reached through a long jump placed after the table (at
+// tableEnd, c_longJumpSize bytes each), shared by all vectors to the same case
+static int wr_switchVector( int target, int base, int tableEnd, WRarray<int>& trampolines )
+{
+	int vector = target - base;
+	if ( vector >= -32768 && vector <= 32767 )
+	{
+		return vector;
+	}
+
+	unsigned int t = 0;
+	for( ; t<trampolines.count(); ++t )
+	{
+		if ( trampolines[t] == target )
+		{
+			break;
+		}
+	}
+	if ( t == trampolines.count() )
+	{
+		trampolines.append() = target;
+	}
+	return (tableEnd + c_longJumpSize*(int)t) - base;
+}
+
+static void wr_pushSwitchTrampolines( WRBytecode& bytecode, WRarray<int>& trampolines )
+{
+	unsigned char data[c_longJumpSize];
+	for( unsigned int t=0; t<trampolines.count(); ++t )
+	{
+		int at = bytecode.all.size();
+		data[0] = O_Extended;
+		data[1] = OX_RelativeJump32;
+		wr_pack32( (uint32_t)(trampolines[t] - (at + 2)), data + 2 ); // relative to the vector
+		bytecode.all.append( data, c_longJumpSize );
+	}
+}
 
 //------------------------------------------------------------------------------
 bool WRCompilationContext::parseSwitch( WROpcode opcodeToReturn )
@@ -3061,7 +3231,7 @@ bool WRCompilationContext::parseSwitch( WROpcode opcodeToReturn )
 	}
 
 	WRarray<WRSwitchCase> cases;
-	int16_t defaultOffset = -1;
+	int defaultOffset = -1;
 	WRSwitchCase* swCase = 0; // current case
 
 	int defaultCaseJumpTarget = addRelativeJumpTarget( m_units[m_unitTop].bytecode );
@@ -3168,8 +3338,10 @@ bool WRCompilationContext::parseSwitch( WROpcode opcodeToReturn )
 	// selection logic is skipped at the end of the last case/default
 	WRBytecode& switchCode = m_units[m_unitTop].bytecode;
 	BytecodeJumpOffset& breakTarget = switchCode.jumpOffsetTargets[*m_breakTargets.tail()];
-	bool endsWithBreak = breakTarget.references.count()
-							&& breakTarget.references[breakTarget.references.count() - 1] == (int)switchCode.all.size() - 2;
+	int lastBreak = breakTarget.references.count() ? breakTarget.references[breakTarget.references.count() - 1] : -1;
+	int codeEnd = (int)switchCode.all.size();
+	bool endsWithBreak = lastBreak == codeEnd - 2
+							|| (lastBreak == codeEnd - 4 && wr_isLongJumpVector(switchCode.all, lastBreak));
 
 	// a break that ends the code only counts if nothing jumps past it to the
 	// end, like the false branch of "if ( x ) { break; }" does
@@ -3218,6 +3390,8 @@ bool WRCompilationContext::parseSwitch( WROpcode opcodeToReturn )
 
 	WRSwitchCase* table = 0;
 	unsigned char packbuf[4];
+	WRarray<int> trampolines; // far cases, see wr_switchVector
+	int tableBase = 0;
 
 	if ( size < 254 ) // cases are labeled 0-254, just use a linear jump table
 	{
@@ -3227,15 +3401,8 @@ bool WRCompilationContext::parseSwitch( WROpcode opcodeToReturn )
 		pushData( m_units[m_unitTop].bytecode, packbuf, 1 ); // size
 
 		int currentPos = m_units[m_unitTop].bytecode.all.size();
-
-		if ( defaultOffset == -1 )
-		{
-			defaultOffset = size*2 + 2;
-		}
-		else
-		{
-			defaultOffset -= currentPos;
-		}
+		tableBase = currentPos;
+		int tableEnd = currentPos + 2 + size*2;
 
 		table = (WRSwitchCase *)g_malloc(size * sizeof(WRSwitchCase));
 		memset( table, 0, size*sizeof(WRSwitchCase) );
@@ -3246,11 +3413,22 @@ bool WRCompilationContext::parseSwitch( WROpcode opcodeToReturn )
 			{
 				if ( cases[hash].occupied && !cases[hash].defaultCase && (cases[hash].hash == i) )
 				{
-					table[cases[hash].hash].jumpOffset = cases[hash].jumpOffset - currentPos;
+					table[cases[hash].hash].jumpOffset = wr_switchVector( cases[hash].jumpOffset, currentPos, tableEnd, trampolines );
 					table[cases[hash].hash].occupied = true;
 					break;
 				}
 			}
+		}
+
+		// without a default the switch continues after the table and its
+		// trampolines
+		if ( defaultOffset == -1 )
+		{
+			defaultOffset = (tableEnd + c_longJumpSize*(int)trampolines.count()) - currentPos;
+		}
+		else
+		{
+			defaultOffset = wr_switchVector( defaultOffset, currentPos, tableEnd, trampolines );
 		}
 
 		pushData( m_units[m_unitTop].bytecode, wr_pack16(defaultOffset, packbuf), 2 );
@@ -3272,6 +3450,7 @@ bool WRCompilationContext::parseSwitch( WROpcode opcodeToReturn )
 		pushOpcode( m_units[m_unitTop].bytecode, O_Switch ); // add switch command
 
 		int currentPos = m_units[m_unitTop].bytecode.all.size();
+		tableBase = currentPos;
 
 		// find a suitable mod
 		uint16_t mod = 1;
@@ -3294,7 +3473,7 @@ bool WRCompilationContext::parseSwitch( WROpcode opcodeToReturn )
 				}
 
 				table[cases[c].hash % mod].hash = cases[c].hash;
-				table[cases[c].hash % mod].jumpOffset = cases[c].jumpOffset - currentPos;
+				table[cases[c].hash % mod].jumpOffset = cases[c].jumpOffset; // made a vector below
 				table[cases[c].hash % mod].occupied = true;
 			}
 
@@ -3315,13 +3494,24 @@ bool WRCompilationContext::parseSwitch( WROpcode opcodeToReturn )
 			return false;
 		}
 
+		int tableEnd = currentPos + 4 + mod*6;
+		for( uint16_t m = 0; m<mod; ++m )
+		{
+			if ( table[m].occupied )
+			{
+				table[m].jumpOffset = wr_switchVector( table[m].jumpOffset, currentPos, tableEnd, trampolines );
+			}
+		}
+
+		// without a default the switch continues after the table and its
+		// trampolines
 		if ( defaultOffset == -1 )
 		{
-			defaultOffset = mod*6 + 4;
+			defaultOffset = (tableEnd + c_longJumpSize*(int)trampolines.count()) - currentPos;
 		}
 		else
 		{
-			defaultOffset -= currentPos;
+			defaultOffset = wr_switchVector( defaultOffset, currentPos, tableEnd, trampolines );
 		}
 
 		pushData( m_units[m_unitTop].bytecode, wr_pack16(mod, packbuf), 2 ); // mod value
@@ -3343,6 +3533,15 @@ bool WRCompilationContext::parseSwitch( WROpcode opcodeToReturn )
 	}
 
 	g_free( table );
+
+	wr_pushSwitchTrampolines( m_units[m_unitTop].bytecode, trampolines );
+
+	// every vector points into the table or the trampolines after it
+	if ( (int)m_units[m_unitTop].bytecode.all.size() - tableBase > 32767 )
+	{
+		m_err = WR_ERR_switch_construction_error;
+		return false;
+	}
 
 	setRelativeJumpTarget( m_units[m_unitTop].bytecode, *m_breakTargets.tail() );
 
@@ -3655,7 +3854,9 @@ bool WRCompilationContext::parseStatementBody( int unitIndex, char end, WROpcode
 			GotoSource& G = m_units[unitIndex].bytecode.gotoSource.append();
 			G.hash = wr_hashStr( token );
 			G.offset = m_units[unitIndex].bytecode.all.size();
-			pushData( m_units[unitIndex].bytecode, "\0\0\0", 3 );
+			G.key = nextJumpKey();
+			G.isLong = isLongJump( G.key ); // link() fills in the jump
+			pushData( m_units[unitIndex].bytecode, "\0\0\0\0\0\0", G.isLong ? c_longJumpSize : 3 );
 
 			if ( !getToken(ex, ";"))
 			{

@@ -291,23 +291,31 @@ void WRCompilationContext::link( unsigned char** out, int* outLen, const uint8_t
 			{
 				if ( m_units[u].bytecode.jumpOffsetTargets[j].gotoHash == m_units[u].bytecode.gotoSource[g].hash )
 				{
-					int diff = m_units[u].bytecode.jumpOffsetTargets[j].offset - m_units[u].bytecode.gotoSource[g].offset;
+					GotoSource& source = m_units[u].bytecode.gotoSource[g];
+					int diff = m_units[u].bytecode.jumpOffsetTargets[j].offset - source.offset;
 					diff -= 2;
-					if ( (diff < 128) && (diff > -129) )
+					if ( source.isLong )
 					{
-						*m_units[u].bytecode.all.p_str( m_units[u].bytecode.gotoSource[g].offset ) = (unsigned char)O_RelativeJump8;
-						*m_units[u].bytecode.all.p_str( m_units[u].bytecode.gotoSource[g].offset + 1 ) = diff;
+						// the vector follows two opcode bytes, one later than
+						// the 8 and 16 bit forms' vector the diff is made for
+						*m_units[u].bytecode.all.p_str( source.offset ) = (unsigned char)O_Extended;
+						*m_units[u].bytecode.all.p_str( source.offset + 1 ) = (unsigned char)OX_RelativeJump32;
+						wr_pack32( (uint32_t)(diff - 1), m_units[u].bytecode.all.p_str(source.offset + 2) );
+					}
+					else if ( (diff < 128) && (diff > -129) )
+					{
+						*m_units[u].bytecode.all.p_str( source.offset ) = (unsigned char)O_RelativeJump8;
+						*m_units[u].bytecode.all.p_str( source.offset + 1 ) = diff;
+					}
+					else if ( diff < -32768 || diff > 32767 )
+					{
+						// too far for 16 bits: the next pass reserves room for a long jump
+						needLongJump( source.key );
 					}
 					else
 					{
-						if ( diff < -32768 || diff > 32767 )
-						{
-							m_err = WR_ERR_bad_goto_location;
-							wr_freeNamespacePushes( namespaceLookups );
-							return;
-						}
-						*m_units[u].bytecode.all.p_str( m_units[u].bytecode.gotoSource[g].offset ) = (unsigned char)O_RelativeJump;
-						wr_pack16( (int16_t)diff, m_units[u].bytecode.all.p_str(m_units[u].bytecode.gotoSource[g].offset + 1) );
+						*m_units[u].bytecode.all.p_str( source.offset ) = (unsigned char)O_RelativeJump;
+						wr_pack16( (int16_t)diff, m_units[u].bytecode.all.p_str(source.offset + 1) );
 					}
 
 					break;
