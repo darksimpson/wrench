@@ -143,10 +143,14 @@ depending on usage. (consumes 8 bytes per stack entry)
 #define WRENCH_MAX_PARSE_DEPTH 256
 #endif
 
-// this costs a small bit of overhead whenever the stack is used, for
-// most applications it is not necessary, but will protect against
-// things like infinite recursion
-//#define WRENCH_PROTECT_STACK_FROM_OVERFLOW
+// the value stack is checked on every push, so a deep expression or a
+// runaway recursion fails with WR_ERR_stack_overflow instead of writing
+// past the stack. The check costs a compare per push: define
+// WRENCH_UNPROTECTED_STACK to leave it out where every cycle counts and
+// the scripts are known to fit the stack
+#ifndef WRENCH_UNPROTECTED_STACK
+#define WRENCH_PROTECT_STACK_FROM_OVERFLOW
+#endif
 
 
 /************************************************************************
@@ -539,6 +543,10 @@ void wr_setAllocatedMemoryGCHint( WRState* w, const uint32_t bytes );
 // argn:          how many arguments it was called with
 // retVal:        this value will be passed back, default: integer zero
 // usr:           opaque pointer function was registered with
+// A callback (or a library function) fails the call, and stops the
+// script with that error, by setting c->w->err. That includes a call back
+// into the script that failed inside the callback: clear c->w->err to go
+// on after handling it.
 typedef void (*WR_C_CALLBACK)(WRContext* c, const WRValue* argv, const int argn, WRValue& retVal, void* usr );
 typedef void (*WR_C_CALLBACK_NOT_FOUND)( const uint32_t Signature, WRContext* c, const WRValue* argv, const int argn, WRValue& retVal, void* usr );
 

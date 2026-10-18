@@ -186,7 +186,7 @@ static void dumpStack( const WRValue* bottom, const WRValue* top )
 // nested call must start above the live stack, not on top of running frames.
 // It cannot yield (nothing could resume the native in between), so time
 // slices stay off for it and the caller's slice carries on afterwards
-#define WR_NATIVE_CALL( CALL ) \
+#define WR_NATIVE_INVOKE( CALL ) \
 { \
 	uint16_t wrSavedOffset = context->stackOffset; \
 	uint8_t wrSavedNative = context->flags & (uint8_t)WRC_InNative; \
@@ -197,6 +197,16 @@ static void dumpStack( const WRValue* bottom, const WRValue* top )
 	WR_IMPORT_CALL_END \
 	context->flags = (uint8_t)((context->flags & ~(uint8_t)WRC_InNative) | wrSavedNative); \
 	context->stackOffset = wrSavedOffset; \
+}
+
+// a callback or library function fails the call by setting w->err
+#define WR_NATIVE_CALL( CALL ) \
+{ \
+	WR_NATIVE_INVOKE( CALL ); \
+	if ( w->err != WR_ERR_None ) \
+	{ \
+		WR_VM_FAIL( w->err ); \
+	} \
 }
 
 // fail the current call with a runtime error, giving an attached debugger the
@@ -215,7 +225,7 @@ static void dumpStack( const WRValue* bottom, const WRValue* top )
 	if ( HANDLER ) \
 	{ \
 		w->err = WR_ERR_None; \
-		WR_NATIVE_CALL( CALL ); \
+		WR_NATIVE_INVOKE( CALL ); \
 		if ( w->err != WR_ERR_None ) \
 		{ \
 			w->missingFunction = fhash; \
@@ -683,7 +693,18 @@ WRValue* wr_callFunction( WRContext* context, WRFunction* function, const WRValu
 		&&Extended,
 		&&IndexCreate,
 		&&StackIndexHashCreate,
+
+		// every byte value dispatches somewhere: the values no opcode has
+		// (the compile-time placeholders and beyond) fail cleanly
+		&&UnknownOpcode,
+		&&UnknownOpcode,
+		&&UnknownOpcode,
 	};
+
+	// one entry per byte value; an opcode added to the enum takes the place
+	// of one of the UnknownOpcode entries
+	(void)sizeof( char[(sizeof(opcodeJumptable) / sizeof(opcodeJumptable[0]) == 256) ? 1 : -1] );
+	(void)sizeof( char[(O_HASH_PLACEHOLDER == 253) ? 1 : -1] );
 #endif
 
 	const uint8_t* pc;
@@ -1212,11 +1233,6 @@ callFunction:
 					++stackTop;
 				}
 #endif
-				if ( w->err )
-				{
-					return 0;
-				}
-
 				CHECK_STACK;
 				CONTINUE;
 			}
@@ -1240,11 +1256,6 @@ callFunction:
 				pc += 4;
 
 				stackTop -= args;
-
-				if ( w->err )
-				{
-					return 0;
-				}
 
 				CONTINUE;
 			}
@@ -3414,10 +3425,14 @@ targetFuncStoreLocalOp:
 #endif//-------------------------------------------------------------------------------------------------------
 //-------------------------------------------------------------------------------------------------------------
 
-#ifndef WRENCH_JUMPTABLE_INTERPRETER
-	#ifdef _MSC_VER
-			default: __assume(0); // tells the compiler to make this a jump table
-	#endif
+#ifdef WRENCH_JUMPTABLE_INTERPRETER
+UnknownOpcode:
+			WR_VM_FAIL( WR_ERR_unknown_opcode ); // a byte no opcode has: corrupt bytecode
+#else
+			default:
+			{
+				WR_VM_FAIL( WR_ERR_unknown_opcode ); // a byte no opcode has: corrupt bytecode
+			}
 		}
 	}
 #endif

@@ -29,6 +29,8 @@ jobs:
             make: 'COMPACT=-DWRENCH_COMPACT'
           - name: really compact
             make: 'COMPACT="-DWRENCH_COMPACT -DWRENCH_REALLY_COMPACT"'
+          - name: unprotected stack
+            make: 'COMPACT=-DWRENCH_UNPROTECTED_STACK'
           - name: sanitizers
             make: 'OPT="-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined" LDFLAGS="-fsanitize=address,undefined"'
     steps:

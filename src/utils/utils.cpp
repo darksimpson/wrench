@@ -1224,7 +1224,9 @@ WRValue* wr_callFunction( WRContext* context, const int32_t hash, const WRValue*
 //------------------------------------------------------------------------------
 WRValue* wr_returnValueFromLastCall( WRContext* context )
 {
-	return context->stack; // this is where it ends up
+	// this is where it ends up; resolved like wr_callFunction's result, the
+	// raw slot can be a reference into a frame that has ended
+	return &(context->stack->deref());
 }
 
 //------------------------------------------------------------------------------
