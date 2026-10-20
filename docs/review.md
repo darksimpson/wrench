@@ -200,6 +200,21 @@ Debugger and tools:
   string, array or hash table belongs to the context that created them,
   and `wr_copyValue()` makes a deep copy owned by another context.
 
+## Found in the VM round, done
+
+`tests/037_strings_and_empty_tables.w` covers both.
+
+* Writing a character of a string (`s[1] = 'z'`, `s[0] += 1`, `s[1]++`)
+  changed a scratch copy: the element reference into a character array
+  fell through to `deref()`, which hands out a copy of the character. Every
+  string was affected, not only ones from literals. A write past the end
+  grew the string with zeros and lost the character; it is stored now.
+  Strings stay shared on assignment like arrays (`var t = s;` is a second
+  name for the same string, `t += "!"` builds a new one).
+* `{ }` compiled to the int 0, so a copy of it (`var g = e;`) was not the
+  same container once either was written. It is an empty array after
+  `var a[] =` and an empty hash table anywhere else (as `{ : }`).
+
 ## Open issues
 
 Language and compiler:
@@ -212,10 +227,6 @@ Language and compiler:
   number still replaces it with a container (`var n = 5; n.k = 1;`); only
   reads were changed. A runtime error there was considered and left out.
 * Reading an element past the end of an array grows the array.
-* `{ }` on its own yields the int 0, not an empty hash table.
-* A string variable assigned from a literal ignores writes to its
-  characters (`var s = "ab"; s[1] = 'z';` leaves "ab"), and a write past
-  its end grows it with zeros without storing the character.
 
 VM:
 

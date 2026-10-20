@@ -22,6 +22,8 @@ Language and compiler:
   WR_READS_KEEP_VALUES); a member of a literal is WR_ERR_member_of_literal
 - the disassembler and the debugger's line table took LLValues, LGValues, GLValues and
   GGValues for one byte instead of three
+- behaviour change: { } is an empty hash table (an empty array after "var a[] ="); it
+  was the int 0, so a copy of it was not the same container
 
 VM:
 - behaviour change: the stack is checked for overflow by default
@@ -43,6 +45,8 @@ VM:
   recursion, deep structures no longer exhaust a small native stack
 - new wr_copyValue() copies a value into another context; wrench.h documents which values
   belong to which context
+- writing a character of a string (s[1] = 'z', s[0] += 1, s[1]++) changed a copy and was
+  lost; a write past the end grew the string without storing the character
 
 Distribution:
 - the single file build (wrench.h + wrench.cpp) is no longer kept in git: the old

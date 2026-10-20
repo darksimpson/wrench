@@ -777,7 +777,13 @@ print( arrayOne[1] ); // will print "1"
 var arrayTwo[] = { "zero", 1, 3.55 };
 
 var blankArrayOfTen[10];
+
+var emptyArray[] = { }; // { } after [] is an empty array, anywhere else an empty hash table
 </code></pre>
+<p>Strings are arrays of characters: <code>s[0] = 'x';</code> changes the
+first one. Like arrays and hash tables they are shared when assigned, so
+<code>var t = s;</code> makes a second name for the same string, while
+<code>t += "!";</code> builds a new one.
 
 <p><b>for</b>
 
@@ -1039,6 +1045,10 @@ print( hashTable["str"] ); // 6
 
 // and this also works (syntactic sugar for string-keys only)
 print( hashTable.str ); // 6
+
+var empty = { }; // an empty hash table, also written { : }
+var same = empty; // tables are shared, not copied:
+same["k"] = 1; // empty._count is now 1
 </code></pre>
 
 <p><b>compiler-intrinsics</b>

@@ -2307,7 +2307,8 @@ int WRCompilationContext::parseInitializerBody( WRExpression& expression, int de
 {
 	bool inHashTable = false;
 	bool inArray = false;
-	
+	bool declaredArray = false;
+
 	// start a value ... was something declared in front of us?
 	if ( depth == 3
 		 && expression.context[0].type == EXTYPE_LABEL
@@ -2317,6 +2318,7 @@ int WRCompilationContext::parseInitializerBody( WRExpression& expression, int de
 	{
 		expression.context.remove( depth - 2, 1 );
 		depth -= 1;
+		declaredArray = true;
 	}
 
 	WRValue& value = expression.context[depth].value;
@@ -2490,6 +2492,25 @@ int WRCompilationContext::parseInitializerBody( WRExpression& expression, int de
 		{
 			m_err = WR_ERR_bad_expression;
 			return -1;
+		}
+	}
+
+	// "{ }" holds nothing that tells an array from a hash table: it is an
+	// empty array after "var a[] =", an empty hash table anywhere else (as
+	// "{ : }"), never the 0 it starts as, which a copy would not share
+	if ( initializer == 0 && !inHashTable )
+	{
+		pushOpcode( expression.context[depth].bytecode, O_LiteralZero );
+		if ( declaredArray )
+		{
+			pushOpcode( expression.context[depth].bytecode, O_InitArray );
+		}
+		else
+		{
+			pushOpcode( expression.context[depth].bytecode, O_LiteralZero );
+			pushOpcode( expression.context[depth].bytecode, O_AssignToHashTableAndPop );
+			pushOpcode( expression.context[depth].bytecode, O_LiteralZero );
+			pushOpcode( expression.context[depth].bytecode, O_Remove );
 		}
 	}
 

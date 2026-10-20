@@ -358,6 +358,14 @@ void wr_valueToEx( const WRValue* ex, WRValue* value )
 		{
 			ex->r->c[s] = value->ui;
 		}
+		else if ( IS_CONTAINER_MEMBER(ex->xtype) && ex->vb->m_type != SV_HASH_INTERNAL && IS_ARRAY(ex->r->xtype) && ex->r->va->m_type == SV_CHAR )
+		{
+			// a character of a string: deref() would hand out a copy of it
+			if ( s < ex->r->va->m_size )
+			{
+				ex->r->va->m_Cdata[s] = value->ui;
+			}
+		}
 		else
 		{
 			ex->deref() = value->deref();
