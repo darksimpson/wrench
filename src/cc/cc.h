@@ -470,6 +470,64 @@ struct WRUnitContext
 	}
 };
 
+// The text a program is compiled from: the main source with every top level
+// include "file" replaced by that file (expanded the same way, once per
+// file). Lines are numbered through the expanded text; those "virtual" lines
+// are what line markers carry, the segments map them back to files
+struct WRSourceFile
+{
+	WRstr name; // resolved name; the main source's as given, maybe empty
+	WRstr text; // the file as read (the main source's only kept when it includes something)
+};
+
+struct WRSourceSegment
+{
+	int virtualLine; // from this line of the expanded text on
+	int file; // lines come from this file
+	int line; // starting at this line of it
+};
+
+class WRSourceSet
+{
+public:
+	WRSourceSet() : m_source( 0 ), m_size( 0 ), m_virtualLine( 1 ), m_sawInclude( false ), m_errFile( 0 ), m_errLine( 0 ) {}
+
+	// read every include, false (and the error) when one fails
+	WRError expand( const char* source, const int size, const WRCompileOptions& options );
+
+	const char* text() const { return m_sawInclude ? m_expanded.c_str() : m_source; }
+	int size() const { return m_sawInclude ? (int)m_expanded.size() : m_size; }
+	bool hasIncludes() const { return m_sawInclude; }
+
+	// the file and its line a virtual line comes from
+	void locate( int virtualLine, int& file, int& line ) const;
+
+	const WRstr& fileName( int file ) const { return m_files[file].name; }
+	unsigned int fileCount() const { return m_files.count(); }
+	void fileText( int file, const char*& text, int& size ) const;
+	unsigned int segmentCount() const { return m_segments.count(); }
+	const WRSourceSegment& segment( int i ) const { return m_segments[i]; }
+
+	// where expand() failed
+	int errorFile() const { return m_errFile; }
+	int errorLine() const { return m_errLine; }
+
+private:
+	WRError expandFile( int file, const char* text, int size, int depth, const WRCompileOptions& options );
+	void append( const char* text, int size );
+	void addSegment( int file, int line );
+
+	WRarray<WRSourceFile> m_files;
+	WRarray<WRSourceSegment> m_segments;
+	const char* m_source; // the main source as given
+	int m_size;
+	WRstr m_expanded; // built once something is included
+	int m_virtualLine; // line of m_expanded the next character lands on
+	bool m_sawInclude;
+	int m_errFile;
+	int m_errLine;
+};
+
 //------------------------------------------------------------------------------
 struct WRCompilationContext
 {
@@ -481,9 +539,13 @@ public:
 					 WRstr* erroMsg,
 					 const uint8_t compilerOptionFlags );
 
-	// where the last error was detected, 1-based line and 0-based column
+	// where the last error was detected, 1-based line and 0-based column; the
+	// line is one of the expanded text, m_sources maps it to a file
 	int m_errLine;
 	int m_errColumn;
+
+	// the source with its includes (set by wr_compileWithOptions)
+	const WRSourceSet* m_sources;
 
 	// relative jumps are 16 bit; one that turns out farther is recorded and
 	// the source compiled again, emitting that jump in a long form (see

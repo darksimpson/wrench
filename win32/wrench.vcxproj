@@ -16,6 +16,7 @@
     <ClCompile Include="..\src\cc\link.cpp" />
     <ClCompile Include="..\src\cc\optimizer.cpp" />
     <ClCompile Include="..\src\cc\token.cpp" />
+    <ClCompile Include="..\src\cc\include.cpp" />
     <ClCompile Include="..\src\debug\debug.cpp" />
     <ClCompile Include="..\src\debug\debug_client.cpp" />
     <ClCompile Include="..\src\debug\debug_protocol.cpp" />
@@ -44,6 +45,7 @@
     <ClCompile Include="..\src\utils\wrench_debug_eval.cpp" />
     <ClCompile Include="..\src\utils\wrench_debug_host.cpp" />
     <ClCompile Include="..\src\utils\wrench_project.cpp" />
+    <ClCompile Include="..\src\utils\wrench_include_host.cpp" />
     <ClCompile Include="..\src\utils\wrench_lsp.cpp" />
     <ClCompile Include="..\src\vm\gc.cpp" />
     <ClCompile Include="..\src\vm\gc_object.cpp" />
@@ -74,6 +76,7 @@
     <ClInclude Include="..\src\utils\wrench_debug_eval.h" />
     <ClInclude Include="..\src\utils\wrench_debug_host.h" />
     <ClInclude Include="..\src\utils\wrench_project.h" />
+    <ClInclude Include="..\src\utils\wrench_include_host.h" />
     <ClInclude Include="..\src\vm\vm.h" />
     <ClInclude Include="..\src\wrench.h" />
   </ItemGroup>

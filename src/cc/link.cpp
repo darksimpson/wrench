@@ -195,7 +195,36 @@ void WRCompilationContext::link( unsigned char** out, int* outLen, const uint8_t
 			for( unsigned int s=0; s<m_units[u].bytecode.localSpace.count(); ++s )
 			{
 				symbols.append( m_units[u].bytecode.localSpace[s].label );
-				symbols.append( (char *)data, 1 ); 
+				symbols.append( (char *)data, 1 );
+			}
+		}
+
+		// the files the line markers' (virtual) lines come from: u16 files,
+		// each its name and u32 length of its text in the embedded source (0
+		// when not embedded), then u16 segments, each u32 virtual line, u16
+		// file, u32 line. Left out for a nameless source without includes
+		if ( m_sources && (m_sources->hasIncludes() || m_sources->fileName(0).size()) )
+		{
+			symbols.append( (char*)wr_pack16((uint16_t)m_sources->fileCount(), data), 2 );
+			for( unsigned int f=0; f<m_sources->fileCount(); ++f )
+			{
+				const char* text = 0;
+				int len = 0;
+				if ( compilerOptionFlags & WR_EMBED_SOURCE_CODE )
+				{
+					m_sources->fileText( f, text, len );
+				}
+				symbols.append( m_sources->fileName(f) );
+				symbols.append( (char)0 );
+				symbols.append( (char*)wr_pack32((uint32_t)len, data), 4 );
+			}
+			symbols.append( (char*)wr_pack16((uint16_t)m_sources->segmentCount(), data), 2 );
+			for( unsigned int s=0; s<m_sources->segmentCount(); ++s )
+			{
+				const WRSourceSegment& seg = m_sources->segment( s );
+				symbols.append( (char*)wr_pack32((uint32_t)seg.virtualLine, data), 4 );
+				symbols.append( (char*)wr_pack16((uint16_t)seg.file, data), 2 );
+				symbols.append( (char*)wr_pack32((uint32_t)seg.line, data), 4 );
 			}
 		}
 
@@ -211,8 +240,32 @@ void WRCompilationContext::link( unsigned char** out, int* outLen, const uint8_t
 
 	if ( compilerOptionFlags & WR_EMBED_SOURCE_CODE )
 	{
-		code.append( wr_pack32(m_sourceLen, data), 4 );
-		code.append( (uint8_t*)m_source, m_sourceLen );
+		// one block the VM skips: each file as written, one after the other
+		// in the order of the file table (the main source first, the only
+		// one without includes); the file table has their lengths
+		unsigned int files = (m_sources && m_sources->hasIncludes()) ? m_sources->fileCount() : 1;
+		uint32_t total = 0;
+		for( unsigned int f=0; f<files; ++f )
+		{
+			const char* text = m_source;
+			int len = m_sourceLen;
+			if ( m_sources )
+			{
+				m_sources->fileText( f, text, len );
+			}
+			total += (uint32_t)len;
+		}
+		code.append( wr_pack32(total, data), 4 );
+		for( unsigned int f=0; f<files; ++f )
+		{
+			const char* text = m_source;
+			int len = m_sourceLen;
+			if ( m_sources )
+			{
+				m_sources->fileText( f, text, len );
+			}
+			code.append( (uint8_t*)text, len );
+		}
 	}
 
 	// export any explicitly marked for export or are referred to by a 'new'

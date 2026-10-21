@@ -39,6 +39,9 @@
     <ClCompile Include="..\src\cc\token.cpp">
       <Filter>Source Files\cc</Filter>
     </ClCompile>
+    <ClCompile Include="..\src\cc\include.cpp">
+      <Filter>Source Files\cc</Filter>
+    </ClCompile>
     <ClCompile Include="..\src\debug\debug.cpp">
       <Filter>Source Files\debug</Filter>
     </ClCompile>
@@ -121,6 +124,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="..\src\utils\wrench_project.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\utils\wrench_include_host.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="..\src\utils\wrench_lsp.cpp">
@@ -207,6 +213,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="..\src\utils\wrench_project.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\utils\wrench_include_host.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="..\src\vm\vm.h">

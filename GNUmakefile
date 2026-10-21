@@ -34,6 +34,7 @@ CORE_OBJS = \
 	$(OBJDIR)/link.o \
 	$(OBJDIR)/optimizer.o \
 	$(OBJDIR)/token.o \
+	$(OBJDIR)/include.o \
 	$(OBJDIR)/operations.o \
 	$(OBJDIR)/operations_compact.o \
 	$(OBJDIR)/operations_non_compact.o \
@@ -67,6 +68,7 @@ HOST_OBJS = \
 	$(OBJDIR)/debugger.o \
 	$(OBJDIR)/wrench_debug_host.o \
 	$(OBJDIR)/wrench_project.o \
+	$(OBJDIR)/wrench_include_host.o \
 	$(OBJDIR)/wrench_debug_eval.o \
 	$(OBJDIR)/wrench_dap.o \
 	$(OBJDIR)/wrench_lsp.o \

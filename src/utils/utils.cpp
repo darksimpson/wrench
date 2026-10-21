@@ -1871,6 +1871,10 @@ const char* c_errStrings[]=
 	"WR_ERR_nesting_too_deep",
 	"WR_ERR_not_assignable",
 	"WR_ERR_member_of_literal",
+	"WR_ERR_include_not_found",
+	"WR_ERR_include_not_supported",
+	"WR_ERR_include_not_at_top_level",
+	"WR_ERR_include_too_deep",
 };
 
 #endif

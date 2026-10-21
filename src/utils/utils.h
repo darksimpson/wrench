@@ -249,7 +249,7 @@ public:
 		return *this;
 	}
 
-	const T& operator[]( const unsigned int l ) const { return get(l); }
+	const T& operator[]( const unsigned int l ) const { return m_list[l]; } // a read: within count(), it cannot grow
 	T& operator[]( const unsigned int l ) { return get(l); }
 
 	WRarray( const unsigned int initialSize =0 ) { m_list = 0; clear(); alloc(initialSize); }

@@ -351,6 +351,28 @@ bool WrenchProject::load( const std::string& path, std::string& error )
 		return false;
 	}
 
+	// include "file" search folders, relative to this file's folder
+	const Json& include = root["include"];
+	if ( include.isArray() )
+	{
+		std::filesystem::path base = std::filesystem::u8path( path ).parent_path();
+		for ( const Json& dir : include.items() )
+		{
+			if ( !dir.isString() )
+			{
+				error = path + ": \"include\" lists folders as strings";
+				return false;
+			}
+			std::filesystem::path p = std::filesystem::u8path( dir.asString() );
+			m_includePaths.push_back( (p.is_absolute() ? p : base / p).lexically_normal().generic_u8string() );
+		}
+	}
+	else if ( !include.isNull() )
+	{
+		error = path + ": \"include\" is a list of folders";
+		return false;
+	}
+
 	const Json& libraries = root["libraries"];
 	if ( libraries.isArray() )
 	{

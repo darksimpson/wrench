@@ -37,7 +37,8 @@ SOFTWARE.
 // 		{ "name": "ui::alert", "params": [ "text" ] },
 // 		"log( values... )"
 // 	],
-// 	"undeclaredCalls": "warning"
+// 	"undeclaredCalls": "warning",
+// 	"include": [ "lib", "../shared" ]
 // }
 //
 // "libraries": standard libraries the host loads (math, std, io, string,
@@ -49,6 +50,8 @@ SOFTWARE.
 // debug target answers in place of the real function (default 0).
 // "undeclaredCalls": "warning" (default), "error" or "ignore" for calls to
 // anything that is neither declared nor a script function.
+// "include": folders, relative to wrench.json, where include "file" also
+// looks after the including file's own folder.
 
 #ifdef WRENCH_INCLUDE_DEBUG_CLIENT
 
@@ -117,8 +120,12 @@ public:
 
 	Severity undeclaredCalls() const { return m_undeclared; }
 
+	// folders include "file" also looks in, after the including file's own
+	const std::vector<std::string>& includePaths() const { return m_includePaths; }
+
 private:
 	std::string m_path;
+	std::vector<std::string> m_includePaths;
 	std::vector<WrenchNative> m_natives;
 	std::vector<std::string> m_libraries;
 	bool m_allLibraries = true;

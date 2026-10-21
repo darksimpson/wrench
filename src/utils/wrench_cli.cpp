@@ -32,6 +32,7 @@ SOFTWARE.
 #include <stdlib.h>
 #include <ctype.h>
 #include <thread>
+#include "utils/wrench_include_host.h"
 #ifdef _WIN32
 #include <direct.h>
 #else
@@ -401,6 +402,7 @@ const char* sourceOrder[]=
 	"/cc/expression.cpp",
 	"/cc/optimizer.cpp",
 	"/cc/token.cpp",
+	"/cc/include.cpp",
 	"/vm/gc_object.cpp",
 	"/vm/gc.cpp",
 	"/vm/vm.cpp",
@@ -476,6 +478,10 @@ int usage()
 	"    cannot find them then\n"
 	"  -nostrict\n"
 	"    do not require 'var' to declare variables\n"
+	"  -I <folder>\n"
+	"    also look for include \"file\" in folder (after the including\n"
+	"    file's own folder, before the \"include\" folders of wrench.json),\n"
+	"    may be given more than once\n"
 	"\n"
 	"rb <bytecode file>\n"
 	"  run a compiled program\n"
@@ -572,6 +578,32 @@ struct Test
 
 WRState* gw = 0;
 uint32_t flags = 0;
+
+// compile the source file 'path' (its text in 'code') with the compile
+// options, includes found next to the including file and in the -I folders
+static int compileSourceFile( const char* path, WRstr const& code, int argn, char* argv[], unsigned char** out, int* outLen, WRstr* errMsg )
+{
+	WrenchIncludeResolver includes;
+	includes.searchPaths = wr_includeOptions( argn, argv );
+	std::string name = WrenchIncludeResolver::normalize( path );
+	includes.setMain( name );
+#ifdef WRENCH_INCLUDE_DEBUG_CLIENT
+	// then the folders the script's wrench.json lists
+	WrenchProject project;
+	std::string projectError;
+	if ( wr_projectForScript(name, "", project, projectError) && project.loaded() )
+	{
+		includes.searchPaths.insert( includes.searchPaths.end(), project.includePaths().begin(), project.includePaths().end() );
+	}
+#endif
+
+	WRCompileOptions options;
+	options.flags = (uint8_t)flags;
+	options.name = name.c_str();
+	options.include = WrenchIncludeResolver::callback;
+	options.includeUser = &includes;
+	return wr_compileWithOptions( code, code.size(), out, outLen, options, errMsg );
+}
 
 //------------------------------------------------------------------------------
 int main( int argn, char* argv[] )
@@ -741,7 +773,7 @@ int main( int argn, char* argv[] )
 		unsigned char* out;
 		int outLen;
 		WRstr errMsg;
-		int err = wr_compile( infile, infile.size(), &out, &outLen, &errMsg, flags );
+		int err = compileSourceFile( SimpleArgs::get(argn, argv, -1), infile, argn, argv, &out, &outLen, &errMsg );
 		
 		if ( err )
 		{
@@ -787,8 +819,8 @@ int main( int argn, char* argv[] )
 		int outLen;
 		
 		WRstr errMsg;
-		int err = wr_compile( infile, infile.size(), &out, &outLen, &errMsg, flags );
-		
+		int err = compileSourceFile( SimpleArgs::get(argn, argv, -1), infile, argn, argv, &out, &outLen, &errMsg );
+
 //		WRstr str;
 //		wr_asciiDump( out, outLen, str );
 //		printf( "Code Image: %d:\n%s\n", outLen, str.c_str() );
@@ -867,7 +899,7 @@ int main( int argn, char* argv[] )
 		}
 
 		WRstr errMsg;
-		int err = wr_compile( code, code.size(), &out, &outLen, &errMsg, flags );
+		int err = compileSourceFile( SimpleArgs::get(argn, argv, -2), code, argn, argv, &out, &outLen, &errMsg );
 
 		if ( err )
 		{
@@ -913,9 +945,9 @@ int main( int argn, char* argv[] )
 			printf( "Could not open [%s]\n", SimpleArgs::get(argn, argv, -3) );
 			return usage();
 		}
-		
+
 		WRstr errMsg;
-		int err = wr_compile( code, code.size(), &out, &outLen, &errMsg, flags );
+		int err = compileSourceFile( SimpleArgs::get(argn, argv, -3), code, argn, argv, &out, &outLen, &errMsg );
 		
 		if ( err )
 		{
@@ -1902,6 +1934,139 @@ static void runThreadScript( const unsigned char* image, int imageLen, int* tota
 	wr_destroyState( w );
 }
 
+// include "file" from a table of names and texts
+struct IncludeTable
+{
+	const char* const* entries; // name, text, name, text, ..., 0
+	int calls;
+};
+
+static bool tableInclude( const char* name, const char* includer, WRstr& source, WRstr& resolved, void* usr )
+{
+	IncludeTable* table = (IncludeTable*)usr;
+	++table->calls;
+	for( int i = 0; table->entries[i]; i += 2 )
+	{
+		if ( !strcmp(table->entries[i], name) )
+		{
+			source = table->entries[i + 1];
+			resolved = name;
+			return true;
+		}
+	}
+	return false;
+}
+
+static WRError compileWithTable( const char* source, const char* const* entries, int* line = 0, WRstr* file = 0, WRstr* message = 0,
+	uint8_t flags = WR_INCLUDE_GLOBALS, unsigned char** image = 0, int* imageLen = 0 )
+{
+	IncludeTable table;
+	table.entries = entries;
+	table.calls = 0;
+	WRCompileOptions options;
+	options.flags = flags;
+	options.name = "main.w";
+	options.include = tableInclude;
+	options.includeUser = &table;
+	unsigned char* out = 0;
+	int outLen = 0;
+	WRError err = wr_compileWithOptions( source, (int)strlen(source), &out, &outLen, options, message, line, 0, file );
+	if ( image )
+	{
+		*image = out;
+		*imageLen = outLen;
+	}
+	else
+	{
+		free( out );
+	}
+	return err;
+}
+
+static int runWithTable( const char* source, const char* const* entries, const char* global )
+{
+	unsigned char* out = 0;
+	int outLen = 0;
+	if ( compileWithTable(source, entries, 0, 0, 0, WR_INCLUDE_GLOBALS, &out, &outLen) != WR_ERR_None )
+	{
+		return -1;
+	}
+	WRState* w = wr_newState();
+	WRContext* c = wr_run( w, out, outLen, true );
+	WRValue* v = c ? wr_getGlobalRef( c, global ) : 0;
+	int result = v ? v->asInt() : -1;
+	wr_destroyState( w );
+	return result;
+}
+
+bool testIncludes()
+{
+	printf( "test [-][include]: " );
+	bool ok = true;
+
+	const char* files[] =
+	{
+		"a.w", "include \"b.w\";\nvar fromA = 1;\nfunction twice( x ) { return x * 2; }\n",
+		"b.w", "include \"a.w\";\nvar fromB = 2;\n",
+		"bad.w", "var fine = 1;\n\nvar broken = ;\n",
+		"nested.w", "function f()\n{\n\tinclude \"a.w\";\n}\n",
+		"loop.w", "include \"loop2.w\";\n",
+		"loop2.w", "include \"loop3.w\";\n",
+		"loop3.w", "var deep = 1;\n",
+		0
+	};
+
+	// each file once, cycles included
+	ok = ok && runWithTable( "include \"a.w\";\ninclude \"b.w\";\ninclude \"a.w\";\nvar r = twice( fromA + fromB );", files, "r" ) == 6;
+
+	// an error in an included file names that file and its own line
+	int line = 0;
+	WRstr file;
+	WRstr message;
+	ok = ok && compileWithTable( "var x = 1;\ninclude \"bad.w\";\n", files, &line, &file, &message ) == WR_ERR_bad_expression;
+	ok = ok && file == "bad.w" && line == 3 && strstr( message.c_str(), "bad.w:3" ) != 0;
+
+	// and one after an include keeps its file's line numbers
+	ok = ok && compileWithTable( "include \"a.w\";\n\nvar y = ;\n", files, &line, &file ) == WR_ERR_bad_expression;
+	ok = ok && file == "main.w" && line == 3;
+
+	ok = ok && compileWithTable( "var q = 1;\ninclude \"missing.w\";\n", files, &line, &file ) == WR_ERR_include_not_found;
+	ok = ok && line == 2 && file == "main.w";
+	ok = ok && compileWithTable( "include \"nested.w\";\n", files, &line, &file ) == WR_ERR_include_not_at_top_level;
+	ok = ok && file == "nested.w" && line == 3;
+	ok = ok && compileWithTable( "if ( 1 ) { include \"a.w\"; }\n", files ) == WR_ERR_include_not_at_top_level;
+
+	// include in comments and strings is no include
+	ok = ok && runWithTable( "// include \"missing.w\"\n/* include \"missing.w\" **/\nvar s = \"include \\\"missing.w\\\"\";\nvar r = 4;", files, "r" ) == 4;
+
+	// without a callback include fails, everything else compiles as before
+	unsigned char* out = 0;
+	int outLen = 0;
+	ok = ok && wr_compile( "include \"a.w\";", 14, &out, &outLen ) == WR_ERR_include_not_supported;
+	ok = ok && wr_compile( "var include = 1; var r = include + 1;", 37, &out, &outLen ) == WR_ERR_None;
+	free( out );
+
+	// nesting deeper than WRENCH_MAX_INCLUDE_DEPTH
+	{
+		static char names[WRENCH_MAX_INCLUDE_DEPTH + 2][16];
+		static char texts[WRENCH_MAX_INCLUDE_DEPTH + 2][32];
+		const char* chain[2 * (WRENCH_MAX_INCLUDE_DEPTH + 2) + 1];
+		int n = 0;
+		for( int i = 0; i <= WRENCH_MAX_INCLUDE_DEPTH; ++i )
+		{
+			snprintf( names[i], sizeof(names[i]), "d%d.w", i );
+			snprintf( texts[i], sizeof(texts[i]), "include \"d%d.w\";", i + 1 );
+			chain[n++] = names[i];
+			chain[n++] = texts[i];
+		}
+		chain[n] = 0;
+		ok = ok && compileWithTable( "include \"d0.w\";", chain ) == WR_ERR_include_too_deep;
+	}
+
+	printf( ok ? "PASS\n" : "FAIL\n" );
+	return ok;
+}
+
 bool testVmRobustness()
 {
 	printf( "test [-][vm: callback errors, bad opcodes, copies, stack, threads]: " );
@@ -2631,7 +2796,16 @@ int runTests( const char* testDir, int number )
 					{
 						compileFlags |= WR_EMBED_DEBUG_CODE | WR_EMBED_SOURCE_CODE;
 					}
-					err = wr_compile( code, code.size(), &out, &outLen, &errMsg, compileFlags );
+					// scripts may include files next to them
+					WrenchIncludeResolver includes;
+					std::string scriptName = WrenchIncludeResolver::normalize( codeName.c_str() );
+					includes.setMain( scriptName );
+					WRCompileOptions options;
+					options.flags = compileFlags;
+					options.name = scriptName.c_str();
+					options.include = WrenchIncludeResolver::callback;
+					options.includeUser = &includes;
+					err = wr_compileWithOptions( code, code.size(), &out, &outLen, options, &errMsg );
 					
 					if ( err )
 					{
@@ -2799,6 +2973,10 @@ int runTests( const char* testDir, int number )
 		++failures;
 	}
 	if ( !testVmRobustness() )
+	{
+		++failures;
+	}
+	if ( !testIncludes() )
 	{
 		++failures;
 	}

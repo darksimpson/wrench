@@ -133,9 +133,23 @@ WRError WRCompilationContext::compile( const char* source,
 		m_errLine = onLine;
 		m_errColumn = onChar;
 
-		msg.format( "line:%d\n", onLine );
+		// the line of the file it is in, named when the source has a name
+		int file = 0;
+		int fileLine = onLine;
+		if ( m_sources )
+		{
+			m_sources->locate( onLine, file, fileLine );
+		}
+		if ( m_sources && m_sources->fileName(file).size() )
+		{
+			msg.format( "%s:%d\n", m_sources->fileName(file).c_str(), fileLine );
+		}
+		else
+		{
+			msg.format( "line:%d\n", fileLine );
+		}
 		msg.appendFormat( "err: %s[%d]\n", c_errStrings[m_err], m_err );
-		msg.appendFormat( "%-5d %s\n", onLine, line.c_str() );
+		msg.appendFormat( "%-5d %s\n", fileLine, line.c_str() );
 
 		for( int i=0; i<onChar; i++ )
 		{
@@ -232,32 +246,85 @@ WRError wr_compileEx( const char* source,
 	int* errorLine,
 	int* errorColumn )
 {
+	WRCompileOptions options;
+	options.flags = compilerOptionFlags;
+	return wr_compileWithOptions( source, size, out, outLen, options, errMsg, errorLine, errorColumn, 0 );
+}
+
+WRError wr_compileWithOptions( const char* source,
+	const int size,
+	unsigned char** out,
+	int* outLen,
+	const WRCompileOptions& options,
+	WRstr* errMsg,
+	int* errorLine,
+	int* errorColumn,
+	WRstr* errorFile )
+{
 	assert( sizeof(float) == 4 );
 	assert( sizeof(int) == 4 );
 	assert( sizeof(char) == 1 );
 	assert( O_LAST <= 255 ); // every opcode, the compile-time placeholders included, is one byte
+
+	*out = 0;
+	*outLen = 0;
+
+	WRSourceSet sources;
+	WRError err = sources.expand( source, size, options );
+	if ( err )
+	{
+		const WRstr& file = sources.fileName( sources.errorFile() );
+		if ( errMsg )
+		{
+			errMsg->format( "%s:%d\nerr: %s[%d]\n", file.size() ? file.c_str() : "line", sources.errorLine(), c_errStrings[err], err );
+		}
+		if ( errorLine )
+		{
+			*errorLine = sources.errorLine();
+		}
+		if ( errorColumn )
+		{
+			*errorColumn = 0;
+		}
+		if ( errorFile )
+		{
+			*errorFile = file;
+		}
+		return err;
+	}
 
 	// a program whose jumps all fit 16 bits compiles in one pass; each further
 	// pass emits the jumps found too far in a long form, which can push other
 	// jumps out of reach, so a few passes may be needed
 	const int maxPasses = 8;
 	WRarray<uint32_t> longJumps;
-	WRError err = WR_ERR_None;
 	for( int pass = 0; pass < maxPasses; ++pass )
 	{
 		// a fresh compiler context per pass, completely unloaded when complete
 		WRCompilationContext comp;
+		comp.m_sources = &sources;
 		comp.m_longJumps = longJumps;
 		comp.m_lastLongJumpPass = (pass == maxPasses - 1);
 
-		err = comp.compile( source, size, out, outLen, errMsg, compilerOptionFlags );
+		err = comp.compile( sources.text(), sources.size(), out, outLen, errMsg, options.flags );
+
+		int file = 0;
+		int line = comp.m_errLine;
+		if ( line )
+		{
+			sources.locate( comp.m_errLine, file, line );
+		}
 		if ( errorLine )
 		{
-			*errorLine = comp.m_errLine;
+			*errorLine = line;
 		}
 		if ( errorColumn )
 		{
 			*errorColumn = comp.m_errColumn;
+		}
+		if ( errorFile )
+		{
+			*errorFile = sources.fileName( file );
 		}
 
 		if ( err || !comp.m_newLongJumps )
@@ -4205,11 +4272,15 @@ bool WRCompilationContext::checkAsComment( char lead )
 
 				if ( c == '*' )
 				{
-					if ( !getChar(c) )
+					// "**/" closes too: each '*' may be the one before the '/'
+					do
 					{
-						m_err = WR_ERR_unexpected_EOF;
-						return false;
-					}
+						if ( !getChar(c) )
+						{
+							m_err = WR_ERR_unexpected_EOF;
+							return false;
+						}
+					} while ( c == '*' );
 
 					if ( c == '/' )
 					{
@@ -4301,5 +4372,18 @@ WRError wr_compileEx( const char* source,
 {
 	return WR_ERR_compiler_not_loaded;
 }
-	
+
+WRError wr_compileWithOptions( const char* source,
+	const int size,
+	unsigned char** out,
+	int* outLen,
+	const WRCompileOptions& options,
+	WRstr* errMsg,
+	int* errorLine,
+	int* errorColumn,
+	WRstr* errorFile )
+{
+	return WR_ERR_compiler_not_loaded;
+}
+
 #endif

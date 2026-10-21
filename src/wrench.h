@@ -143,6 +143,11 @@ depending on usage. (consumes 8 bytes per stack entry)
 #define WRENCH_MAX_PARSE_DEPTH 256
 #endif
 
+// how deeply include "file" may nest (a file that includes a file that ...)
+#ifndef WRENCH_MAX_INCLUDE_DEPTH
+#define WRENCH_MAX_INCLUDE_DEPTH 16
+#endif
+
 // how many containers the garbage collector keeps on its mark stack (on
 // the native stack, one pointer each). Nesting deeper than this still
 // works, the collector then makes additional passes over the objects
@@ -331,6 +336,10 @@ enum WRError
 	WR_ERR_nesting_too_deep, // statements, expressions or initializers nest deeper than WRENCH_MAX_PARSE_DEPTH
 	WR_ERR_not_assignable, // assignment or ++ / -- to a literal, a call result or a computed value
 	WR_ERR_member_of_literal, // "abc".length: a literal has no members
+	WR_ERR_include_not_found, // include "file": the include callback did not find it
+	WR_ERR_include_not_supported, // include "file" compiled without an include callback
+	WR_ERR_include_not_at_top_level, // include "file" inside a function or block
+	WR_ERR_include_too_deep, // includes nested deeper than WRENCH_MAX_INCLUDE_DEPTH
 
 	WR_warning_enums_follow,
 
@@ -412,6 +421,37 @@ WRError wr_compileEx( const char* source,
 						const uint8_t compilerOptionFlags,
 						int* errorLine,
 						int* errorColumn );
+
+// include "file" at the top level of a script compiles that file in place,
+// once per program however often it is included. The compiler opens no files
+// itself: the host finds them. name is the file as written, includer the
+// resolved name of the file that includes it (the main source's name for the
+// main source, maybe empty). Fill source with the file's text and resolved
+// with a name that identifies the file (the same file must always resolve to
+// the same name: it decides what was included already, and it is the name
+// error messages and the debugger show). False when there is no such file
+typedef bool (*WR_INCLUDE_CALLBACK)( const char* name, const char* includer, WRstr& source, WRstr& resolved, void* usr );
+
+struct WRCompileOptions
+{
+	uint8_t flags; // WrenchCompilerFlags
+	const char* name; // file name of the source: messages, includes, debugger. May be 0
+	WR_INCLUDE_CALLBACK include; // 0: include "file" fails with WR_ERR_include_not_supported
+	void* includeUser; // passed to include
+	WRCompileOptions() : flags( WR_INCLUDE_GLOBALS ), name( 0 ), include( 0 ), includeUser( 0 ) {}
+};
+
+// wr_compileEx with includes. A failure reports the file (its resolved name)
+// and the line within it; the message starts with "file:line"
+WRError wr_compileWithOptions( const char* source,
+								const int size,
+								unsigned char** out,
+								int* outLen,
+								const WRCompileOptions& options,
+								WRstr* errMsg =0,
+								int* errorLine =0,
+								int* errorColumn =0,
+								WRstr* errorFile =0 );
 
 // is this a valid bytecode image for this version? Optionally return
 // the hash signature
