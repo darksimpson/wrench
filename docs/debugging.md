@@ -144,6 +144,19 @@ Breakpoints, stepping and evaluation work the same as with a `.w` file. A
 program compiled with `-debug` only still gives stacks and variables but no
 source. Without debug information at all it runs, but cannot stop.
 
+## Programs made of several files
+
+A script that includes others (`include "file.w"`) is debugged as one
+program. VS Code takes breakpoints in any of its files, and call stacks show
+each frame in its own file; `-debugsource` embeds every file, so attaching
+without the sources shows all of them. In `wrench dbg`, `b 12` and `l 12`
+mean the file of the selected frame (the main file while running), and
+`b util.w:12` or `l lib/util.w:12` name another one. Includes are found next
+to the including file, then in the `"include"` folders of `wrench.json`
+(and `-I` folders for `wrench c`, `p`, `r` and `ch`). In the variables view a
+private global of an included file shows as `count@util.w`; an expression
+written while stopped in that file means its own `count`.
+
 ## Debugging from the console
 
 Run in the local VM, upload and run on a device, debug what a device
@@ -238,7 +251,8 @@ to the scripts (any folder above them works too):
 		{ "name": "ui::alert", "params": [ "text" ], "doc": "Shows a message box" },
 		"log( values... )"
 	],
-	"undeclaredCalls": "warning"
+	"undeclaredCalls": "warning",
+	"include": [ "lib", "../shared" ]
 }
 ```
 
@@ -254,6 +268,9 @@ to the scripts (any folder above them works too):
   time, and `print` / `println` if the application has them (the wrench
   tools provide those, an application does not have to).
 - `undeclaredCalls`: `warning` (default), `error` or `ignore`.
+- `include`: folders, relative to `wrench.json`, where `include "file"`
+  looks after the including file's own folder (the language server, the
+  debuggers and `wrench c` / `p` / `r` / `ch` all use them).
 
 What uses it:
 
@@ -491,3 +508,25 @@ than 16383 lines, `0x0000 | n` and `0x8000` are older call markers the
 server ignores. Stepping compares frame depth (from the VM's frame base), so
 it works for code entered through `wr_callFunction` from native code just
 like for calls inside the script.
+
+### Programs made of several files
+
+A program that includes other files (`include "file.w"`) is compiled as one
+text, the included files in place of their includes, and the line markers
+count lines through all of it ("virtual" lines). The target only ever sees
+these: breakpoints, stop lines and watches carry virtual lines, so nothing
+in the protocol knows about files. The symbols section ends with a file
+table that maps them back, written when the source has a name or includes
+something:
+
+| Field | Meaning |
+|---|---|
+| u16 files | how many, the main file first |
+| per file: name, 0, u32 length | the name the compiler resolved, and the length of its text in the embedded source (0 when not embedded) |
+| u16 segments | how many |
+| per segment: u32 virtual line, u16 file, u32 line | from that virtual line on, lines come from that file, starting at that line |
+
+With `WR_EMBED_SOURCE_CODE` the source block holds every file's text, one
+after the other in the order of the table (ReadProgram section 2 returns
+the whole block). An image without a table is one file whose lines are the
+virtual lines.

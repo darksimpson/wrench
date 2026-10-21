@@ -63,8 +63,9 @@ namespace
 struct Breakpoint
 {
 	int id = 0;
-	int requestedLine = 0;
-	int line = 0;
+	int file = 0; // which file of the program (include "file")
+	int requestedLine = 0; // a line of that file
+	int line = 0; // where it binds, a virtual line (the target's)
 	bool verified = false;
 	std::string condition;
 	std::string hitCondition;
@@ -253,7 +254,8 @@ private:
 	std::string childExpression( const VarRef& parent, const WrenchDebugChild& child );
 	bool setWatch( DataBreakpoint& dbp );
 	void onWatchRemoved( int watch );
-	Json sourceJson();
+	Json sourceJson( int file = 0 );
+	int fileForSource( const Json& source );
 	void endSession( int exitCode );
 
 	JsonStdioStream m_stream;
@@ -341,26 +343,69 @@ void DapServer::output( const std::string& text, const char* category )
 	event( "output", b );
 }
 
-Json DapServer::sourceJson()
+static std::string wr_baseName( const std::string& path )
+{
+	size_t slash = path.find_last_of( "/\\" );
+	return slash == std::string::npos ? path : path.substr( slash + 1 );
+}
+
+// a file of the program: the main one is the program (or its embedded
+// source), an included one is the file the compiler read, or its embedded
+// copy (sourceReference file + 1) when the program came from elsewhere
+Json DapServer::sourceJson( int file )
 {
 	Json s = Json::object();
+	const std::vector<WrenchDebugProgram::SourceFile>& files = m_program.files();
+	std::string included = (file > 0 && file < (int)files.size()) ? files[file].name : std::string();
 	if ( m_sourceFromTarget )
 	{
-		s.set( "name", m_sourceName );
-		s.set( "sourceReference", 1 );
+		s.set( "name", file == 0 ? m_sourceName : wr_baseName(included) + " (embedded source)" );
+		s.set( "sourceReference", file + 1 );
+	}
+	else if ( file == 0 )
+	{
+		s.set( "name", wr_baseName(m_programPath) );
+		s.set( "path", m_programPath );
 	}
 	else
 	{
-		std::string name = m_programPath;
-		size_t slash = name.find_last_of( "/\\" );
-		if ( slash != std::string::npos )
+		std::string path = included;
+		try
 		{
-			name = name.substr( slash + 1 );
+			std::error_code ec;
+			path = std::filesystem::absolute( std::filesystem::u8path(included), ec ).lexically_normal().u8string();
 		}
-		s.set( "name", name );
-		s.set( "path", m_programPath );
+		catch ( const std::exception& )
+		{
+		}
+		s.set( "name", wr_baseName(included) );
+		s.set( "path", path );
 	}
 	return s;
+}
+
+// which file of the program a DAP source is, -1 for none
+int DapServer::fileForSource( const Json& source )
+{
+	const std::vector<WrenchDebugProgram::SourceFile>& files = m_program.files();
+	if ( m_sourceFromTarget )
+	{
+		int ref = source["sourceReference"].asInt( 0 );
+		return (ref >= 1 && ref <= (int)files.size()) ? ref - 1 : -1;
+	}
+	std::string path = source["path"].asString( "" );
+	if ( m_programPath.empty() || wr_samePath(path, m_programPath) )
+	{
+		return 0;
+	}
+	for ( size_t f = 1; f < files.size(); ++f )
+	{
+		if ( !files[f].name.empty() && wr_samePath(path, files[f].name) )
+		{
+			return (int)f;
+		}
+	}
+	return -1;
 }
 
 void DapServer::resetStopState()
@@ -472,6 +517,23 @@ void DapServer::onLaunchOrAttach( const Json& req, bool attach )
 		return;
 	}
 
+	// the host application the script is written for: the local target
+	// imitates it, error messages use its function names, its include
+	// folders serve include "file"
+	std::string projectPath = args["project"].asString( "" );
+	if ( !m_programPath.empty() || !projectPath.empty() )
+	{
+		std::string projectError;
+		if ( !wr_projectForScript(m_programPath, projectPath, m_project, projectError) )
+		{
+			output( "Ignoring the host description: " + projectError + "\n", "important" );
+		}
+		else if ( m_project.loaded() && m_spec.kind == WrenchTransportSpec::Local )
+		{
+			output( "Imitating the host application described by " + m_project.path() + "\n" );
+		}
+	}
+
 	// local symbols, unless attaching without a program file. A compiled
 	// program (.bin) is used as it is, its source comes from the bytecode
 	std::vector<uint8_t> bytecode;
@@ -479,7 +541,7 @@ void DapServer::onLaunchOrAttach( const Json& req, bool attach )
 	if ( !m_programPath.empty() )
 	{
 		std::string source;
-		if ( !wr_loadForDebug(m_programPath, bytecode, source, error, &programIsBytecode) )
+		if ( !wr_loadForDebug(m_programPath, bytecode, source, error, &programIsBytecode, m_project.loaded() ? &m_project : nullptr) )
 		{
 			respond( req, false, Json::object(), error );
 			return;
@@ -502,22 +564,6 @@ void DapServer::onLaunchOrAttach( const Json& req, bool attach )
 	{
 		respond( req, false, Json::object(), "launch needs \"program\", a .w file or a .bin compiled with -debugsource" );
 		return;
-	}
-
-	// the host application the script is written for: the local target
-	// imitates it, error messages use its function names
-	std::string projectPath = args["project"].asString( "" );
-	if ( !m_programPath.empty() || !projectPath.empty() )
-	{
-		std::string projectError;
-		if ( !wr_projectForScript(m_programPath, projectPath, m_project, projectError) )
-		{
-			output( "Ignoring the host description: " + projectError + "\n", "important" );
-		}
-		else if ( m_project.loaded() && m_spec.kind == WrenchTransportSpec::Local )
-		{
-			output( "Imitating the host application described by " + m_project.path() + "\n" );
-		}
 	}
 
 	if ( !m_link.open(m_spec, error, args["connectTimeout"].asInt(5000), m_project.loaded() ? &m_project : nullptr) )
@@ -570,7 +616,7 @@ void DapServer::onLaunchOrAttach( const Json& req, bool attach )
 				std::string source;
 				std::string matchError;
 				WrenchDebugProgram rebuilt;
-				if ( wr_compileWithFlags(m_programPath, matching, source, matchError, m_info.compilerFlags)
+				if ( wr_compileWithFlags(m_programPath, matching, source, matchError, m_info.compilerFlags, m_project.loaded() ? &m_project : nullptr)
 						&& rebuilt.parse(matching.data(), (uint32_t)matching.size(), &matchError) )
 				{
 					m_program = rebuilt;
@@ -656,25 +702,18 @@ void DapServer::onSetBreakpoints( const Json& req )
 	const Json& source = args["source"];
 	const Json& requested = args["breakpoints"];
 
-	bool ourFile = true;
-	if ( !m_sourceFromTarget && !m_programPath.empty() )
-	{
-		ourFile = wr_samePath( source["path"].asString(""), m_programPath );
-	}
-	else if ( m_sourceFromTarget )
-	{
-		ourFile = source["sourceReference"].asInt( 0 ) == 1;
-	}
+	// the program's own file or one it includes
+	int file = fileForSource( source );
 
 	Json result = Json::array();
-	if ( !ourFile )
+	if ( file < 0 )
 	{
 		for ( size_t i = 0; i < requested.size(); ++i )
 		{
 			Json b = Json::object();
 			b.set( "verified", false );
 			b.set( "line", requested[i]["line"].asInt() );
-			b.set( "message", "only the program being debugged can hold breakpoints" );
+			b.set( "message", "only the program being debugged and the files it includes can hold breakpoints" );
 			result.push( b );
 		}
 		Json body = Json::object();
@@ -683,18 +722,26 @@ void DapServer::onSetBreakpoints( const Json& req )
 		return;
 	}
 
-	// keep hit counts of breakpoints that survive the update
+	// this file's breakpoints are replaced, the other files' stay; hit
+	// counts of the ones that survive the update are kept
 	std::vector<Breakpoint> old;
-	old.swap( m_breakpoints );
+	std::vector<Breakpoint> others;
+	for ( const Breakpoint& bp : m_breakpoints )
+	{
+		(bp.file == file ? old : others).push_back( bp );
+	}
+	m_breakpoints = others;
+	size_t first = m_breakpoints.size();
 	for ( size_t i = 0; i < requested.size(); ++i )
 	{
 		const Json& r = requested[i];
 		Breakpoint bp;
+		bp.file = file;
 		bp.requestedLine = r["line"].asInt() + (m_linesStartAt1 ? 0 : 1);
 		bp.condition = r["condition"].asString( "" );
 		bp.hitCondition = r["hitCondition"].asString( "" );
 		bp.logMessage = r["logMessage"].asString( "" );
-		bp.line = m_program.valid() ? m_program.breakableLine( bp.requestedLine ) : -1;
+		bp.line = m_program.valid() ? m_program.breakableLine( file, bp.requestedLine ) : -1;
 		bp.verified = bp.line > 0;
 		bp.id = m_nextBreakpointId++;
 		for ( const Breakpoint& o : old )
@@ -709,13 +756,20 @@ void DapServer::onSetBreakpoints( const Json& req )
 
 	bool sent = sendBreakpoints();
 
-	for ( const Breakpoint& bp : m_breakpoints )
+	for ( size_t i = first; i < m_breakpoints.size(); ++i )
 	{
+		const Breakpoint& bp = m_breakpoints[i];
+		int boundFile = file;
+		int boundLine = bp.requestedLine;
+		if ( bp.line > 0 )
+		{
+			m_program.locate( bp.line, boundFile, boundLine );
+		}
 		Json b = Json::object();
 		b.set( "id", bp.id );
 		b.set( "verified", bp.verified && sent );
-		b.set( "line", (bp.line > 0 ? bp.line : bp.requestedLine) - (m_linesStartAt1 ? 0 : 1) );
-		b.set( "source", sourceJson() );
+		b.set( "line", boundLine - (m_linesStartAt1 ? 0 : 1) );
+		b.set( "source", sourceJson(file) );
 		if ( !bp.verified )
 		{
 			b.set( "message", bp.line > 0 ? "the target has no room for more breakpoints" : "no code at or after this line" );
@@ -1029,14 +1083,17 @@ void DapServer::onStackTrace( const Json& req )
 	for ( int i = start; i < (int)m_frames.size() && (levels <= 0 || i < start + levels); ++i )
 	{
 		const WrenchDebugStackFrame& f = m_frames[i];
+		int file = 0;
+		int line = f.line;
+		m_program.locate( f.line, file, line );
 		Json j = Json::object();
 		j.set( "id", i + 1 );
 		j.set( "name", f.name );
-		j.set( "line", f.line - (m_linesStartAt1 ? 0 : 1) );
+		j.set( "line", line - (m_linesStartAt1 ? 0 : 1) );
 		j.set( "column", m_linesStartAt1 ? 1 : 0 );
-		if ( !m_programPath.empty() || m_program.hasSource() )
+		if ( !m_programPath.empty() || m_program.hasSource() || file > 0 )
 		{
-			j.set( "source", sourceJson() );
+			j.set( "source", sourceJson(file) );
 		}
 		frames.push( j );
 	}
@@ -1456,10 +1513,14 @@ void DapServer::onBreakpointLocations( const Json& req )
 	const Json& args = req["arguments"];
 	int line = args["line"].asInt( 1 ) + (m_linesStartAt1 ? 0 : 1);
 	int endLine = args["endLine"].isNumber() ? args["endLine"].asInt() + (m_linesStartAt1 ? 0 : 1) : line;
+	int file = fileForSource( args["source"] );
 	Json locations = Json::array();
-	for ( int l : m_program.lines() )
+	for ( int v : m_program.lines() )
 	{
-		if ( l >= line && l <= endLine )
+		int f = 0;
+		int l = 0;
+		m_program.locate( v, f, l );
+		if ( f == file && l >= line && l <= endLine )
 		{
 			Json j = Json::object();
 			j.set( "line", l - (m_linesStartAt1 ? 0 : 1) );
@@ -1475,7 +1536,14 @@ void DapServer::onExceptionInfo( const Json& req )
 {
 	Json body = Json::object();
 	body.set( "exceptionId", errorText(m_stopError) );
-	std::string description = std::string( "wrench runtime error " ) + errorText( m_stopError ) + " at line " + std::to_string( m_stopLine );
+	int file = 0;
+	int line = m_stopLine;
+	m_program.locate( m_stopLine, file, line );
+	std::string description = std::string( "wrench runtime error " ) + errorText( m_stopError ) + " at line " + std::to_string( line );
+	if ( file > 0 && file < (int)m_program.files().size() )
+	{
+		description += " of " + wr_baseName( m_program.files()[file].name );
+	}
 	if ( !m_stopDetail.empty() )
 	{
 		description += ": " + m_stopDetail;
@@ -1487,13 +1555,16 @@ void DapServer::onExceptionInfo( const Json& req )
 
 void DapServer::onSource( const Json& req )
 {
-	if ( !m_program.hasSource() )
+	// sourceReference n is file n - 1 of the program
+	int ref = req["arguments"]["sourceReference"].asInt( 1 );
+	const std::vector<WrenchDebugProgram::SourceFile>& files = m_program.files();
+	if ( ref < 1 || ref > (int)files.size() || !files[ref - 1].hasText )
 	{
 		respond( req, false, Json::object(), "the program has no embedded source" );
 		return;
 	}
 	Json body = Json::object();
-	body.set( "content", m_program.source() );
+	body.set( "content", files[ref - 1].text );
 	body.set( "mimeType", "text/x-wrench" );
 	respond( req, true, body );
 }

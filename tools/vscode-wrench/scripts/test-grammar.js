@@ -42,6 +42,9 @@ const lines = [
 	'    default: break;',
 	'default:',
 	'  retry: goto retry;',
+	'include "lib/util.w";',
+	'private var count = 0;',
+	'var include = private + 1;',
 ];
 
 function scopeOf(tokens, line, text) {
@@ -86,12 +89,18 @@ registry.loadGrammar('source.wrench').then((grammar) => {
 		[10, 'default', 'keyword.control'],
 		[11, 'default', 'keyword.control'],
 		[12, 'retry', 'entity.name.label'],
+		[13, 'include', 'keyword.control.import'],
+		[13, 'lib/util.w', 'string.quoted.double'],
+		[14, 'private', 'storage.modifier'],
+		[14, 'var', 'storage.type'],
 	];
 	// scopes a token must not have
 	const reject = [
 		[9, 'case', 'entity.name.label'],
 		[10, 'default', 'entity.name.label'],
 		[11, 'default', 'entity.name.label'],
+		[15, 'include', 'keyword.control.import'], // a plain name elsewhere
+		[15, 'private', 'storage.modifier'],
 	];
 
 	let failed = 0;

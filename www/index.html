@@ -999,7 +999,45 @@ var myRed = new Color() { red = 0xFF, blue = 0, green = 0 };
 // ... etc
 </code></pre>
 
+<p>Importing is for code loaded while the program runs, like a library.
+To organize the source of one program in several files, include them.
 
+<p><b>include</b>
+<p>At the top level of a script (not inside a function or a block),
+<code>include "file.w"</code> compiles that file in its place. Its functions,
+structs and globals become part of the program. Each file is compiled once
+per program however often it is included, so files may include each other.
+<code><pre>// main.w
+include "lib/color.w";
+include "lib/shapes.w"; // includes "color.w" as well, it is not compiled again
+
+var c = makeColor( 255, 0, 0 );
+</code></pre>
+<p>A name is looked for next to the file that includes it, then in the
+folders given with <code>-I</code> on the command line, then in the
+<code>"include"</code> folders of <code>wrench.json</code>. The compiler opens
+no files itself (it may run on a device): a host that compiles with includes
+passes a callback that hands it the text of a file, see
+<code>wr_compileWithOptions()</code> and <code>WR_INCLUDE_CALLBACK</code> in
+wrench.h. A compile error in an included file names that file and its line,
+and the debugger shows and stops in every file of the program.
+
+<p><b>private</b>
+<p>A top level <code>var</code> or <code>function</code> after
+<code>private</code> belongs to its file, like <code>static</code> in C: code
+in other files does not see it, and other files may have their own of the
+same name. Everything else is shared by all the files of the program, where
+two functions of one name are an error.
+<code><pre>// counter.w
+private var count = 0;
+private function step() { return 1; }
+
+function next() { count += step(); return count; }
+</code></pre>
+<p>A private global is not found by <code>wr_getGlobalRef()</code>, and a
+private function cannot be called by its name from another file or from the
+host. <code>private</code> is only special at the start of a top level
+statement, anywhere else it is a plain name.
 
 
 <p><b>constants</b>

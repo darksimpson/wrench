@@ -27,6 +27,7 @@ SOFTWARE.
 #ifdef WRENCH_INCLUDE_DEBUG_CLIENT
 
 #include "utils/wrench_debug_host.h"
+#include "utils/wrench_include_host.h"
 #include "debug/debug.h"
 
 #include <stdio.h>
@@ -65,14 +66,14 @@ std::string wr_debugErrorText( uint8_t error )
 }
 
 bool wr_compileForDebug( const std::string& path, std::vector<uint8_t>& bytecode,
-												std::string& source, std::string& error, bool embedSource )
+												std::string& source, std::string& error, bool embedSource, const WrenchProject* project )
 {
 	uint8_t flags = WR_INCLUDE_GLOBALS | WR_EMBED_DEBUG_CODE | (embedSource ? WR_EMBED_SOURCE_CODE : 0);
-	return wr_compileWithFlags( path, bytecode, source, error, flags );
+	return wr_compileWithFlags( path, bytecode, source, error, flags, project );
 }
 
 bool wr_compileWithFlags( const std::string& path, std::vector<uint8_t>& bytecode,
-												std::string& source, std::string& error, uint8_t flags )
+												std::string& source, std::string& error, uint8_t flags, const WrenchProject* project )
 {
 	bytecode.clear();
 	if ( !wr_readTextFile(path, source) )
@@ -81,27 +82,24 @@ bool wr_compileWithFlags( const std::string& path, std::vector<uint8_t>& bytecod
 		return false;
 	}
 
-	unsigned char* out = 0;
-	int outLen = 0;
-	WRstr message;
-	WRError err = wr_compile( source.c_str(), (int)source.size(), &out, &outLen, &message, flags );
+	WrenchIncludeResolver includes;
+	if ( project )
+	{
+		includes.searchPaths = project->includePaths();
+	}
+	std::string message;
+	WRError err = wr_compileWithIncludes( path, source, flags, &includes, bytecode, &message );
 	if ( err != WR_ERR_None )
 	{
-		error = path + ": " + std::string( message.c_str() );
-		if ( message.size() == 0 )
-		{
-			error += c_errStrings[err];
-		}
+		// the message starts with the file and line
+		error = message.empty() ? path + ": " + c_errStrings[err] : message;
 		return false;
 	}
-
-	bytecode.assign( out, out + outLen );
-	g_free( out );
 	return true;
 }
 
 bool wr_loadForDebug( const std::string& path, std::vector<uint8_t>& bytecode,
-											std::string& source, std::string& error, bool* isBytecode )
+											std::string& source, std::string& error, bool* isBytecode, const WrenchProject* project )
 {
 	std::string raw;
 	if ( !wr_readTextFile(path, raw) )
@@ -116,7 +114,7 @@ bool wr_loadForDebug( const std::string& path, std::vector<uint8_t>& bytecode,
 		{
 			*isBytecode = false;
 		}
-		return wr_compileForDebug( path, bytecode, source, error );
+		return wr_compileForDebug( path, bytecode, source, error, true, project );
 	}
 
 	if ( isBytecode )
@@ -627,7 +625,7 @@ int wr_debugServerMain( const WrenchTransportSpec& spec, const char* programPath
 		std::vector<uint8_t> bytecode;
 		std::string source;
 		std::string error;
-		if ( !wr_loadForDebug(programPath, bytecode, source, error) )
+		if ( !wr_loadForDebug(programPath, bytecode, source, error, nullptr, project) )
 		{
 			fprintf( stderr, "%s\n", error.c_str() );
 			wr_destroyState( w );

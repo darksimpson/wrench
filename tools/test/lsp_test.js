@@ -4,6 +4,7 @@
 
 const { spawn } = require('child_process');
 const path = require('path');
+const fs = require('fs');
 const assert = require('assert');
 
 const exe = process.argv[2] || path.join(__dirname, '..', '..', 'win32', 'Debug', 'wrench.exe');
@@ -195,6 +196,26 @@ function at(line, needle, n = 0) {
 async function openDoc(lsp, docUri, text, version = 1) {
 	lsp.notify('textDocument/didOpen', { textDocument: { uri: docUri, languageId: 'wrench', version, text } });
 	return lsp.waitNotification('textDocument/publishDiagnostics', (p) => p.uri === docUri && p.version === version);
+}
+
+// a script that includes others: what they define is defined, an error in
+// one (also in its unsaved editor text) shows on the include that brings it
+async function testIncludes(lsp) {
+	const dir = path.join(__dirname, 'fixtures', 'includes');
+	const mainUri = vscodeUri(path.join(dir, 'main.w'));
+	const utilUri = vscodeUri(path.join(dir, 'lib', 'util.w'));
+	const mainText = fs.readFileSync(path.join(dir, 'main.w'), 'utf8');
+
+	let diags = await openDoc(lsp, mainUri, mainText);
+	assert.deepStrictEqual(diags.diagnostics, [], JSON.stringify(diags.diagnostics));
+
+	await openDoc(lsp, utilUri, 'function utilSquare( x )\n{\n\treturn x * ;\n}\n');
+	lsp.notify('textDocument/didChange', { textDocument: { uri: mainUri, version: 2 }, contentChanges: [{ text: mainText }] });
+	diags = await lsp.waitNotification('textDocument/publishDiagnostics', (p) => p.uri === mainUri && p.version === 2);
+	assert.strictEqual(diags.diagnostics.length, 1, JSON.stringify(diags.diagnostics));
+	assert.strictEqual(diags.diagnostics[0].range.start.line, 0);
+	// the compiler notices the missing operand at the '}' on line 4
+	assert(/^util\.w:4: bad expression/.test(diags.diagnostics[0].message), diags.diagnostics[0].message);
 }
 
 // regression checks for the audit findings
@@ -394,6 +415,7 @@ async function testAuditFixes(lsp) {
 
 		await testHostProject(lsp);
 		await testAuditFixes(lsp);
+		await testIncludes(lsp);
 
 		await lsp.request('shutdown', null);
 		lsp.notify('exit', null);

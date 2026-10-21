@@ -92,6 +92,8 @@
 		"keywords": {
 			"patterns": [
 				{ "name": "keyword.control.wrench", "match": "\\b(if|else|while|for|do|switch|case|default|break|continue|return|goto|yield)\\b" },
+				{ "name": "keyword.control.import.wrench", "match": "^\\s*(include)\\b(?=\\s*\")" },
+				{ "name": "storage.modifier.wrench", "match": "^\\s*(private)\\b(?=\\s+(?:var|function)\\b)" },
 				{ "name": "storage.type.wrench", "match": "\\b(var|blank|function|struct|enum|export|unit)\\b" },
 				{ "name": "keyword.operator.new.wrench", "match": "\\bnew\\b" },
 				{ "name": "constant.language.wrench", "match": "\\b(true|false|null)\\b" },

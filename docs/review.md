@@ -234,6 +234,42 @@ Debugger and tools:
   with `setLinkTimeout` no longer lets go while the user reads variables.
   `wrench dbgserver -linktimeout <ms>` sets the timeout on a PC target.
 
+## Modules: include and private, done
+
+`tests/038_include.w` (with `tests/include/`), the internal test
+`[include and private]`, debugger, VS Code adapter, language server and
+grammar tests cover this.
+
+* `include "file.w"` at the top level compiles that file in place, once per
+  program (repeats and cycles are skipped). It is expanded before parsing
+  (`src/cc/include.cpp`), so parser, long jumps and line markers see one
+  text; nothing is copied when nothing is included. The compiler opens no
+  files: `wr_compileWithOptions()` takes an include callback. The host tools
+  look next to the including file, then in `-I` folders (`wrench c`, `p`,
+  `r`, `ch`), then in the `"include"` folders of `wrench.json`. Errors name
+  the file and its own line (`WR_ERR_include_not_found`, `_not_supported`,
+  `_not_at_top_level`, `_too_deep` are new). `sys::importCompile` and
+  `wr_compile` have no callback: include fails there.
+* Lines are numbered through the expanded text; the debug symbols end with
+  a file table (names, segments, embedded text lengths) and
+  `-debugsource` embeds every file. The target and the protocol stay
+  line based; the debug client maps virtual lines to files
+  (`WrenchDebugProgram::locate`, `virtualLine`, `breakableLine(file, line)`).
+  VS Code: breakpoints in every file, frames in their files, embedded
+  sources per file. `wrench dbg`: `b file.w:line`, `l file.w:line`. The
+  language server compiles with includes (open editors count with their
+  unsaved text), shows an error of an included file on the include that
+  brings it in, and counts what included files define.
+* `private var` / `private function` at the top level: the name is its
+  file's own (hash of name and file, like C `static`); code in that file
+  finds it before a shared name, calls are linked per call site's file. A
+  private global is not found by `wr_getGlobalRef()`, a private function not
+  by name from the host or another file. The debugger shows `count@util.w`
+  and evaluates a name in the stopped frame's file.
+* Found on the way: a block comment ending in `**/` did not end; a call
+  between two markers of one line made a breakpoint there stop twice
+  (`println( f() )`), call markers no longer start the line again.
+
 ## Open issues
 
 Language and compiler:
@@ -246,6 +282,14 @@ Language and compiler:
   number still replaces it with a container (`var n = 5; n.k = 1;`); only
   reads were changed. A runtime error there was considered and left out.
 * Reading an element past the end of an array grows the array.
+* Namespaces were deferred. A design that fits: `namespace x { ... }` at the
+  top level prefixes the names declared in it (`x::name`), unqualified names
+  inside look in the namespace first; `x::f()` calls compile as library
+  calls today, the linker would retarget them in place (both 5 bytes) and a
+  library call that finds nothing would look in imported modules.
+* A private function cannot be reached through its name as a value (`var f
+  = helper;` holds the shared name's hash); `private struct` is not
+  supported.
 
 VM:
 
@@ -264,9 +308,9 @@ Debugger:
 * Stepping granularity is the source line; `stopOnEntry` for an attached
   host-driven target means "the next line the firmware executes". Left as
   it is: finer markers would cost code size in every debug build.
-* Programs are single source files; the line table has no file index.
-  Modules loaded with `wr_import` or `sys::importCompile` run without the
-  line hook: they cannot be stepped into and their breakpoints never fire.
+* Modules loaded with `wr_import` or `sys::importCompile` run without the
+  line hook: they cannot be stepped into and their breakpoints never fire
+  (planned together with several contexts per server).
 
 Libraries:
 
@@ -284,5 +328,7 @@ Tools:
 
 * The language server analyses one file at a time and does not infer types,
   so member completion after `.` offers the members of every struct.
+  Diagnostics follow includes; completion, hover and go to definition do
+  not reach into included files yet.
 * `examples/arduino/debug` is an empty sketch with bytecode in an old
   format; `examples/debug_targets/arduino_serial` replaces it.

@@ -33,6 +33,7 @@ SOFTWARE.
 #include "utils/json.h"
 #include "utils/json_stream.h"
 #include "utils/wrench_project.h"
+#include "utils/wrench_include_host.h"
 
 #include <string>
 #include <vector>
@@ -1067,7 +1068,7 @@ private:
 	const WrenchProject* projectFor( const Document& d, std::string* error = nullptr );
 	static bool available( const WrenchLibraryEntry* e, const WrenchProject* project );
 	static std::string describeNative( const WrenchNative& n );
-	void checkCalls( const Document& d, const WrenchProject& project, Json& diagnostics );
+	void checkCalls( const Document& d, const WrenchProject& project, const std::set<std::string>& includedNames, Json& diagnostics );
 
 	struct CachedProject
 	{
@@ -1205,7 +1206,7 @@ std::string LspServer::describeNative( const WrenchNative& n )
 }
 
 // calls the host application will not be able to serve
-void LspServer::checkCalls( const Document& d, const WrenchProject& project, Json& diagnostics )
+void LspServer::checkCalls( const Document& d, const WrenchProject& project, const std::set<std::string>& includedNames, Json& diagnostics )
 {
 	std::vector<size_t> code;
 	for ( size_t i = 0; i < d.tokens.size(); ++i )
@@ -1231,8 +1232,9 @@ void LspServer::checkCalls( const Document& d, const WrenchProject& project, Jso
 
 	int undeclaredSeverity = project.undeclaredCalls() == WrenchProject::Error ? 1 : 2;
 
-	// script functions, and variables that may hold a function
-	std::set<std::string> scriptNames;
+	// script functions, and variables that may hold a function, also of the
+	// files the script includes
+	std::set<std::string> scriptNames = includedNames;
 	for ( const Symbol& s : d.symbols )
 	{
 		if ( s.kind != SymMember )
@@ -1377,9 +1379,24 @@ void LspServer::publishDiagnostics( Document& d )
 
 	Json diagnostics = Json::array();
 
-	unsigned char* out = 0;
-	int outLen = 0;
-	WRstr message;
+	std::string projectError;
+	const WrenchProject* project = projectFor( d, &projectError );
+
+	// includes come from next to the document and the project's folders;
+	// documents open in the editor count with their unsaved text
+	WrenchIncludeResolver includes;
+	if ( project )
+	{
+		includes.searchPaths = project->includePaths();
+	}
+	for ( const auto& open : m_docs )
+	{
+		includes.overrides[WrenchIncludeResolver::normalize(uriToPath(open.first))] = open.second.text;
+	}
+	std::string path = uriToPath( d.uri );
+	std::string errorFile;
+
+	std::string message;
 	int line = 0;
 	int column = 0;
 	WRError err = WR_ERR_None;
@@ -1404,11 +1421,53 @@ void LspServer::publishDiagnostics( Document& d )
 	else
 	{
 		uint8_t flags = WR_INCLUDE_GLOBALS | (m_nonStrict ? WR_NON_STRICT_VAR : 0);
-		err = wr_compileEx( d.text.c_str(), (int)d.text.size(), &out, &outLen, &message, flags, &line, &column );
-		g_free( out );
+		std::vector<uint8_t> image;
+		err = wr_compileWithIncludes( path, d.text, flags, &includes, image, &message, &line, &column, &errorFile );
 	}
 
-	if ( err != WR_ERR_None )
+	bool elsewhere = err != WR_ERR_None && !errorFile.empty()
+		&& WrenchIncludeResolver::normalize( errorFile ) != WrenchIncludeResolver::normalize( path );
+	if ( elsewhere )
+	{
+		// the mistake is in an included file: say so on the include that
+		// brings it in (by its name), or the first include
+		std::string base = errorFile.substr( errorFile.find_last_of("/\\") == std::string::npos ? 0 : errorFile.find_last_of("/\\") + 1 );
+		const Token* at = nullptr;
+		for ( size_t i = 0; i + 1 < d.tokens.size(); ++i )
+		{
+			if ( d.tokens[i].kind != TokIdent || d.tokens[i].text != "include" )
+			{
+				continue;
+			}
+			size_t next = i + 1;
+			while ( next < d.tokens.size() && d.tokens[next].kind == TokComment )
+			{
+				++next;
+			}
+			if ( next >= d.tokens.size() || d.tokens[next].kind != TokString )
+			{
+				continue;
+			}
+			if ( !at || d.tokens[next].text.find(base) != std::string::npos )
+			{
+				at = &d.tokens[next];
+			}
+		}
+		std::string text = c_errStrings[err];
+		if ( text.compare(0, 7, "WR_ERR_") == 0 )
+		{
+			text = text.substr( 7 );
+		}
+		std::replace( text.begin(), text.end(), '_', ' ' );
+		Json diag = Json::object();
+		diag.set( "range", rangeJson(at ? at->range : Range()) );
+		diag.set( "severity", 1 );
+		diag.set( "source", "wrench" );
+		diag.set( "code", c_errStrings[err] );
+		diag.set( "message", base + ":" + std::to_string(line) + ": " + text );
+		diagnostics.push( diag );
+	}
+	else if ( err != WR_ERR_None )
 	{
 		// the compiler reports the column just past the offending token, in
 		// bytes; tokens count UTF-16 units
@@ -1492,11 +1551,32 @@ void LspServer::publishDiagnostics( Document& d )
 		diagnostics.push( diag );
 	}
 
-	std::string projectError;
-	const WrenchProject* project = projectFor( d, &projectError );
 	if ( project )
 	{
-		checkCalls( d, *project, diagnostics );
+		// what the included files define is defined for this script too
+		std::set<std::string> includedNames;
+		for ( const std::string& file : includes.filesRead )
+		{
+			Document included;
+			auto open = includes.overrides.find( file );
+			if ( open != includes.overrides.end() )
+			{
+				included.text = open->second;
+			}
+			else if ( !wr_readHostFile(file, included.text) )
+			{
+				continue;
+			}
+			included.index();
+			for ( const Symbol& s : included.symbols )
+			{
+				if ( s.kind != SymMember )
+				{
+					includedNames.insert( s.name );
+				}
+			}
+		}
+		checkCalls( d, *project, includedNames, diagnostics );
 	}
 	else if ( !projectError.empty() )
 	{

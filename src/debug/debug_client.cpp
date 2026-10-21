@@ -72,6 +72,8 @@ void WrenchDebugProgram::clear()
 	m_lineTable.clear();
 	m_lines.clear();
 	m_members.clear();
+	m_files.clear();
+	m_segments.clear();
 }
 
 std::string WrenchDebugProgram::displayName( const std::string& label )
@@ -139,13 +141,17 @@ bool WrenchDebugProgram::parse( const uint8_t* b, uint32_t len, std::string* err
 		pos += 6 + symbolsLen;
 	}
 
+	// the embedded source block: every file's text one after the other, the
+	// file table (in the symbols) says how long each is
+	std::string sourceBlock;
+	bool haveSourceBlock = false;
 	if ( (m_flags & WR_EMBED_SOURCE_CODE) && pos + 4 <= len )
 	{
 		uint32_t sourceLen = wr_rd32( b + pos );
 		if ( sourceLen <= len - pos - 4 )
 		{
-			m_source.assign( (const char*)b + pos + 4, sourceLen );
-			m_hasSource = true;
+			sourceBlock.assign( (const char*)b + pos + 4, sourceLen );
+			haveSourceBlock = true;
 			pos += 4 + sourceLen;
 		}
 	}
@@ -227,6 +233,51 @@ bool WrenchDebugProgram::parse( const uint8_t* b, uint32_t len, std::string* err
 				m_members[wr_hashStr(bare.c_str())] = bare;
 			}
 		}
+
+		// the file table: u16 files, each name and u32 embedded text length,
+		// u16 segments, each u32 virtual line, u16 file, u32 line
+		if ( p + 2 <= symbolsLen )
+		{
+			uint32_t files = wr_rd16( symbols + p );
+			p += 2;
+			std::vector<uint32_t> lengths;
+			for ( uint32_t f = 0; f < files && p < symbolsLen; ++f )
+			{
+				SourceFile file;
+				while ( p < symbolsLen && symbols[p] )
+				{
+					file.name += (char)symbols[p++];
+				}
+				++p;
+				lengths.push_back( (p + 4 <= symbolsLen) ? wr_rd32(symbols + p) : 0 );
+				p += 4;
+				m_files.push_back( file );
+			}
+			uint32_t segments = (p + 2 <= symbolsLen) ? wr_rd16( symbols + p ) : 0;
+			p += 2;
+			for ( uint32_t s = 0; s < segments && p + 10 <= symbolsLen; ++s, p += 10 )
+			{
+				Segment seg;
+				seg.virtualLine = (int)wr_rd32( symbols + p );
+				seg.file = (int)wr_rd16( symbols + p + 4 );
+				seg.line = (int)wr_rd32( symbols + p + 6 );
+				if ( seg.file < (int)m_files.size() )
+				{
+					m_segments.push_back( seg );
+				}
+			}
+
+			uint32_t at = 0;
+			for ( size_t f = 0; haveSourceBlock && f < m_files.size(); ++f )
+			{
+				if ( lengths[f] && at + lengths[f] <= sourceBlock.size() )
+				{
+					m_files[f].text = sourceBlock.substr( at, lengths[f] );
+					m_files[f].hasText = true;
+				}
+				at += lengths[f];
+			}
+		}
 	}
 	else if ( !globalHashes.empty() )
 	{
@@ -259,8 +310,111 @@ bool WrenchDebugProgram::parse( const uint8_t* b, uint32_t len, std::string* err
 		m_functions[u].codeEnd = end;
 	}
 
+	// without a file table the program is one file, the whole source block
+	if ( m_files.empty() )
+	{
+		SourceFile file;
+		file.text = sourceBlock;
+		file.hasText = haveSourceBlock;
+		m_files.push_back( file );
+	}
+	if ( m_segments.empty() )
+	{
+		Segment seg;
+		seg.virtualLine = 1;
+		seg.file = 0;
+		seg.line = 1;
+		m_segments.push_back( seg );
+	}
+	m_source = m_files[0].text;
+	m_hasSource = m_files[0].hasText;
+
 	buildLineTable();
 	return true;
+}
+
+void WrenchDebugProgram::locate( int virtualLine, int& file, int& line ) const
+{
+	file = 0;
+	line = virtualLine;
+	for ( const Segment& s : m_segments )
+	{
+		if ( s.virtualLine > virtualLine )
+		{
+			break;
+		}
+		file = s.file;
+		line = s.line + (virtualLine - s.virtualLine);
+	}
+}
+
+int WrenchDebugProgram::virtualLine( int file, int line ) const
+{
+	for ( size_t i = 0; i < m_segments.size(); ++i )
+	{
+		const Segment& s = m_segments[i];
+		if ( s.file != file || line < s.line )
+		{
+			continue;
+		}
+		// a segment ends where the next one starts; the last one runs on
+		bool last = (i + 1 == m_segments.size());
+		int span = last ? 0 : m_segments[i + 1].virtualLine - s.virtualLine;
+		if ( last || line < s.line + span )
+		{
+			return s.virtualLine + (line - s.line);
+		}
+	}
+	return -1;
+}
+
+int WrenchDebugProgram::breakableLine( int file, int line ) const
+{
+	for ( int l = line; ; ++l )
+	{
+		int v = virtualLine( file, l );
+		if ( v < 0 )
+		{
+			// past the file's last segment: no more lines of it here
+			bool more = false;
+			for ( const Segment& s : m_segments )
+			{
+				more = more || (s.file == file && s.line > l);
+			}
+			if ( !more )
+			{
+				return -1;
+			}
+			continue;
+		}
+		int found = breakableLine( v );
+		if ( found < 0 )
+		{
+			return -1;
+		}
+		int foundFile = 0;
+		int foundLine = 0;
+		locate( found, foundFile, foundLine );
+		if ( foundFile == file )
+		{
+			return found;
+		}
+		// the next marker is in an included file: carry on after it, in
+		// the next part of this file
+		int resume = -1;
+		for ( const Segment& s : m_segments )
+		{
+			if ( s.file == file && s.line > l && (resume < 0 || s.line < resume) )
+			{
+				resume = s.line;
+			}
+		}
+		if ( resume < 0 )
+		{
+			return -1;
+		}
+		l = resume - 1;
+	}
 }
 
 void WrenchDebugProgram::buildLineTable()
@@ -385,15 +539,36 @@ std::string WrenchDebugProgram::localName( int vmFunction, int slot ) const
 	return "local" + std::to_string( slot );
 }
 
-int WrenchDebugProgram::globalSlot( const std::string& name ) const
+int WrenchDebugProgram::globalSlot( const std::string& name, int file ) const
 {
 	if ( m_functions.empty() )
 	{
 		return -1;
 	}
+
+	// a private global of that file ("x@util.w", the compiler adds "#n"
+	// when two included files share a base name) hides a shared one
+	std::string wanted = displayName( name );
+	if ( file >= 0 && file < (int)m_files.size() && wanted.find('@') == std::string::npos )
+	{
+		const std::string& full = m_files[file].name;
+		size_t slash = full.find_last_of( "/\\" );
+		std::string base = full.empty() ? std::string( "main" ) : (slash == std::string::npos ? full : full.substr(slash + 1));
+		std::string plain = wanted + "@" + base;
+		std::string numbered = plain + "#" + std::to_string( file );
+		for ( size_t i = 0; i < m_functions[0].locals.size(); ++i )
+		{
+			std::string have = displayName( m_functions[0].locals[i] );
+			if ( have == plain || have == numbered )
+			{
+				return (int)i;
+			}
+		}
+	}
+
 	for ( size_t i = 0; i < m_functions[0].locals.size(); ++i )
 	{
-		if ( displayName(m_functions[0].locals[i]) == displayName(name) )
+		if ( displayName(m_functions[0].locals[i]) == wanted )
 		{
 			return (int)i;
 		}

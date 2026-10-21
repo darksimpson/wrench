@@ -518,8 +518,13 @@ void WRCompilationContext::pushDebug( uint16_t code, WRBytecode& bytecode, int p
 		return;
 	}
 
-	m_lastParam = param;
-	m_lastCode = code;
+	// a call marker between two markers of one line does not make the line
+	// start again: a breakpoint there would stop twice (println( f() ))
+	if ( code != WRD_FunctionCall )
+	{
+		m_lastParam = param;
+		m_lastCode = code;
+	}
 
 	if ( code == WRD_LineNumber && param > WRD_PayloadMask )
 	{

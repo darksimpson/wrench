@@ -785,7 +785,14 @@ bool WrenchDebugEvaluator::lookupName( const std::string& name, bool forceGlobal
 		}
 	}
 
-	int slot = m_program.globalSlot( name );
+	// the selected frame's file decides which private global a name means
+	int file = -1;
+	if ( m_frame >= 0 && (size_t)m_frame < m_frames.size() )
+	{
+		int line = 0;
+		m_program.locate( m_frames[m_frame].line, file, line );
+	}
+	int slot = m_program.globalSlot( name, file );
 	if ( slot >= 0 )
 	{
 		std::vector<WrenchDebugValue> globals;

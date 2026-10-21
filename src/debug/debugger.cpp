@@ -123,9 +123,14 @@ private:
 	void showBacktrace();
 	void showVariables( bool locals, bool globals );
 	void showDisplays();
-	void listSource( int center, int radius );
-	void toggleBreakpoint( int line );
+	void listSource( int file, int center, int radius );
+	void toggleBreakpoint( const std::string& arg );
 	bool syncBreakpoints();
+	void buildFileLines();
+	const std::vector<std::string>& linesOf( int file ) const;
+	std::string where( int virtualLine ) const;
+	int currentFile() const;
+	bool parseLocation( const std::string& arg, int& file, int& line ) const;
 	void addWatch( const std::string& expr );
 	void removeWatch( const std::string& arg );
 	void listWatches();
@@ -150,8 +155,8 @@ private:
 	WrenchProject m_project;
 	std::string m_source;
 	bool m_sourceIsBytecode = false;
-	std::vector<std::string> m_lines;
-	std::vector<int> m_breakpoints;
+	std::vector<std::vector<std::string> > m_fileLines; // each file of the program (include "file")
+	std::vector<int> m_breakpoints; // virtual lines, as the target has them
 	std::map<int, std::string> m_watches; // target watch id, expression
 	std::vector<std::string> m_displays;
 	std::vector<WrenchDebugStackFrame> m_frames;
@@ -226,7 +231,7 @@ bool CliDebugger::loadProgram( std::string& error )
 	std::vector<uint8_t> bytecode;
 	std::string source;
 	bool isBytecode = false;
-	if ( !wr_loadForDebug(m_sourcePath, bytecode, source, error, &isBytecode) )
+	if ( !wr_loadForDebug(m_sourcePath, bytecode, source, error, &isBytecode, m_project.loaded() ? &m_project : nullptr) )
 	{
 		return false;
 	}
@@ -234,8 +239,8 @@ bool CliDebugger::loadProgram( std::string& error )
 	{
 		return false;
 	}
-	m_lines = splitLines( source );
 	m_source = source;
+	buildFileLines();
 	m_sourceIsBytecode = isBytecode;
 	if ( isBytecode && source.empty() )
 	{
@@ -255,10 +260,90 @@ bool CliDebugger::fetchProgram()
 		return false;
 	}
 	m_source = m_program.source();
-	m_lines = splitLines( m_source );
+	buildFileLines();
 	printf( "read the program from the target (%u bytes, %s)\n", (unsigned)remote.size(),
 					m_program.hasSource() ? "source embedded" : "no source, compile with -debugsource to see it" );
 	return true;
+}
+
+// the text of every file of the program, the main one from the file given
+// when the program carries none
+void CliDebugger::buildFileLines()
+{
+	m_fileLines.clear();
+	const std::vector<WrenchDebugProgram::SourceFile>& files = m_program.files();
+	for ( size_t f = 0; f < files.size(); ++f )
+	{
+		m_fileLines.push_back( splitLines(files[f].hasText ? files[f].text : (f == 0 ? m_source : std::string())) );
+	}
+	if ( m_fileLines.empty() )
+	{
+		m_fileLines.push_back( splitLines(m_source) );
+	}
+}
+
+const std::vector<std::string>& CliDebugger::linesOf( int file ) const
+{
+	static const std::vector<std::string> none;
+	return (file >= 0 && file < (int)m_fileLines.size()) ? m_fileLines[file] : none;
+}
+
+// "line 12" in the main file, "line 3 of util.w" in an included one
+std::string CliDebugger::where( int virtualLine ) const
+{
+	int file = 0;
+	int line = virtualLine;
+	m_program.locate( virtualLine, file, line );
+	std::string text = "line " + std::to_string( line );
+	if ( file > 0 && file < (int)m_program.files().size() )
+	{
+		const std::string& name = m_program.files()[file].name;
+		size_t slash = name.find_last_of( "/\\" );
+		text += " of " + (slash == std::string::npos ? name : name.substr(slash + 1));
+	}
+	return text;
+}
+
+// the file of the selected frame while stopped, else the main one
+int CliDebugger::currentFile() const
+{
+	if ( !m_stopped || m_frames.empty() )
+	{
+		return 0;
+	}
+	int file = 0;
+	int line = 0;
+	m_program.locate( m_frames[m_frame].line, file, line );
+	return file;
+}
+
+// "12" (a line of the current file) or "util.w:12" (the file by its name or
+// the end of its path)
+bool CliDebugger::parseLocation( const std::string& arg, int& file, int& line ) const
+{
+	size_t colon = arg.find_last_of( ':' );
+	file = currentFile();
+	if ( colon == std::string::npos )
+	{
+		line = atoi( arg.c_str() );
+		return line > 0;
+	}
+	std::string name = arg.substr( 0, colon );
+	line = atoi( arg.c_str() + colon + 1 );
+	const std::vector<WrenchDebugProgram::SourceFile>& files = m_program.files();
+	for ( size_t f = 0; f < files.size(); ++f )
+	{
+		const std::string& full = files[f].name;
+		bool match = full == name
+			|| (full.size() > name.size() && full.compare(full.size() - name.size(), name.size(), name) == 0
+				&& (full[full.size() - name.size() - 1] == '/' || full[full.size() - name.size() - 1] == '\\'));
+		if ( match )
+		{
+			file = (int)f;
+			return line > 0;
+		}
+	}
+	return false;
 }
 
 bool CliDebugger::syncBreakpoints()
@@ -314,10 +399,11 @@ bool CliDebugger::start()
 			std::string source;
 			std::string error;
 			WrenchDebugProgram rebuilt;
-			if ( wr_compileWithFlags(m_sourcePath, matching, source, error, info.compilerFlags)
+			if ( wr_compileWithFlags(m_sourcePath, matching, source, error, info.compilerFlags, m_project.loaded() ? &m_project : nullptr)
 					&& rebuilt.parse(matching.data(), (uint32_t)matching.size(), &error) )
 			{
 				m_program = rebuilt;
+				buildFileLines();
 			}
 		}
 		if ( info.programHash != m_program.hash() )
@@ -365,7 +451,7 @@ void CliDebugger::onStopped( const WrenchDebugEvent& e )
 	m_frame = 0;
 	if ( e.reason == WRD_StopError )
 	{
-		printf( "\n*** runtime error %s at line %d\n", wr_debugErrorText(e.error).c_str(), e.line );
+		printf( "\n*** runtime error %s at %s\n", wr_debugErrorText(e.error).c_str(), where(e.line).c_str() );
 		std::string missing = wr_describeMissingFunction( e.error, e.missingFunction, m_source, m_project.loaded() ? &m_project : nullptr );
 		if ( !missing.empty() )
 		{
@@ -374,11 +460,11 @@ void CliDebugger::onStopped( const WrenchDebugEvent& e )
 	}
 	else if ( e.reason == WRD_StopWatch )
 	{
-		printf( "\n[watch %d: %s changed] line %d\n", e.watch, watchName(e.watch).c_str(), e.line );
+		printf( "\n[watch %d: %s changed] %s\n", e.watch, watchName(e.watch).c_str(), where(e.line).c_str() );
 	}
 	else
 	{
-		printf( "\n[%s] line %d\n", stopReasonText(e.reason), e.line );
+		printf( "\n[%s] %s\n", stopReasonText(e.reason), where(e.line).c_str() );
 	}
 	refreshStack();
 	showLocation();
@@ -529,7 +615,7 @@ void CliDebugger::waitForStop()
 				}
 				else if ( e.error )
 				{
-					printf( "\n[ended with %s near line %d]\n", wr_debugErrorText(e.error).c_str(), e.line );
+					printf( "\n[ended with %s near %s]\n", wr_debugErrorText(e.error).c_str(), where(e.line).c_str() );
 					std::string missing = wr_describeMissingFunction( e.error, e.missingFunction, m_source, m_project.loaded() ? &m_project : nullptr );
 					if ( !missing.empty() )
 					{
@@ -562,15 +648,17 @@ void CliDebugger::waitForStop()
 	}
 }
 
-void CliDebugger::listSource( int center, int radius )
+void CliDebugger::listSource( int file, int center, int radius )
 {
+	const std::vector<std::string>& lines = linesOf( file );
 	int first = (std::max)( 1, center - radius );
-	int last = (std::min)( (int)m_lines.size(), center + radius );
+	int last = (std::min)( (int)lines.size(), center + radius );
 	int current = (!m_frames.empty() && m_stopped) ? m_frames[m_frame].line : -1;
 	for ( int l = first; l <= last; ++l )
 	{
-		bool bp = std::find( m_breakpoints.begin(), m_breakpoints.end(), l ) != m_breakpoints.end();
-		printf( "%c%s%4d  %s\n", bp ? '*' : ' ', l == current ? ">" : " ", l, m_lines[l - 1].c_str() );
+		int v = m_program.virtualLine( file, l );
+		bool bp = v > 0 && std::find( m_breakpoints.begin(), m_breakpoints.end(), v ) != m_breakpoints.end();
+		printf( "%c%s%4d  %s\n", bp ? '*' : ' ', (v > 0 && v == current) ? ">" : " ", l, lines[l - 1].c_str() );
 	}
 }
 
@@ -581,10 +669,13 @@ void CliDebugger::showLocation()
 		return;
 	}
 	const WrenchDebugStackFrame& f = m_frames[m_frame];
-	printf( "in %s, line %d\n", f.name.c_str(), f.line );
-	if ( !m_lines.empty() )
+	int file = 0;
+	int line = f.line;
+	m_program.locate( f.line, file, line );
+	printf( "in %s, %s\n", f.name.c_str(), where(f.line).c_str() );
+	if ( !linesOf(file).empty() )
 	{
-		listSource( f.line, 2 );
+		listSource( file, line, 2 );
 	}
 }
 
@@ -592,7 +683,7 @@ void CliDebugger::showBacktrace()
 {
 	for ( size_t i = 0; i < m_frames.size(); ++i )
 	{
-		printf( "%c#%d  %s  line %d\n", (int)i == m_frame ? '>' : ' ', (int)i, m_frames[i].name.c_str(), m_frames[i].line );
+		printf( "%c#%d  %s  %s\n", (int)i == m_frame ? '>' : ' ', (int)i, m_frames[i].name.c_str(), where(m_frames[i].line).c_str() );
 	}
 }
 
@@ -674,34 +765,43 @@ void CliDebugger::setExpression( const std::string& text )
 	printf( "%s = %s\n", path.c_str(), ev.describe(result).c_str() );
 }
 
-void CliDebugger::toggleBreakpoint( int line )
+void CliDebugger::toggleBreakpoint( const std::string& arg )
 {
+	int file = 0;
+	int line = 0;
+	if ( !parseLocation(arg, file, line) )
+	{
+		printf( "no such line or file: %s\n", arg.c_str() );
+		return;
+	}
+
 	// a breakpoint asked for on a line without code sits on the next line
 	// with code: toggling the same request again removes it from there
-	int actual = m_program.breakableLine( line );
-	auto it = std::find( m_breakpoints.begin(), m_breakpoints.end(), line );
+	int requested = m_program.virtualLine( file, line );
+	int actual = m_program.breakableLine( file, line );
+	auto it = std::find( m_breakpoints.begin(), m_breakpoints.end(), requested );
 	if ( it == m_breakpoints.end() && actual >= 0 )
 	{
 		it = std::find( m_breakpoints.begin(), m_breakpoints.end(), actual );
 	}
 	if ( it != m_breakpoints.end() )
 	{
-		printf( "breakpoint removed from line %d\n", *it );
+		printf( "breakpoint removed from %s\n", where(*it).c_str() );
 		m_breakpoints.erase( it );
 	}
 	else
 	{
 		if ( actual < 0 )
 		{
-			printf( "no code at or after line %d\n", line );
+			printf( "no code at or after %s\n", requested > 0 ? where(requested).c_str() : arg.c_str() );
 			return;
 		}
-		if ( actual != line )
+		if ( actual != requested )
 		{
-			printf( "line %d has no code, using line %d\n", line, actual );
+			printf( "%s has no code, using %s\n", requested > 0 ? where(requested).c_str() : arg.c_str(), where(actual).c_str() );
 		}
 		m_breakpoints.push_back( actual );
-		printf( "breakpoint at line %d\n", actual );
+		printf( "breakpoint at %s\n", where(actual).c_str() );
 	}
 	syncBreakpoints();
 }
@@ -713,13 +813,14 @@ void CliDebugger::help()
 					"n, next           step over\n"
 					"s, step           step into\n"
 					"o, finish         step out of the current function\n"
-					"b <line>          toggle a breakpoint, 'b' alone lists them\n"
+					"b <line>          toggle a breakpoint, 'b' alone lists them; file.w:line\n"
+					"                  for a file the program includes\n"
 					"watch <var>       stop when a variable, element or member changes: x, a[2], s.member\n"
 					"                  ('watch' alone lists them)\n"
 					"unwatch [n]       remove watch n, or all of them\n"
 					"bt, where         show the call stack\n"
 					"f <n>             select stack frame n\n"
-					"l [line]          list source around the current line or 'line'\n"
+					"l [line]          list source around the current line or 'line' (or file.w:line)\n"
 					"p <expr>          print an expression: x, a[2], s.member, h[\"key\"], x + 1 > 3\n"
 					"set <var> = <v>   change a variable\n"
 					"locals, globals   show variables\n"
@@ -772,7 +873,11 @@ int CliDebugger::run( const char* sourcePath, const char* target, bool attach, c
 	}
 
 	printf( "%s: %d lines, %d functions. 'h' for help.\n", m_sourcePath.empty() ? "target program" : m_sourcePath.c_str(),
-					(int)m_lines.size(), (int)m_program.functions().size() - 1 );
+					(int)linesOf(0).size(), (int)m_program.functions().size() - 1 );
+	if ( m_program.files().size() > 1 )
+	{
+		printf( "includes %d more files, 'b file.w:line' and 'l file.w:line' reach them\n", (int)m_program.files().size() - 1 );
+	}
 
 	signal( SIGINT, onInterrupt );
 	startPinger();
@@ -890,14 +995,18 @@ int CliDebugger::run( const char* sourcePath, const char* target, bool attach, c
 		{
 			if ( arg.empty() )
 			{
-				for ( int l : m_breakpoints )
+				for ( int v : m_breakpoints )
 				{
-					printf( "  line %d: %s\n", l, (l >= 1 && l <= (int)m_lines.size()) ? trim(m_lines[l - 1]).c_str() : "" );
+					int file = 0;
+					int l = 0;
+					m_program.locate( v, file, l );
+					const std::vector<std::string>& lines = linesOf( file );
+					printf( "  %s: %s\n", where(v).c_str(), (l >= 1 && l <= (int)lines.size()) ? trim(lines[l - 1]).c_str() : "" );
 				}
 			}
 			else
 			{
-				toggleBreakpoint( atoi(arg.c_str()) );
+				toggleBreakpoint( arg );
 			}
 		}
 		else if ( cmd == "watch" )
@@ -934,13 +1043,27 @@ int CliDebugger::run( const char* sourcePath, const char* target, bool attach, c
 		}
 		else if ( cmd == "l" || cmd == "list" )
 		{
-			if ( m_lines.empty() )
+			// around the current line, a line of the current file, or file:line
+			int file = currentFile();
+			int center = 5;
+			if ( !arg.empty() )
+			{
+				if ( !parseLocation(arg, file, center) )
+				{
+					printf( "no such line or file: %s\n", arg.c_str() );
+					continue;
+				}
+			}
+			else if ( m_stopped && !m_frames.empty() )
+			{
+				m_program.locate( m_frames[m_frame].line, file, center );
+			}
+			if ( linesOf(file).empty() )
 			{
 				printf( "no source, the program was compiled without -debugsource\n" );
 				continue;
 			}
-			int center = arg.empty() ? ((m_stopped && !m_frames.empty()) ? m_frames[m_frame].line : 5) : atoi( arg.c_str() );
-			listSource( center, 5 );
+			listSource( file, center, 5 );
 		}
 		else if ( cmd == "p" || cmd == "print" )
 		{

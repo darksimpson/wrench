@@ -939,6 +939,133 @@ void testWatchpoints()
 	target.stop();
 }
 
+const char* c_includedLib =
+	"var libValue = 3;\n" // 1
+	"function libTriple( x )\n" // 2
+	"{\n" // 3
+	"  var t = x * libValue;\n" // 4
+	"  return t;\n" // 5
+	"}\n"; // 6
+
+const char* c_includingMain =
+	"var before = 1;\n" // 1
+	"include \"lib.w\";\n" // 2
+	"var r = libTriple( 4 );\n" // 3
+	"println( r );\n"; // 4
+
+bool includeLib( const char* name, const char* includer, WRstr& source, WRstr& resolved, void* usr )
+{
+	if ( strcmp(name, "lib.w") )
+	{
+		return false;
+	}
+	source = c_includedLib;
+	resolved = "lib/lib.w";
+	return true;
+}
+
+// a program built from two files: the target keeps counting lines through
+// both, the client maps them back to files and lines
+void testIncludedFiles()
+{
+	WRCompileOptions options;
+	options.flags = WR_INCLUDE_GLOBALS | WR_EMBED_DEBUG_CODE | WR_EMBED_SOURCE_CODE;
+	options.name = "main.w";
+	options.include = includeLib;
+	unsigned char* bytes = 0;
+	int len = 0;
+	DCHECK( wr_compileWithOptions(c_includingMain, (int)strlen(c_includingMain), &bytes, &len, options) == WR_ERR_None );
+	std::vector<uint8_t> bytecode( bytes, bytes + len );
+	g_free( bytes );
+
+	WrenchDebugProgram program;
+	DCHECK( program.parse(bytecode.data(), (uint32_t)bytecode.size()) );
+	DCHECK( program.files().size() == 2 );
+	if ( program.files().size() != 2 )
+	{
+		return;
+	}
+	DCHECK( program.files()[0].name == "main.w" && program.files()[1].name == "lib/lib.w" );
+	DCHECK( program.files()[0].text == c_includingMain && program.files()[1].text == c_includedLib );
+	DCHECK( program.source() == c_includingMain );
+
+	// lines go there and back
+	int file = -1;
+	int line = -1;
+	for ( int l = 1; l <= 6; ++l )
+	{
+		int v = program.virtualLine( 1, l );
+		program.locate( v, file, line );
+		DCHECK( v > 0 && file == 1 && line == l );
+	}
+	int mainLine3 = program.virtualLine( 0, 3 );
+	program.locate( mainLine3, file, line );
+	DCHECK( file == 0 && line == 3 );
+	DCHECK( program.breakableLine(1, 3) == program.virtualLine(1, 4) ); // the brace has no code
+	DCHECK( program.breakableLine(0, 2) == mainLine3 ); // the include line itself is gone
+
+	TestTarget target;
+	target.start();
+	WrenchDebugClient client( target.pipe().client() );
+	WrenchDebugTargetInfo info;
+	DCHECK( client.connect(info) );
+	DCHECK( client.upload(bytecode) );
+	DCHECK( client.setBreakpoints({ program.breakableLine(1, 4) }) );
+	DCHECK( client.launch(false) );
+
+	WrenchDebugEvent e;
+	std::string output;
+	DCHECK( waitFor(client, WrenchDebugEvent::Stopped, e, &output) && e.reason == WRD_StopBreakpoint );
+	program.locate( e.line, file, line );
+	DCHECK( file == 1 && line == 4 );
+
+	std::vector<WrenchDebugStackFrame> frames;
+	DCHECK( client.getStack(frames, &program, e.line) && frames.size() == 2 );
+	if ( frames.size() == 2 )
+	{
+		DCHECK( frames[0].name == "libTriple" );
+		program.locate( frames[1].line, file, line );
+		DCHECK( file == 0 && line == 3 );
+	}
+	DCHECK( evalText(client, program, "x * libValue") == "12" );
+
+	DCHECK( client.setBreakpoints({}) );
+	DCHECK( client.resume() );
+	DCHECK( waitFor(client, WrenchDebugEvent::Ended, e, &output) );
+	DCHECK( output == "12\n" );
+	target.stop();
+}
+
+// a breakpoint on a line with several calls stops once: the calls do not
+// make the line start again
+void testOneStopPerLine()
+{
+	const char* source =
+		"function f( x ) { return x + 1; }\n" // 1
+		"var a = f( f(1) ) + f( 2 );\n" // 2
+		"println( a );\n"; // 3
+	std::vector<uint8_t> bytecode;
+	WrenchDebugProgram program;
+	DCHECK( compile(source, bytecode, program) );
+
+	TestTarget target;
+	target.start();
+	WrenchDebugClient client( target.pipe().client() );
+	WrenchDebugTargetInfo info;
+	DCHECK( client.connect(info) );
+	DCHECK( client.upload(bytecode) );
+	DCHECK( client.setBreakpoints({ 2 }) );
+	DCHECK( client.launch(false) );
+
+	WrenchDebugEvent e;
+	std::string output;
+	DCHECK( waitFor(client, WrenchDebugEvent::Stopped, e, &output) && e.line == 2 );
+	DCHECK( client.resume() );
+	DCHECK( waitFor(client, WrenchDebugEvent::Ended, e, &output) && e.type == WrenchDebugEvent::Ended );
+	DCHECK( output == "6\n" );
+	target.stop();
+}
+
 // a for loop written over several lines steps through each part on its own
 // line: body, increment, condition, body again
 void testForLoopLines()
@@ -1071,6 +1198,8 @@ bool testDebugger()
 	testServerDriven();
 	testWatchpoints();
 	testForLoopLines();
+	testIncludedFiles();
+	testOneStopPerLine();
 	testPauseAndErrors();
 	testHostDriven();
 	testUploadRefused();

@@ -279,6 +279,51 @@ async function testDataBreakpoints() {
 	dap.close();
 }
 
+// a program built from several files: breakpoints and stack frames in the
+// included file, its folder found through wrench.json
+async function testIncludedFiles() {
+	const dap = new DapClient();
+	const dir = path.join(fixtures, 'includes');
+	const program = path.join(dir, 'main.w');
+	const util = path.join(dir, 'lib', 'util.w');
+	await dap.ok('initialize', { adapterID: 'wrench' });
+	await dap.ok('launch', { program });
+	await dap.waitEvent('initialized');
+
+	const bps = await dap.ok('setBreakpoints', { source: { path: util }, breakpoints: [{ line: 4 }] });
+	assert(bps.breakpoints[0].verified, JSON.stringify(bps));
+	assert.strictEqual(bps.breakpoints[0].line, 5); // the brace has no code
+	const locations = await dap.ok('breakpointLocations', { source: { path: util }, line: 1, endLine: 8 });
+	assert.deepStrictEqual(locations.breakpoints.map((b) => b.line), [1, 5, 6]); // line 1 is top level code
+	const other = await dap.ok('setBreakpoints', { source: { path: path.join(dir, 'shared', 'nowhere.w') }, breakpoints: [{ line: 1 }] });
+	assert(!other.breakpoints[0].verified);
+	await dap.ok('configurationDone');
+
+	const stopped = await dap.waitEvent('stopped');
+	assert.strictEqual(stopped.reason, 'breakpoint');
+	const st = await dap.ok('stackTrace', { threadId: 1 });
+	assert.strictEqual(st.stackFrames[0].name, 'utilSquare');
+	assert.strictEqual(st.stackFrames[0].line, 5);
+	assert(path.resolve(st.stackFrames[0].source.path).toLowerCase() === path.resolve(util).toLowerCase(), st.stackFrames[0].source.path);
+	assert.strictEqual(st.stackFrames[1].line, 6);
+	assert(path.resolve(st.stackFrames[1].source.path).toLowerCase() === path.resolve(program).toLowerCase(), st.stackFrames[1].source.path);
+
+	// the main file's breakpoints stay apart from the included file's
+	await dap.ok('setBreakpoints', { source: { path: program }, breakpoints: [{ line: 8 }] });
+	await dap.ok('setBreakpoints', { source: { path: util }, breakpoints: [] });
+	await dap.ok('continue', { threadId: 1 });
+	const second = await dap.waitEvent('stopped');
+	assert.strictEqual(second.reason, 'breakpoint');
+	const st2 = await dap.ok('stackTrace', { threadId: 1 });
+	assert.strictEqual(st2.stackFrames[0].line, 8);
+
+	await dap.ok('continue', { threadId: 1 });
+	await dap.waitEvent('exited');
+	assert(/total=105/.test(dap.output()), dap.output());
+	await dap.ok('disconnect', { terminateDebuggee: true });
+	dap.close();
+}
+
 async function testRuntimeError() {
 	const dap = new DapClient();
 	const program = path.join(fixtures, 'failing.w');
@@ -561,7 +606,7 @@ async function testRemoteAttach() {
 }
 
 (async () => {
-	const tests = [testLaunchSession, testDataBreakpoints, testRuntimeError, testHostProject, testBinaryProgram, testUploadRefused, testAttachToWaitingScript, testRobustness, testErrors, testRemoteAttach];
+	const tests = [testLaunchSession, testDataBreakpoints, testIncludedFiles, testRuntimeError, testHostProject, testBinaryProgram, testUploadRefused, testAttachToWaitingScript, testRobustness, testErrors, testRemoteAttach];
 	let failed = 0;
 	for (const t of tests) {
 		try {

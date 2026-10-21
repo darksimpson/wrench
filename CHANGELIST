@@ -24,6 +24,13 @@ Language and compiler:
   GGValues for one byte instead of three
 - behaviour change: { } is an empty hash table (an empty array after "var a[] ="); it
   was the int 0, so a copy of it was not the same container
+- include "file.w" at the top level compiles that file in place, once per program;
+  wr_compileWithOptions() takes the include callback (the compiler opens no files), the
+  host tools search next to the including file, -I folders and the "include" folders of
+  wrench.json. Errors name the file and its line. New errors WR_ERR_include_not_found,
+  WR_ERR_include_not_supported, WR_ERR_include_not_at_top_level, WR_ERR_include_too_deep
+- private var / private function at the top level belong to their file, like static in C
+- a block comment ending in **/ did not end
 
 VM:
 - behaviour change: the stack is checked for overflow by default
@@ -122,6 +129,13 @@ Debugger, rebuilt:
 - wrench dbg pings a halted remote target while it waits at the prompt, a target with
   setLinkTimeout no longer lets go while the user reads variables; new wrench dbgserver
   -linktimeout <ms>
+- programs made of several files (include): the debug symbols end with a file table and
+  -debugsource embeds every file; VS Code takes breakpoints in every file and shows frames
+  in their files, wrench dbg has b file.w:line and l file.w:line, private globals show as
+  name@file.w. The language server compiles with includes (open editors count) and puts
+  an included file's error on its include
+- a breakpoint on a line with a call followed by more of the line (println( f() )) stopped
+  twice
 
 Compiler fixes:
 - peephole optimizer merged instructions across jump targets (ternary true arms,

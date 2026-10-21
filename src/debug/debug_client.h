@@ -60,6 +60,17 @@ public:
 		int line;
 	};
 
+	// a program can be compiled from several files (include "file"): the
+	// target and the line table count lines through all of them ("virtual"
+	// lines); the file table maps them back. A program without one is a
+	// single file, file 0, whose lines are the virtual lines
+	struct SourceFile
+	{
+		std::string name; // as the compiler resolved it, empty if unknown
+		std::string text; // when embedded (-debugsource)
+		bool hasText = false;
+	};
+
 	bool parse( const uint8_t* bytecode, uint32_t len, std::string* error = 0 );
 	void clear();
 
@@ -77,7 +88,8 @@ public:
 	std::string functionName( int vmFunction ) const;
 	std::string globalName( int slot ) const;
 	std::string localName( int vmFunction, int slot ) const;
-	int globalSlot( const std::string& name ) const;
+	// file >= 0: a private global of that file wins over a shared one
+	int globalSlot( const std::string& name, int file = -1 ) const;
 	int localSlot( int vmFunction, const std::string& name ) const;
 	int functionForPc( uint32_t pcOffset ) const; // -1 is global code
 
@@ -91,6 +103,17 @@ public:
 
 	// struct member name from its hash, empty if unknown
 	std::string memberName( uint32_t hash ) const;
+
+	// the files the program was compiled from, the main one first
+	const std::vector<SourceFile>& files() const { return m_files; }
+	// which file and line of it a virtual line is
+	void locate( int virtualLine, int& file, int& line ) const;
+	// the virtual line of a file's line, -1 if that line is not part of the
+	// program (a file included twice is there once)
+	int virtualLine( int file, int line ) const;
+	// nearest breakable line of 'file' at or after its 'line', as a virtual
+	// line, -1 if the file has none there
+	int breakableLine( int file, int line ) const;
 
 	static std::string displayName( const std::string& label );
 
@@ -109,6 +132,15 @@ private:
 	std::vector<LineEntry> m_lineTable;
 	std::set<int> m_lines;
 	std::map<uint32_t, std::string> m_members;
+
+	struct Segment
+	{
+		int virtualLine; // from this virtual line on
+		int file; // lines come from this file
+		int line; // starting at this line of it
+	};
+	std::vector<SourceFile> m_files;
+	std::vector<Segment> m_segments;
 };
 
 // a decoded value as reported by the target

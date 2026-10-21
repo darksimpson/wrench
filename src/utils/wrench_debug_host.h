@@ -39,21 +39,26 @@ SOFTWARE.
 #include <memory>
 
 // compile a source file with everything the debugger needs. Returns false
-// with a readable message (including the line) on failure
+// with a readable message (including the file and line) on failure.
+// include "file" looks next to the including file, then in the project's
+// include folders
 bool wr_compileForDebug( const std::string& path, std::vector<uint8_t>& bytecode,
-												std::string& source, std::string& error, bool embedSource = true );
+												std::string& source, std::string& error, bool embedSource = true,
+												const WrenchProject* project = nullptr );
 
 // the same with explicit compiler flags, to match what a target was built
 // with (code offsets differ with and without the embedded source)
 bool wr_compileWithFlags( const std::string& path, std::vector<uint8_t>& bytecode,
-												std::string& source, std::string& error, uint8_t flags );
+												std::string& source, std::string& error, uint8_t flags,
+												const WrenchProject* project = nullptr );
 
 // a program to debug from 'path': wrench source is compiled as above,
 // compiled bytecode (wrench c -debugsource file.w file.bin) is used as it
 // is. 'source' gets the text from the file or from the bytecode, empty when
 // the bytecode carries none. 'isBytecode' tells which kind the file was
 bool wr_loadForDebug( const std::string& path, std::vector<uint8_t>& bytecode,
-											std::string& source, std::string& error, bool* isBytecode = nullptr );
+											std::string& source, std::string& error, bool* isBytecode = nullptr,
+											const WrenchProject* project = nullptr );
 
 bool wr_readTextFile( const std::string& path, std::string& out );
 
