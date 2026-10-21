@@ -153,13 +153,15 @@ struct WRNamespaceLookup
 {
 	uint32_t hash; // hash of symbol
 	WRarray<int> references; // where this symbol is referenced (loaded) in the bytecode
+	WRarray<int> files; // function calls: the source file each reference was written in
 	WRstr label;
-	
+
 	WRNamespaceLookup() { reset(0); }
 	void reset( uint32_t h )
 	{
 		hash = h;
 		references.clear();
+		files.clear();
 	}
 };
 
@@ -546,6 +548,26 @@ public:
 
 	// the source with its includes (set by wr_compileWithOptions)
 	const WRSourceSet* m_sources;
+
+private:
+	// "private var" and "private function" at the top level: the name is the
+	// file's own. It is kept under a hash of its name and its file, and code
+	// in that file finds it before a shared name
+	struct WRPrivateName
+	{
+		int file;
+		uint32_t hash; // of the name as written ("::x" for globals)
+		int index; // global slot or unit
+	};
+	WRarray<WRPrivateName> m_privateGlobals;
+	WRarray<WRPrivateName> m_privateFunctions;
+	bool m_privateNext; // the statement being parsed declares private names
+	bool m_privateArmed; // set by "private", the next statement is the one
+	int currentFile();
+	WRstr privateLabel( const WRstr& name, int file );
+	int findPrivate( const WRarray<WRPrivateName>& names, uint32_t hash, int file ) const;
+
+public:
 
 	// relative jumps are 16 bit; one that turns out farther is recorded and
 	// the source compiled again, emitting that jump in a long form (see

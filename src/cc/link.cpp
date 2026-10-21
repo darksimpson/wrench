@@ -432,9 +432,14 @@ void WRCompilationContext::link( unsigned char** out, int* outLen, const uint8_t
 				unsigned int u2 = 1;
 				int index = base + N.references[r];
 
+				// a private function of the file the call is written in
+				// comes first, it is found by nothing else
+				int file = (r < N.files.count()) ? N.files[r] : 0;
+				int priv = findPrivate( m_privateFunctions, N.hash, file );
+
 				for( ; u2<m_units.count(); ++u2 )
 				{
-					if ( m_units[u2].hash == N.hash ) // local function! call it, manage preserving retval
+					if ( priv >= 0 ? (int)u2 == priv : m_units[u2].hash == N.hash ) // local function! call it, manage preserving retval
 					{
 						if ( m_addDebugSymbols )
 						{

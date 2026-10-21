@@ -91,6 +91,10 @@ WRError WRCompilationContext::compile( const char* source,
 
 	m_units.setCount(1);
 	m_namesAsHashes.setCount(0);
+	m_privateGlobals.clear();
+	m_privateFunctions.clear();
+	m_privateNext = false;
+	m_privateArmed = false;
 
 	m_loadedValue.p2 = INIT_AS_REF;
 
@@ -204,6 +208,71 @@ WRError WRCompilationContext::compile( const char* source,
 	return m_err;
 }
 
+// the file of the source being parsed (0 without includes)
+int WRCompilationContext::currentFile()
+{
+	if ( !m_sources || !m_sources->hasIncludes() )
+	{
+		return 0;
+	}
+	int file = 0;
+	int line = 0;
+	m_sources->locate( getSourcePosition(), file, line );
+	return file;
+}
+
+// a private name as it is kept: "x@util.w", with the file's index too when
+// two included files share a base name
+WRstr WRCompilationContext::privateLabel( const WRstr& name, int file )
+{
+	WRstr tag = "main";
+	if ( m_sources && m_sources->fileName(file).size() )
+	{
+		const char* full = m_sources->fileName( file ).c_str();
+		const char* base = full;
+		for( const char* c = full; *c; ++c )
+		{
+			if ( *c == '/' || *c == '\\' )
+			{
+				base = c + 1;
+			}
+		}
+		tag = base;
+		for( unsigned int f=0; f<m_sources->fileCount(); ++f )
+		{
+			const char* other = m_sources->fileName( f ).c_str();
+			size_t otherLen = strlen( other );
+			size_t baseLen = strlen( base );
+			if ( (int)f == file || otherLen < baseLen || strcmp(other + otherLen - baseLen, base) )
+			{
+				continue;
+			}
+			char before = (otherLen == baseLen) ? '/' : other[otherLen - baseLen - 1];
+			if ( before == '/' || before == '\\' )
+			{
+				tag.appendFormat( "#%d", file );
+				break;
+			}
+		}
+	}
+	WRstr label = name;
+	label += "@";
+	label += tag;
+	return label;
+}
+
+int WRCompilationContext::findPrivate( const WRarray<WRPrivateName>& names, uint32_t hash, int file ) const
+{
+	for( unsigned int i=0; i<names.count(); ++i )
+	{
+		if ( names[i].hash == hash && names[i].file == file )
+		{
+			return names[i].index;
+		}
+	}
+	return -1;
+}
+
 // In strict mode an unknown name may still stand for a function's hash
 // ("var f = callback;", "register( callback );"); once every function is
 // known, anything else is a misspelled variable
@@ -216,6 +285,10 @@ void WRCompilationContext::checkNamesAsHashes()
 		for( unsigned int u = 1; u < m_units.count() && !known; ++u )
 		{
 			known = m_units[u].hash == hash;
+		}
+		for( unsigned int p = 0; p < m_privateFunctions.count() && !known; ++p )
+		{
+			known = m_privateFunctions[p].hash == hash;
 		}
 		if ( !known )
 		{
@@ -1163,6 +1236,16 @@ int WRCompilationContext::addLocalSpaceLoad( WRBytecode& bytecode, WRstr& token,
 			// hash
 			if ( !bytecode.isStructSpace || varSeen ) // structs and explicit 'var' are immune to this
 			{
+				// a private global of this file first
+				int priv = findPrivate( m_privateGlobals, ghash, currentFile() );
+				if ( priv >= 0 )
+				{
+					pushOpcode( bytecode, O_LoadFromGlobal );
+					unsigned char c = (unsigned char)priv;
+					pushData( bytecode, &c, 1 );
+					return priv;
+				}
+
 				for (unsigned int j = 0; j < m_units[0].bytecode.localSpace.count(); ++j)
 				{
 					if (m_units[0].bytecode.localSpace[j].hash == ghash)
@@ -1224,11 +1307,34 @@ int WRCompilationContext::addGlobalSpaceLoad( WRBytecode& bytecode, WRstr& token
 
 	unsigned int i=0;
 
-	for( ; i<m_units[0].bytecode.localSpace.count(); ++i )
+	// a private global of this file hides a shared one of the same name; a
+	// new private one has its own hash, so it is never mistaken for that
+	int file = currentFile();
+	int priv = findPrivate( m_privateGlobals, hash, file );
+	if ( priv >= 0 )
 	{
-		if ( m_units[0].bytecode.localSpace[i].hash == hash )
+		i = (unsigned int)priv;
+		t2 = m_units[0].bytecode.localSpace[i].label;
+		hash = m_units[0].bytecode.localSpace[i].hash;
+	}
+	else if ( varSeen && m_privateNext )
+	{
+		i = m_units[0].bytecode.localSpace.count();
+		WRPrivateName& p = m_privateGlobals.append();
+		p.file = file;
+		p.hash = hash;
+		p.index = (int)i;
+		t2 = privateLabel( t2, file );
+		hash = wr_hash( t2, t2.size() );
+	}
+	else
+	{
+		for( ; i<m_units[0].bytecode.localSpace.count(); ++i )
 		{
-			break;
+			if ( m_units[0].bytecode.localSpace[i].hash == hash )
+			{
+				break;
+			}
 		}
 	}
 
@@ -2198,6 +2304,7 @@ bool WRCompilationContext::parseCallFunction( WRExpression& expression, WRstr fu
 		}
 
 		expression.context[depth].bytecode.functionSpace[i].references.append() = getBytecodePosition( expression.context[depth].bytecode );
+		expression.context[depth].bytecode.functionSpace[i].files.append() = currentFile(); // a private function there is the one
 		expression.context[depth].bytecode.functionSpace[i].hash = hash;
 
 		static const uint32_t c_yieldHash = wr_hashStr("yield");
@@ -2617,6 +2724,26 @@ bool WRCompilationContext::parseUnit( bool isStruct, int parentUnitIndex )
 	}
 
 	uint32_t unitHash = wr_hash( token, token.size() );
+
+	// "private function": kept under its name with its file, calls written
+	// in that file find it first (see link)
+	if ( m_privateNext )
+	{
+		m_privateNext = false;
+		if ( isStruct )
+		{
+			m_err = WR_ERR_unexpected_token;
+			return false;
+		}
+		int file = currentFile();
+		WRstr label = privateLabel( token, file );
+		WRPrivateName& p = m_privateFunctions.append();
+		p.file = file;
+		p.hash = unitHash;
+		p.index = m_unitTop;
+		unitHash = wr_hash( label, label.size() );
+	}
+
 	for( int u=1; u<m_unitTop; ++u )
 	{
 		if ( m_units[u].hash == unitHash )
@@ -4002,6 +4129,38 @@ bool WRCompilationContext::parseStatementBody( int unitIndex, char end, WROpcode
 		{
 			m_err = WR_ERR_unexpected_export_keyword;
 			break;
+		}
+
+		// "private" applies to the one statement after it
+		if ( m_privateArmed )
+		{
+			m_privateArmed = false;
+		}
+		else
+		{
+			m_privateNext = false;
+		}
+
+		// "private var ..." / "private function ..." at the top level makes
+		// the names the file's own; anywhere else private is a plain name
+		if ( !m_quoted && token == "private" && unitIndex == 0 && m_parseDepth == 1 )
+		{
+			if ( !getToken(ex) )
+			{
+				m_err = WR_ERR_unexpected_EOF;
+				return false;
+			}
+			if ( m_quoted || (token != "var" && token != "function") )
+			{
+				m_err = WR_ERR_unexpected_token;
+				return false;
+			}
+			m_loadedToken = token;
+			m_loadedValue = ex.value;
+			m_loadedQuoted = m_quoted;
+			m_privateNext = true;
+			m_privateArmed = true;
+			continue;
 		}
 		
 		if ( !m_quoted && token == "{" )

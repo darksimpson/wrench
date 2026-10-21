@@ -2001,7 +2001,7 @@ static int runWithTable( const char* source, const char* const* entries, const c
 
 bool testIncludes()
 {
-	printf( "test [-][include]: " );
+	printf( "test [-][include and private]: " );
 	bool ok = true;
 
 	const char* files[] =
@@ -2013,6 +2013,7 @@ bool testIncludes()
 		"loop.w", "include \"loop2.w\";\n",
 		"loop2.w", "include \"loop3.w\";\n",
 		"loop3.w", "var deep = 1;\n",
+		"priv.w", "private var hidden = 5;\nprivate function secret() { return 3; }\nfunction reveal() { return hidden + secret(); }\n",
 		0
 	};
 
@@ -2062,6 +2063,14 @@ bool testIncludes()
 		chain[n] = 0;
 		ok = ok && compileWithTable( "include \"d0.w\";", chain ) == WR_ERR_include_too_deep;
 	}
+
+	// private names: the file's own, invisible elsewhere, not found by the host
+	ok = ok && runWithTable( "include \"priv.w\";\nvar hidden = 10;\nvar r = reveal() + hidden;", files, "r" ) == 18;
+	ok = ok && runWithTable( "include \"priv.w\";\nvar r = 0;\nfunction secret() { return 40; }\nr = secret() + reveal();", files, "r" ) == 48;
+	ok = ok && runWithTable( "include \"priv.w\";\nvar r = 1;", files, "hidden" ) == -1;
+	ok = ok && compileWithTable( "private x = 1;", files ) == WR_ERR_unexpected_token;
+	ok = ok && compileWithTable( "private struct S { var a; };", files ) == WR_ERR_unexpected_token;
+	ok = ok && compileWithTable( "private function f() {}\nprivate function f() {}", files ) == WR_ERR_function_redefined;
 
 	printf( ok ? "PASS\n" : "FAIL\n" );
 	return ok;
