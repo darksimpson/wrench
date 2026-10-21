@@ -114,6 +114,11 @@ Debugger, rebuilt:
 - debug::print / debug::println send to the attached debugger and honour the newline
 - for loops get a line marker on their condition, stepping now visits the loop header
 - line numbers above 16383 are encoded with a prefix codeword instead of wrapping
+- watchpoints: a variable, element or member stops the program on the line after it
+  changes; VS Code Break on Value Change (with conditions and hit counts), "watch" and
+  "unwatch" in wrench dbg. Protocol: AddWatch / RemoveWatch requests, stop reason 5,
+  WatchRemoved event, capability bit 0x10 (version stays 2). Children in the VS Code
+  variables view carry their expression (evaluateName), so Add to Watch works for them
 
 Compiler fixes:
 - peephole optimizer merged instructions across jump targets (ternary true arms,

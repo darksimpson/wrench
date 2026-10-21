@@ -204,7 +204,49 @@ struct WrenchDebugEvaluator::Parser
 	bool lastWasPath = false;
 	int depth = 0;
 
+	// when set, the path is also written down the way the target follows a
+	// watch: its root variable, then element positions and key hashes
+	WrenchDebugWatchPath* record = nullptr;
+
 	explicit Parser( WrenchDebugEvaluator& e ) : ev( e ) {}
+
+	// the step that takes a watch from 'parent' to its element or member
+	// 'key', as the target's lookup sees it
+	bool recordStep( const WrenchDebugValue& parent, const WrenchDebugValue& key, bool member )
+	{
+		WrenchDebugWatchStep step;
+		if ( !member && (parent.tag == WRD_ValArray || parent.tag == WRD_ValRaw || parent.tag == WRD_ValString) )
+		{
+			step.kind = WRD_WatchIndex;
+			step.value = (uint32_t)key.i;
+		}
+		else
+		{
+			// a hash table key or struct member travels as its hash: an int
+			// is its own, a float its bits, a string a hash of its bytes
+			step.kind = WRD_WatchKey;
+			if ( key.isString() )
+			{
+				std::string text;
+				if ( !ev.m_client.getString(key, text) )
+				{
+					error = ev.m_client.lastError();
+					return false;
+				}
+				step.value = wr_hash( text.data(), (int)text.size() );
+			}
+			else if ( key.tag == WRD_ValFloat )
+			{
+				memcpy( &step.value, &key.f, 4 );
+			}
+			else
+			{
+				step.value = (uint32_t)key.i;
+			}
+		}
+		record->steps.push_back( step );
+		return true;
+	}
 
 	const Token& peek() const { return toks[pos]; }
 	bool isOp( const char* op ) const { return peek().kind == TokOp && peek().text == op; }
@@ -574,6 +616,13 @@ struct WrenchDebugEvaluator::Parser
 				return false;
 			}
 			path = true;
+			if ( record )
+			{
+				record->global = (where.kind == WrenchDebugLocation::Global);
+				record->frame = where.frame;
+				record->slot = where.slot;
+				record->steps.clear();
+			}
 		}
 		else if ( isOp("(") )
 		{
@@ -606,6 +655,10 @@ struct WrenchDebugEvaluator::Parser
 				{
 					return false;
 				}
+				if ( record && path && !recordStep(out, key, true) )
+				{
+					return false;
+				}
 				out = next;
 			}
 			else if ( isOp("[") )
@@ -613,8 +666,12 @@ struct WrenchDebugEvaluator::Parser
 				++pos;
 				bool savedPath = lastWasPath;
 				WrenchDebugLocation savedWhere = lastWhere;
+				WrenchDebugWatchPath* savedRecord = record;
+				record = nullptr; // a variable inside the brackets is no part of the path
 				WrenchDebugValue key;
-				if ( !parseExpression(key) || !expect("]") )
+				bool parsed = parseExpression( key ) && expect( "]" );
+				record = savedRecord;
+				if ( !parsed )
 				{
 					return false;
 				}
@@ -622,6 +679,10 @@ struct WrenchDebugEvaluator::Parser
 				lastWhere = savedWhere;
 				WrenchDebugValue next;
 				if ( !ev.child(out, key, false, next, where, error) )
+				{
+					return false;
+				}
+				if ( record && path && !recordStep(out, key, false) )
 				{
 					return false;
 				}
@@ -869,6 +930,27 @@ bool WrenchDebugEvaluator::resolve( const std::string& path, WrenchDebugValue& r
 		return false;
 	}
 	where = p.lastWhere;
+	return true;
+}
+
+bool WrenchDebugEvaluator::watchPath( const std::string& path, WrenchDebugWatchPath& out, WrenchDebugValue& current, std::string& error )
+{
+	Parser p( *this );
+	p.record = &out;
+	if ( !tokenize(path, p.toks, error) )
+	{
+		return false;
+	}
+	if ( !p.parsePostfix(current) )
+	{
+		error = p.error;
+		return false;
+	}
+	if ( p.peek().kind != TokEnd || !p.lastWasPath )
+	{
+		error = "'" + path + "' is not a variable";
+		return false;
+	}
 	return true;
 }
 

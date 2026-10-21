@@ -208,6 +208,77 @@ async function testLaunchSession() {
 	dap.close();
 }
 
+// watchpoints: a global, an element and a local (which goes away with its
+// call), conditions evaluated by the adapter
+async function testDataBreakpoints() {
+	const dap = new DapClient();
+	const program = path.join(fixtures, 'sample.w');
+	const caps = await dap.ok('initialize', { adapterID: 'wrench' });
+	assert(caps.supportsDataBreakpoints);
+	await dap.ok('launch', { program });
+	await dap.waitEvent('initialized');
+	await dap.ok('setBreakpoints', { source: { path: program }, breakpoints: [{ line: 13 }] });
+	await dap.ok('configurationDone');
+
+	let stopped = await dap.waitEvent('stopped');
+	assert.strictEqual(stopped.reason, 'breakpoint');
+	let st = await dap.ok('stackTrace', { threadId: 1 });
+	const scopes = (await dap.ok('scopes', { frameId: st.stackFrames[0].id })).scopes;
+	const globals = await variablesByName(dap, scopes[1].variablesReference);
+
+	const total = await dap.ok('dataBreakpointInfo', { variablesReference: scopes[1].variablesReference, name: 'total' });
+	assert(total.dataId && total.canPersist && total.accessTypes[0] === 'write');
+	assert.strictEqual(total.description, '::total');
+
+	const arrVars = (await dap.ok('variables', { variablesReference: globals.arr.variablesReference })).variables;
+	assert.strictEqual(arrVars[1].evaluateName, '::arr[1]');
+	const element = await dap.ok('dataBreakpointInfo', { variablesReference: globals.arr.variablesReference, name: arrVars[1].name });
+	assert.strictEqual(element.description, '::arr[1]');
+
+	const local = await dap.ok('dataBreakpointInfo', { variablesReference: scopes[0].variablesReference, name: 'c' });
+	assert(local.dataId && !local.canPersist);
+	const none = await dap.ok('dataBreakpointInfo', { name: 'nosuch', frameId: st.stackFrames[0].id });
+	assert(none.dataId === null && /no variable/.test(none.description));
+
+	let set = await dap.ok('setDataBreakpoints', { breakpoints: [{ dataId: total.dataId }, { dataId: local.dataId }] });
+	assert(set.breakpoints.every((b) => b.verified));
+	const localId = set.breakpoints[1].id;
+	const totalId = set.breakpoints[0].id;
+	await dap.ok('setBreakpoints', { source: { path: program }, breakpoints: [] });
+
+	// c = a + b writes the local
+	await dap.ok('continue', { threadId: 1 });
+	stopped = await dap.waitEvent('stopped');
+	assert.strictEqual(stopped.reason, 'data breakpoint');
+	assert.deepStrictEqual(stopped.hitBreakpointIds, [localId]);
+	assert.strictEqual(stopped.description, 'c changed');
+	st = await dap.ok('stackTrace', { threadId: 1 });
+	assert.strictEqual(st.stackFrames[0].line, 14);
+
+	// add returns: its local goes, then total changes in the loop
+	await dap.ok('continue', { threadId: 1 });
+	const gone = await dap.waitEvent('breakpoint', (b) => b.breakpoint.id === localId);
+	assert.strictEqual(gone.breakpoint.verified, false);
+	stopped = await dap.waitEvent('stopped');
+	assert.deepStrictEqual(stopped.hitBreakpointIds, [totalId]);
+	let ev = await dap.ok('evaluate', { expression: 'total', frameId: 1, context: 'watch' });
+	assert.strictEqual(ev.result, '2');
+
+	// a condition: only the last change of the loop passes
+	set = await dap.ok('setDataBreakpoints', { breakpoints: [{ dataId: total.dataId, condition: 'total > 20' }] });
+	assert(set.breakpoints[0].verified && set.breakpoints[0].id === totalId);
+	await dap.ok('continue', { threadId: 1 });
+	stopped = await dap.waitEvent('stopped');
+	assert.strictEqual(stopped.reason, 'data breakpoint');
+	ev = await dap.ok('evaluate', { expression: 'total', frameId: 1, context: 'watch' });
+	assert.strictEqual(ev.result, '30');
+
+	await dap.ok('continue', { threadId: 1 });
+	await dap.waitEvent('exited');
+	await dap.ok('disconnect', { terminateDebuggee: true });
+	dap.close();
+}
+
 async function testRuntimeError() {
 	const dap = new DapClient();
 	const program = path.join(fixtures, 'failing.w');
@@ -490,7 +561,7 @@ async function testRemoteAttach() {
 }
 
 (async () => {
-	const tests = [testLaunchSession, testRuntimeError, testHostProject, testBinaryProgram, testUploadRefused, testAttachToWaitingScript, testRobustness, testErrors, testRemoteAttach];
+	const tests = [testLaunchSession, testDataBreakpoints, testRuntimeError, testHostProject, testBinaryProgram, testUploadRefused, testAttachToWaitingScript, testRobustness, testErrors, testRemoteAttach];
 	let failed = 0;
 	for (const t of tests) {
 		try {

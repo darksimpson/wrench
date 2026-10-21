@@ -187,6 +187,14 @@ public:
 	static uint32_t hashEntryCount( const WRGCObject* va );
 	static int hashSlotForIndex( const WRGCObject* va, uint32_t index );
 	static uint32_t structMemberHash( const WRGCObject* va, uint32_t index );
+
+	static void addWatch( WrenchDebugServerPrivate* I, uint8_t seq, WrenchDebugReader& in );
+	static const WRValue* followWatch( WrenchDebugServerPrivate* I, const WrenchDebugWatch& watch, WRValue& temp );
+	static void snapshot( const WRValue* v, WrenchDebugWatchSnapshot& s );
+	static void refreshWatches( WrenchDebugServerPrivate* I );
+	static void removeWatch( WrenchDebugServerPrivate* I, int index, bool announce );
+	static void clearWatches( WrenchDebugServerPrivate* I, bool localsOnly, bool announce );
+	static uint8_t checkWatches( WrenchDebugServerPrivate* I, WRContext* context, const unsigned char* pc, WRValue* frameBase );
 };
 
 void WrenchDebugServerImpl::init( WrenchDebugServerPrivate* I )
@@ -458,6 +466,296 @@ uint32_t WrenchDebugServerImpl::structMemberHash( const WRGCObject* va, uint32_t
 	return 0;
 }
 
+void WrenchDebugServerImpl::addWatch( WrenchDebugServerPrivate* I, uint8_t seq, WrenchDebugReader& in )
+{
+	WrenchDebugWatch watch;
+	memset( (char*)&watch, 0, sizeof(watch) );
+	watch.root = in.u8();
+	uint16_t frameIndex = in.u16();
+	watch.slot = in.u16();
+	watch.stepCount = in.u8();
+	if ( watch.stepCount > WRENCH_DEBUG_MAX_WATCH_STEPS )
+	{
+		replyError( I, seq, WRD_ErrUnsupported );
+		return;
+	}
+	for ( uint8_t s = 0; s < watch.stepCount; ++s )
+	{
+		watch.stepKind[s] = in.u8();
+		watch.step[s] = in.u32();
+	}
+	if ( in.bad() || (watch.root != WRD_WatchGlobal && watch.root != WRD_WatchLocal) )
+	{
+		replyError( I, seq, WRD_ErrBadRequest );
+		return;
+	}
+	if ( !I->context )
+	{
+		replyError( I, seq, WRD_ErrNoProgram );
+		return;
+	}
+
+	if ( watch.root == WRD_WatchGlobal )
+	{
+		if ( watch.slot >= I->context->globals )
+		{
+			replyError( I, seq, WRD_ErrBadWatch );
+			return;
+		}
+	}
+	else
+	{
+		// a local belongs to one call: name it while that call is on the stack
+		WrenchDebugFrameInfo info;
+		if ( I->state != WRD_StateStopped )
+		{
+			replyError( I, seq, WRD_ErrNotStopped );
+			return;
+		}
+		if ( !frameAt(I, frameIndex, info) || info.kind != WRD_FrameFunction
+				|| watch.slot >= I->stopContext->localFunctions[info.function].frameBaseAdjustment - 1 )
+		{
+			replyError( I, seq, WRD_ErrBadWatch );
+			return;
+		}
+		watch.frameBase = info.frameBase;
+		watch.function = info.function;
+	}
+
+	int found = -1;
+	for ( int i = 0; i < WRENCH_DEBUG_MAX_WATCHES; ++i )
+	{
+		if ( !I->watches[i].used )
+		{
+			found = i;
+			break;
+		}
+	}
+	if ( found < 0 )
+	{
+		replyError( I, seq, WRD_ErrTooManyWatches );
+		return;
+	}
+
+	watch.used = 1;
+	WRValue temp;
+	snapshot( followWatch(I, watch, temp), watch.last );
+	I->watches[found] = watch;
+	++I->watchCount;
+
+	WrenchDebugWriter out( payload(I), WRENCH_DEBUG_MAX_PAYLOAD );
+	out.u8( (uint8_t)(found + 1) );
+	send( I, WRD_MsgReplyOk, seq, out.size() );
+}
+
+// the value a watch names now, 0 when its path leads nowhere (an element
+// past the end, a key not present, a step into something that is no
+// container). Everything is looked up again from the root, so a container
+// that grew, moved or was collected since is never touched
+const WRValue* WrenchDebugServerImpl::followWatch( WrenchDebugServerPrivate* I, const WrenchDebugWatch& watch, WRValue& temp )
+{
+	const WRValue* v = 0;
+	if ( watch.root == WRD_WatchGlobal )
+	{
+		if ( !I->context || watch.slot >= I->context->globals )
+		{
+			return 0;
+		}
+		v = ((const WRValue*)(I->context + 1)) + watch.slot;
+	}
+	else
+	{
+		v = watch.frameBase + watch.slot;
+	}
+
+	for ( uint8_t s = 0; s < watch.stepCount; ++s )
+	{
+		v = resolve( v, temp );
+		uint32_t n = watch.step[s];
+		bool last = (s + 1 == watch.stepCount);
+		if ( v->type != WR_EX )
+		{
+			return 0;
+		}
+
+		if ( v->xtype == WR_EX_ARRAY && v->va )
+		{
+			if ( watch.stepKind[s] != WRD_WatchIndex || n >= v->va->m_size )
+			{
+				return 0;
+			}
+			if ( v->va->m_type == SV_VALUE )
+			{
+				v = v->va->m_Vdata + n;
+				continue;
+			}
+			if ( v->va->m_type != SV_CHAR || !last )
+			{
+				return 0;
+			}
+			int c = (unsigned char)v->va->m_Cdata[n];
+			temp.init( c );
+			return &temp;
+		}
+
+		if ( IS_RAW_ARRAY(v->xtype) )
+		{
+			if ( watch.stepKind[s] != WRD_WatchIndex || !last || n >= (uint32_t)EX_RAW_ARRAY_SIZE_FROM_P2(v->p2) )
+			{
+				return 0;
+			}
+			int c = (unsigned char)v->c[n];
+			temp.init( c );
+			return &temp;
+		}
+
+		if ( v->xtype == WR_EX_HASH_TABLE && v->va )
+		{
+			// an integer key is its own hash, so both kinds of step work
+			v = v->va->exists( n, false );
+		}
+		else if ( v->xtype == WR_EX_STRUCT && v->va && watch.stepKind[s] == WRD_WatchKey )
+		{
+			v = wr_valueFromConfirmedStruct( (WRValue*)v, n );
+		}
+		else
+		{
+			return 0;
+		}
+
+		if ( !v )
+		{
+			return 0;
+		}
+	}
+
+	return resolve( v, temp );
+}
+
+// numbers by value; strings by identity, length and contents; other
+// containers by identity and size (a changed element is caught by watching
+// the element)
+void WrenchDebugServerImpl::snapshot( const WRValue* v, WrenchDebugWatchSnapshot& s )
+{
+	memset( (char*)&s, 0, sizeof(s) );
+	if ( !v )
+	{
+		return;
+	}
+
+	s.kind = (uint8_t)(v->type + 1);
+	if ( v->type == WR_INT || v->type == WR_FLOAT )
+	{
+		s.bits = v->ui;
+		return;
+	}
+	if ( v->type != WR_EX )
+	{
+		return;
+	}
+
+	s.xtype = (uint8_t)v->xtype;
+	if ( IS_RAW_ARRAY(v->xtype) )
+	{
+		s.p = v->c;
+		s.count = (uint32_t)EX_RAW_ARRAY_SIZE_FROM_P2( v->p2 );
+	}
+	else if ( (v->xtype == WR_EX_ARRAY || v->xtype == WR_EX_HASH_TABLE || v->xtype == WR_EX_STRUCT) && v->va )
+	{
+		s.p = v->va;
+		s.count = v->va->m_size;
+		if ( v->xtype == WR_EX_ARRAY && v->va->m_type == SV_CHAR )
+		{
+			s.bits = wr_hash( v->va->m_Cdata, (int)v->va->m_size );
+		}
+	}
+}
+
+// while stopped only the debugger changes values: take them all again
+// before the program goes on, so its own writes do not count as changes
+void WrenchDebugServerImpl::refreshWatches( WrenchDebugServerPrivate* I )
+{
+	for ( int i = 0; i < WRENCH_DEBUG_MAX_WATCHES; ++i )
+	{
+		if ( I->watches[i].used )
+		{
+			WRValue temp;
+			snapshot( followWatch(I, I->watches[i], temp), I->watches[i].last );
+		}
+	}
+}
+
+void WrenchDebugServerImpl::removeWatch( WrenchDebugServerPrivate* I, int index, bool announce )
+{
+	if ( !I->watches[index].used )
+	{
+		return;
+	}
+	I->watches[index].used = 0;
+	--I->watchCount;
+	if ( announce && I->helloReceived )
+	{
+		WrenchDebugWriter out( payload(I), WRENCH_DEBUG_MAX_PAYLOAD );
+		out.u8( (uint8_t)(index + 1) );
+		send( I, WRD_MsgEventWatchRemoved, 0, out.size() );
+	}
+}
+
+void WrenchDebugServerImpl::clearWatches( WrenchDebugServerPrivate* I, bool localsOnly, bool announce )
+{
+	for ( int i = 0; i < WRENCH_DEBUG_MAX_WATCHES; ++i )
+	{
+		if ( !localsOnly || I->watches[i].root == WRD_WatchLocal )
+		{
+			removeWatch( I, i, announce );
+		}
+	}
+}
+
+// the id of the first watch whose value changed since it was last taken,
+// 0 for none. A local whose call has returned goes away (and the client
+// hears about it): the slot belongs to someone else by now
+uint8_t WrenchDebugServerImpl::checkWatches( WrenchDebugServerPrivate* I, WRContext* context, const unsigned char* pc, WRValue* frameBase )
+{
+	uint32_t depth = wr_debugDepthKey( context, frameBase );
+	int function = -2;
+	for ( int i = 0; i < WRENCH_DEBUG_MAX_WATCHES; ++i )
+	{
+		WrenchDebugWatch& watch = I->watches[i];
+		if ( !watch.used )
+		{
+			continue;
+		}
+
+		if ( watch.root == WRD_WatchLocal )
+		{
+			uint32_t watchDepth = wr_debugDepthKey( context, watch.frameBase );
+			if ( depth == watchDepth && function == -2 )
+			{
+				// same depth: still that call, or a later one in its place?
+				WrenchDebugFrameWalker walker( context, pc, frameBase );
+				WrenchDebugFrameInfo info;
+				function = (walker.next(info) && info.kind == WRD_FrameFunction) ? info.function : -1;
+			}
+			if ( depth < watchDepth || (depth == watchDepth && function != watch.function) )
+			{
+				removeWatch( I, i, true );
+				continue;
+			}
+		}
+
+		WRValue temp;
+		WrenchDebugWatchSnapshot now;
+		snapshot( followWatch(I, watch, temp), now );
+		if ( now.kind != watch.last.kind || now.xtype != watch.last.xtype || now.bits != watch.last.bits
+				|| now.p != watch.last.p || now.count != watch.last.count )
+		{
+			return (uint8_t)(i + 1);
+		}
+	}
+	return 0;
+}
+
 bool WrenchDebugServerImpl::frameAt( WrenchDebugServerPrivate* I, uint16_t index, WrenchDebugFrameInfo& info )
 {
 	if ( I->state != WRD_StateStopped )
@@ -623,8 +921,10 @@ void WrenchDebugServerImpl::readProgramInfo( WrenchDebugServerPrivate* I )
 
 void WrenchDebugServerImpl::releaseProgram( WrenchDebugServerPrivate* I )
 {
-	// handles point into the program's objects, which are about to go
+	// handles point into the program's objects, which are about to go, and
+	// watches name its variables
 	resetHandles( I );
+	clearWatches( I, false, true );
 
 	if ( I->context )
 	{
@@ -658,6 +958,7 @@ void WrenchDebugServerImpl::onDisconnect( WrenchDebugServerPrivate* I )
 	// never leave the target halted or trapping for a client that is gone
 	I->helloReceived = false;
 	I->breakpointCount = 0;
+	clearWatches( I, false, false );
 	I->stepMode = WRD_StepNone;
 	if ( I->state == WRD_StateStopped )
 	{
@@ -713,6 +1014,7 @@ void WrenchDebugServerImpl::announceStop( WrenchDebugServerPrivate* I )
 	out.i32( I->lastLine );
 	out.u8( I->stopError );
 	out.u32( missingFunction(I, I->stopError) );
+	out.u8( I->stopReason == WRD_StopWatch ? I->watchHit : 0 );
 	send( I, WRD_MsgEventStopped, 0, out.size() );
 }
 
@@ -755,6 +1057,7 @@ bool WrenchDebugServerImpl::stopLoop( WrenchDebugServerPrivate* I, uint8_t reaso
 	I->resume = false;
 	I->state = WRD_StateRunning;
 	resetHandles( I );
+	refreshWatches( I );
 
 	if ( I->abortPending )
 	{
@@ -819,6 +1122,10 @@ void WrenchDebugServerImpl::runLaunch( WrenchDebugServerPrivate* I )
 		I->tickFlags |= WRD_TickProgramLoaded; // firmware must fetch context() again
 	}
 	I->contextRan = true;
+
+	// a run that was cut short leaves no frames behind; globals start over
+	clearWatches( I, true, true );
+	refreshWatches( I );
 
 	I->stepMode = (I->launchFlags & WRD_LaunchStopOnEntry) ? WRD_StepEntry : WRD_StepNone;
 	I->abortPending = false;
@@ -930,12 +1237,13 @@ void WrenchDebugServerImpl::process( WrenchDebugServerPrivate* I, const WrenchDe
 
 			I->helloReceived = true;
 			I->breakpointCount = 0;
+			clearWatches( I, false, false );
 			I->stepMode = WRD_StepNone;
 			I->lastRequestSeq = 0;
 			I->lastRequestType = 0;
 			I->tickFlags |= WRD_TickClientAttached;
 
-			uint8_t caps = WRD_CapLaunch | WRD_CapSetValue;
+			uint8_t caps = WRD_CapLaunch | WRD_CapSetValue | WRD_CapWatch;
 			if ( !I->uploadDisabled )
 			{
 				caps |= WRD_CapLoad;
@@ -953,6 +1261,7 @@ void WrenchDebugServerImpl::process( WrenchDebugServerPrivate* I, const WrenchDe
 			out.u16( WRENCH_DEBUG_MAX_PAYLOAD );
 			out.u8( caps );
 			out.u16( WRENCH_DEBUG_MAX_BREAKPOINTS );
+			out.u8( WRENCH_DEBUG_MAX_WATCHES );
 			send( I, WRD_MsgReplyOk, seq, out.size() );
 
 			if ( stopped )
@@ -1163,6 +1472,32 @@ void WrenchDebugServerImpl::process( WrenchDebugServerPrivate* I, const WrenchDe
 			return;
 		}
 
+		case WRD_MsgAddWatch:
+		{
+			addWatch( I, seq, in );
+			return;
+		}
+
+		case WRD_MsgRemoveWatch:
+		{
+			uint8_t id = in.u8();
+			if ( in.bad() || id > WRENCH_DEBUG_MAX_WATCHES )
+			{
+				replyError( I, seq, WRD_ErrBadRequest );
+				return;
+			}
+			if ( id == 0 )
+			{
+				clearWatches( I, false, false );
+			}
+			else
+			{
+				removeWatch( I, id - 1, false );
+			}
+			replyOk( I, seq );
+			return;
+		}
+
 		case WRD_MsgLaunch:
 		{
 			uint8_t flags = in.u8();
@@ -1255,6 +1590,7 @@ void WrenchDebugServerImpl::process( WrenchDebugServerPrivate* I, const WrenchDe
 		case WRD_MsgDetach:
 		{
 			I->breakpointCount = 0;
+			clearWatches( I, false, false );
 			I->stepMode = WRD_StepNone;
 			I->resume = stopped;
 			replyOk( I, seq );
@@ -1719,7 +2055,20 @@ bool WrenchDebugServer::onDebugInfo( WRContext* context, const unsigned char* pc
 	uint8_t reason = WRD_StopStep;
 	bool stop = false;
 
-	if ( I->stepMode != WRD_StepNone )
+	// a watched value changed since the previous line marker: stop on the
+	// line after the one that wrote it
+	if ( I->watchCount && context == I->context && I->helloReceived )
+	{
+		uint8_t hit = WrenchDebugServerImpl::checkWatches( I, context, pc, frameBase );
+		if ( hit )
+		{
+			stop = true;
+			reason = WRD_StopWatch;
+			I->watchHit = hit;
+		}
+	}
+
+	if ( !stop && I->stepMode != WRD_StepNone )
 	{
 		uint32_t key = wr_debugDepthKey( context, frameBase );
 		switch ( I->stepMode )
@@ -1785,9 +2134,10 @@ bool WrenchDebugServer::onDebugInfo( WRContext* context, const unsigned char* pc
 		return false;
 	}
 
-	// a breakpoint inside a step over/out: remember the step, the client may
-	// decide (condition, hit count, logpoint) not to stop here after all
-	if ( reason == WRD_StopBreakpoint && (I->stepMode == WRD_StepOver || I->stepMode == WRD_StepOut) )
+	// a breakpoint or watch inside a step over/out: remember the step, the
+	// client may decide (condition, hit count, logpoint) not to stop here
+	// after all
+	if ( (reason == WRD_StopBreakpoint || reason == WRD_StopWatch) && (I->stepMode == WRD_StepOver || I->stepMode == WRD_StepOut) )
 	{
 		I->interruptedStepMode = I->stepMode;
 		I->interruptedStepKey = I->stepKey;

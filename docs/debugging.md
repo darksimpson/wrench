@@ -96,7 +96,30 @@ logpoints (`value is {v}`), break on runtime errors with the stack intact,
 pause, step in / over / out, call stack, locals and globals with lazily
 expanded arrays, hash tables and structs, editing variables, watch and hover
 expressions (`a[2]`, `p.member`, `h["key"]`, arithmetic and comparisons),
-assignments in the debug console (`x = 5`), completion in the debug console.
+assignments in the debug console (`x = 5`), completion in the debug console,
+watchpoints ("Break on Value Change" in the variables view, with conditions
+and hit counts; see below).
+
+## Watchpoints
+
+A watchpoint stops the program when a variable, an element or a member
+changes: `x`, `::g`, `a[2]`, `p.member`, `h["key"]`, `h[5]`, `s[0]` (a
+character of a string), up to `WRENCH_DEBUG_MAX_WATCH_STEPS` (4) steps deep.
+The target checks every watch at each line marker and stops on the line
+after the one that changed the value. What counts as a change:
+
+- a number: its value (writing the value it already has is no change)
+- a string: a different string, length or contents
+- an array, hash table or struct: a different container or a different
+  count; a changed element is caught by watching that element
+- the path itself: an element appearing or going away (a key removed, an
+  array cut short)
+
+Values the debugger writes while the program is stopped are no change.
+A watch on a local belongs to the call it was set in, and goes away (VS Code
+greys it out, `wrench dbg` says so) when that call returns. The target holds
+`WRENCH_DEBUG_MAX_WATCHES` (4) watches; each one costs a little time at every
+line marker, nothing when there are none.
 
 Script output from `print` / `println` appears in the debug console. On a
 device, route it there with `WrenchDebugServer::print()`.
@@ -135,10 +158,11 @@ wrench dbg -target tcp:192.168.1.50:5050 -attach
 ```
 
 Commands: `r` run/restart, `c` continue, `n` next, `s` step in, `o` step
-out, `b <line>` toggle breakpoint, `bt` call stack, `f <n>` select frame,
-`l [line]` list, `p <expr>` print, `set <var> = <value>`, `locals`,
-`globals`, `d <expr>` display at every stop, `x` hex, `kill`, `q`. Ctrl+C
-pauses a running program.
+out, `b <line>` toggle breakpoint, `watch <var>` watchpoint (`watch` alone
+lists them), `unwatch [n]` remove one or all, `bt` call stack, `f <n>`
+select frame, `l [line]` list, `p <expr>` print, `set <var> = <value>`,
+`locals`, `globals`, `d <expr>` display at every stop, `x` hex, `kill`, `q`.
+Ctrl+C pauses a running program.
 
 ## PC as a target
 
@@ -335,7 +359,7 @@ again (ok or the same error) without acting twice.
 
 | Type | Name | Payload | Reply payload |
 |---|---|---|---|
-| 0x01 | Hello | u16 protocol version | u16 version, u8 major, u8 minor, u8 build, u16 max payload, u8 capabilities, u16 max breakpoints |
+| 0x01 | Hello | u16 protocol version | u16 version, u8 major, u8 minor, u8 build, u16 max payload, u8 capabilities, u16 max breakpoints, u8 max watches (with the watch capability) |
 | 0x02 | GetInfo | | u8 state, u32 program hash, u32 bytecode length, u8 compiler flags, u32 symbols length, u32 source length, u16 globals, u8 functions, i32 last line |
 | 0x03 | LoadBegin | u32 size | |
 | 0x04 | LoadData | u32 offset, bytes | |
@@ -357,22 +381,32 @@ again (ok or the same error) without acting twice.
 | 0x15 | SetGlobal | u16 slot, value | new value |
 | 0x16 | SetChild | u32 handle, u32 index, value | new value |
 | 0x17 | Ping | | |
-| 0x18 | Detach | | clears breakpoints, resumes, ends the session |
+| 0x18 | Detach | | clears breakpoints and watches, resumes, ends the session |
+| 0x19 | AddWatch | u8 root (0 global, 1 local), u16 frame (locals), u16 slot, u8 n, n x (u8 kind, u32 value) | u8 watch id |
+| 0x1A | RemoveWatch | u8 watch id (0 all) | |
 
 Replies are type 0x80 (ok, payload as listed) or 0x81 (error, u8 code: 1
 unknown request, 2 bad request, 3 no program, 4 not stopped, 5 bad frame, 6
 bad slot, 7 bad handle, 8 no memory, 9 bad bytecode, 10 too many
 breakpoints, 11 busy, 12 version, 13 unsupported, 14 uploads disabled by
-the firmware).
+the firmware, 15 too many watches, 16 no such variable to watch).
+
+A watch names a value by where it lives, so the target can find it again at
+every line marker: a global slot, or a local slot of a frame (the frame
+index of the current stop; locals need the program stopped), then steps
+down into containers. Step kind 0 is a position (array element, character of
+a string or raw array), kind 1 a hash: the key of a hash table (an int key
+is its own hash, a float its bits, a string `wr_hash()` of its bytes) or the
+name hash of a struct member. Ids are small numbers the target reuses.
 
 A session starts with Hello. Until the server has accepted one, it answers
 every request other than Hello and Ping with error 2 (bad request); the
 exception is a retransmitted control request (for example a resent Detach
 that ended the previous session), which gets its first answer again. A Hello
 with a protocol version other than the server's gets error 12; an accepted
-one clears the breakpoints and any step in progress. Detach, a link the
-transport reports as lost, or, while halted, silence longer than the
-firmware's link timeout (`setLinkTimeout`, off by default; any bytes
+one clears the breakpoints, the watches and any step in progress. Detach, a
+link the transport reports as lost, or, while halted, silence longer than
+the firmware's link timeout (`setLinkTimeout`, off by default; any bytes
 received, a Ping for example, restart it) ends the session.
 
 Capabilities in the Hello reply (u8, bits):
@@ -383,6 +417,7 @@ Capabilities in the Hello reply (u8, bits):
 | 1 | 0x02 | launch: can execute the program itself (always set) |
 | 2 | 0x04 | set value: accepts SetLocal / SetGlobal / SetChild (always set) |
 | 3 | 0x08 | host driven: the firmware calls into the script itself (`setHostDriven( true )`), so the session goes on after the global code ends |
+| 4 | 0x10 | watch: AddWatch / RemoveWatch, the Hello reply ends with the number of watches the target holds |
 
 State in the GetInfo reply:
 
@@ -433,10 +468,11 @@ Values sent to the target (Set*) are int, float or string (`u16 n, bytes`).
 
 | Type | Name | Payload |
 |---|---|---|
-| 0xC0 | Stopped | u8 reason (0 entry, 1 breakpoint, 2 step, 3 pause, 4 error), i32 line, u8 wrench error, u32 hash of the missing function name (function_not_found errors, else 0) |
+| 0xC0 | Stopped | u8 reason (0 entry, 1 breakpoint, 2 step, 3 pause, 4 error, 5 watch), i32 line, u8 wrench error, u32 hash of the missing function name (function_not_found errors, else 0), u8 watch id (reason 5, else 0) |
 | 0xC1 | Output | text |
 | 0xC2 | Ended | u8 wrench error, u8 flags (1 aborted, 2 host keeps running), i32 last line, u32 missing function hash (as for Stopped), value |
 | 0xC3 | Loaded | u32 program hash |
+| 0xC4 | WatchRemoved | u8 watch id: a watched local's call returned, or the program it watched is gone |
 
 Events are not acknowledged. So that a lost Stopped event (or a debugger that
 attaches to a target already halted) cannot leave the client believing the

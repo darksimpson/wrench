@@ -61,6 +61,30 @@ struct WrenchDebugHandle
 	uint8_t kind; // WrenchDebugValueTag
 };
 
+// what a watched value looked like when last checked: pointers only take
+// part in comparisons, they are never followed
+struct WrenchDebugWatchSnapshot
+{
+	uint8_t kind; // 0 the path leads nowhere, else WR_INT, WR_FLOAT or WR_EX
+	uint8_t xtype;
+	uint32_t bits;
+	const void* p;
+	uint32_t count;
+};
+
+struct WrenchDebugWatch
+{
+	uint8_t used;
+	uint8_t root; // WrenchDebugWatchRoot
+	uint16_t slot;
+	const WRValue* frameBase; // a local's frame
+	int16_t function; // and the function running in it
+	uint8_t stepCount;
+	uint8_t stepKind[WRENCH_DEBUG_MAX_WATCH_STEPS]; // WrenchDebugWatchStepKind
+	uint32_t step[WRENCH_DEBUG_MAX_WATCH_STEPS];
+	WrenchDebugWatchSnapshot last;
+};
+
 struct WrenchDebugServerPrivate
 {
 	WrenchDebugServer* parent;
@@ -139,6 +163,10 @@ struct WrenchDebugServerPrivate
 
 	int32_t breakpoints[WRENCH_DEBUG_MAX_BREAKPOINTS];
 	uint16_t breakpointCount;
+
+	WrenchDebugWatch watches[WRENCH_DEBUG_MAX_WATCHES]; // watch id is index + 1
+	uint8_t watchCount;
+	uint8_t watchHit; // id of the watch the current stop is for
 
 	WrenchDebugHandle handles[WRENCH_DEBUG_MAX_HANDLES];
 	uint16_t handleCount;

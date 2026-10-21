@@ -85,6 +85,21 @@ struct VarRef
 	Kind kind = Locals;
 	int frame = 0;
 	WrenchDebugValue value;
+	std::string expr; // Children: how the container is reached (x, a[2].k), empty when unknown
+};
+
+// a watchpoint (DAP data breakpoint); its dataId carries the path the
+// target follows, so a changed list keeps the watches that stay
+struct DataBreakpoint
+{
+	int id = 0;
+	std::string dataId;
+	std::string expr;
+	int watch = 0; // target watch id, 0 while not set there
+	std::string message; // why it is not set
+	std::string condition;
+	std::string hitCondition;
+	int hits = 0;
 };
 
 // two spellings of one file: relative or absolute, "." and "..", slashes.
@@ -116,6 +131,76 @@ bool wr_samePath( const std::string& a, const std::string& b )
 std::string errorText( uint8_t code )
 {
 	return wr_debugErrorText( code );
+}
+
+// a data breakpoint's dataId: the watch path, then '|' and the expression it
+// came from. "g:3/i2/k12345|::a[2].k" is global slot 3, element 2, member
+// hash 12345; a local root is "l:frame:function:slot", the function guards
+// against naming a slot of another function later
+std::string wr_encodeWatch( const WrenchDebugWatchPath& path, int function, const std::string& expr )
+{
+	std::string id = path.global ? "g:" + std::to_string( path.slot )
+		: "l:" + std::to_string( path.frame ) + ":" + std::to_string( function ) + ":" + std::to_string( path.slot );
+	for ( const WrenchDebugWatchStep& s : path.steps )
+	{
+		id += (s.kind == WRD_WatchIndex) ? "/i" : "/k";
+		id += std::to_string( s.value );
+	}
+	return id + "|" + expr;
+}
+
+bool wr_decodeWatch( const std::string& dataId, WrenchDebugWatchPath& path, int& function, std::string& expr )
+{
+	size_t bar = dataId.find( '|' );
+	if ( bar == std::string::npos )
+	{
+		return false;
+	}
+	expr = dataId.substr( bar + 1 );
+	std::string spec = dataId.substr( 0, bar );
+
+	std::vector<std::string> parts;
+	size_t start = 0;
+	for ( size_t i = 0; i <= spec.size(); ++i )
+	{
+		if ( i == spec.size() || spec[i] == '/' )
+		{
+			parts.push_back( spec.substr(start, i - start) );
+			start = i + 1;
+		}
+	}
+
+	int frame = 0;
+	int slot = 0;
+	function = -1;
+	if ( sscanf(parts[0].c_str(), "g:%d", &slot) == 1 && parts[0][0] == 'g' )
+	{
+		path.global = true;
+	}
+	else if ( sscanf(parts[0].c_str(), "l:%d:%d:%d", &frame, &function, &slot) == 3 )
+	{
+		path.global = false;
+	}
+	else
+	{
+		return false;
+	}
+	path.frame = frame;
+	path.slot = slot;
+	path.steps.clear();
+
+	for ( size_t i = 1; i < parts.size(); ++i )
+	{
+		if ( parts[i].size() < 2 || (parts[i][0] != 'i' && parts[i][0] != 'k') )
+		{
+			return false;
+		}
+		WrenchDebugWatchStep step;
+		step.kind = (parts[i][0] == 'i') ? WRD_WatchIndex : WRD_WatchKey;
+		step.value = (uint32_t)strtoul( parts[i].c_str() + 1, 0, 10 );
+		path.steps.push_back( step );
+	}
+	return true;
 }
 
 class DapServer
@@ -150,6 +235,8 @@ private:
 	void onBreakpointLocations( const Json& req );
 	void onExceptionInfo( const Json& req );
 	void onSource( const Json& req );
+	void onDataBreakpointInfo( const Json& req );
+	void onSetDataBreakpoints( const Json& req );
 	void onControl( const Json& req, const std::string& command );
 	void onDisconnect( const Json& req, bool terminateRequest );
 
@@ -160,9 +247,12 @@ private:
 	bool sendBreakpoints();
 	void resetStopState();
 	bool ensureStack();
-	bool hitConditionMet( const Breakpoint& bp );
+	static bool hitConditionMet( const std::string& hitCondition, int hits );
 	int newRef( const VarRef& ref );
-	Json variableJson( const std::string& name, const WrenchDebugValue& v, const std::string& evaluateName, bool hex );
+	Json variableJson( const std::string& name, const WrenchDebugValue& v, const std::string& evaluateName, bool hex, int frame = 0 );
+	std::string childExpression( const VarRef& parent, const WrenchDebugChild& child );
+	bool setWatch( DataBreakpoint& dbp );
+	void onWatchRemoved( int watch );
 	Json sourceJson();
 	void endSession( int exitCode );
 
@@ -193,6 +283,7 @@ private:
 	WrenchDebugTargetInfo m_info;
 
 	std::vector<Breakpoint> m_breakpoints;
+	std::vector<DataBreakpoint> m_dataBreakpoints;
 	int m_nextBreakpointId = 1;
 
 	// valid while stopped
@@ -324,6 +415,7 @@ void DapServer::onInitialize( const Json& req )
 	caps.set( "supportsExceptionInfoRequest", true );
 	caps.set( "supportsBreakpointLocationsRequest", true );
 	caps.set( "supportsCompletionsRequest", true );
+	caps.set( "supportsDataBreakpoints", true );
 	caps.set( "supportsDelayedStackTraceLoading", false );
 	caps.set( "supportTerminateDebuggee", true );
 
@@ -654,6 +746,225 @@ void DapServer::onSetExceptionBreakpoints( const Json& req )
 	respond( req, true );
 }
 
+void DapServer::onDataBreakpointInfo( const Json& req )
+{
+	const Json& args = req["arguments"];
+	std::string name = args["name"].asString( "" );
+	Json body = Json::object();
+	body.set( "dataId", Json() );
+
+	if ( !m_client || !(m_info.caps & WRD_CapWatch) )
+	{
+		body.set( "description", "the target has no watchpoints" );
+		respond( req, true, body );
+		return;
+	}
+	if ( !m_stopped || !ensureStack() )
+	{
+		body.set( "description", "watchpoints are set while the program is stopped" );
+		respond( req, true, body );
+		return;
+	}
+
+	// which variable: a child of a variables list, or an expression
+	std::string expr;
+	int frame = 0;
+	int reference = args["variablesReference"].asInt( 0 );
+	if ( reference )
+	{
+		auto it = m_refs.find( reference );
+		if ( it == m_refs.end() )
+		{
+			body.set( "description", "unknown variable" );
+			respond( req, true, body );
+			return;
+		}
+		const VarRef& ref = it->second;
+		frame = ref.frame;
+		if ( ref.kind == VarRef::Locals )
+		{
+			expr = name;
+		}
+		else if ( ref.kind == VarRef::Globals )
+		{
+			expr = "::" + name;
+		}
+		else
+		{
+			std::vector<WrenchDebugChild> kids;
+			uint32_t total = 0;
+			if ( m_client->getChildren(ref.value, 0, ref.value.count, kids, total, &m_program) )
+			{
+				for ( const WrenchDebugChild& c : kids )
+				{
+					if ( c.name == name )
+					{
+						expr = childExpression( ref, c );
+						break;
+					}
+				}
+			}
+		}
+	}
+	else
+	{
+		expr = name;
+		frame = args["frameId"].asInt( 1 ) - 1;
+	}
+	if ( frame < 0 || frame >= (int)m_frames.size() )
+	{
+		frame = 0;
+	}
+	if ( expr.empty() )
+	{
+		body.set( "description", "cannot tell where " + name + " lives" );
+		respond( req, true, body );
+		return;
+	}
+
+	WrenchDebugEvaluator ev( *m_client, m_program, m_frames, frame );
+	WrenchDebugWatchPath path;
+	WrenchDebugValue value;
+	std::string error;
+	if ( !ev.watchPath(expr, path, value, error) )
+	{
+		body.set( "description", error );
+		respond( req, true, body );
+		return;
+	}
+
+	body.set( "dataId", wr_encodeWatch(path, m_frames[path.global ? 0 : path.frame].function, expr) );
+	body.set( "description", expr );
+	Json access = Json::array();
+	access.push( "write" );
+	body.set( "accessTypes", access );
+	body.set( "canPersist", path.global );
+	respond( req, true, body );
+}
+
+// put one data breakpoint on the target; false (with a message) when it
+// cannot go there now
+bool DapServer::setWatch( DataBreakpoint& dbp )
+{
+	dbp.watch = 0;
+	WrenchDebugWatchPath path;
+	int function = -1;
+	if ( !wr_decodeWatch(dbp.dataId, path, function, dbp.expr) )
+	{
+		dbp.message = "not a wrench watch";
+		return false;
+	}
+	if ( !m_client || !(m_info.caps & WRD_CapWatch) )
+	{
+		dbp.message = "the target has no watchpoints";
+		return false;
+	}
+	if ( !path.global )
+	{
+		// a local is named by its frame in the current stop
+		if ( !m_stopped || !ensureStack() || path.frame >= (int)m_frames.size() || m_frames[path.frame].function != function )
+		{
+			dbp.message = "a local can only be watched while stopped in its function";
+			return false;
+		}
+	}
+	int id = 0;
+	if ( !m_client->addWatch(path, id) )
+	{
+		dbp.message = m_client->lastError();
+		return false;
+	}
+	dbp.watch = id;
+	dbp.message.clear();
+	return true;
+}
+
+void DapServer::onSetDataBreakpoints( const Json& req )
+{
+	const Json& requested = req["arguments"]["breakpoints"];
+	std::vector<DataBreakpoint> old;
+	old.swap( m_dataBreakpoints );
+
+	// watches that stay keep their place on the target (and their hit
+	// counts), the others go first to make room
+	std::vector<bool> kept( old.size(), false );
+	for ( size_t i = 0; i < requested.size(); ++i )
+	{
+		const Json& r = requested[i];
+		DataBreakpoint dbp;
+		dbp.dataId = r["dataId"].asString( "" );
+		dbp.condition = r["condition"].asString( "" );
+		dbp.hitCondition = r["hitCondition"].asString( "" );
+		for ( size_t o = 0; o < old.size(); ++o )
+		{
+			if ( !kept[o] && old[o].dataId == dbp.dataId && old[o].watch )
+			{
+				kept[o] = true;
+				dbp.id = old[o].id;
+				dbp.expr = old[o].expr;
+				dbp.watch = old[o].watch;
+				if ( old[o].condition == dbp.condition && old[o].hitCondition == dbp.hitCondition )
+				{
+					dbp.hits = old[o].hits;
+				}
+				break;
+			}
+		}
+		m_dataBreakpoints.push_back( dbp );
+	}
+	for ( size_t o = 0; o < old.size(); ++o )
+	{
+		if ( !kept[o] && old[o].watch && m_client && m_client->linkUp() )
+		{
+			m_client->removeWatch( old[o].watch );
+		}
+	}
+
+	Json result = Json::array();
+	for ( DataBreakpoint& dbp : m_dataBreakpoints )
+	{
+		if ( !dbp.id )
+		{
+			dbp.id = m_nextBreakpointId++;
+			setWatch( dbp );
+		}
+		Json b = Json::object();
+		b.set( "id", dbp.id );
+		b.set( "verified", dbp.watch != 0 );
+		b.set( "description", dbp.expr );
+		if ( !dbp.watch )
+		{
+			b.set( "message", dbp.message );
+		}
+		result.push( b );
+	}
+
+	Json body = Json::object();
+	body.set( "breakpoints", result );
+	respond( req, true, body );
+}
+
+// the target dropped a watch on a local whose call returned
+void DapServer::onWatchRemoved( int watch )
+{
+	for ( DataBreakpoint& dbp : m_dataBreakpoints )
+	{
+		if ( dbp.watch == watch )
+		{
+			dbp.watch = 0;
+			dbp.message = "its function returned";
+			Json b = Json::object();
+			b.set( "id", dbp.id );
+			b.set( "verified", false );
+			b.set( "message", dbp.message );
+			Json body = Json::object();
+			body.set( "reason", "changed" );
+			body.set( "breakpoint", b );
+			event( "breakpoint", body );
+		}
+	}
+}
+
 void DapServer::onConfigurationDone( const Json& req )
 {
 	respond( req, true );
@@ -769,7 +1080,7 @@ void DapServer::onScopes( const Json& req )
 	respond( req, true, body );
 }
 
-Json DapServer::variableJson( const std::string& name, const WrenchDebugValue& v, const std::string& evaluateName, bool hex )
+Json DapServer::variableJson( const std::string& name, const WrenchDebugValue& v, const std::string& evaluateName, bool hex, int frame )
 {
 	Json j = Json::object();
 	j.set( "name", name );
@@ -786,6 +1097,8 @@ Json DapServer::variableJson( const std::string& name, const WrenchDebugValue& v
 		VarRef r;
 		r.kind = VarRef::Children;
 		r.value = v;
+		r.expr = evaluateName;
+		r.frame = frame;
 		ref = newRef( r );
 		if ( v.tag == WRD_ValArray || v.tag == WRD_ValRaw )
 		{
@@ -827,7 +1140,7 @@ void DapServer::onVariables( const Json& req )
 		for ( size_t i = 0; i < values.size(); ++i )
 		{
 			std::string name = m_program.localName( function, (int)i );
-			vars.push( variableJson(name, values[i], name, hex) );
+			vars.push( variableJson(name, values[i], name, hex, ref.frame) );
 		}
 	}
 	else if ( ref.kind == VarRef::Globals )
@@ -841,7 +1154,7 @@ void DapServer::onVariables( const Json& req )
 		for ( size_t i = 0; i < values.size(); ++i )
 		{
 			std::string name = m_program.globalName( (int)i );
-			vars.push( variableJson(name, values[i], "::" + name, hex) );
+			vars.push( variableJson(name, values[i], "::" + name, hex, ref.frame) );
 		}
 	}
 	else
@@ -861,13 +1174,78 @@ void DapServer::onVariables( const Json& req )
 		}
 		for ( const WrenchDebugChild& c : kids )
 		{
-			vars.push( variableJson(c.name, c.value, std::string(), hex) );
+			vars.push( variableJson(c.name, c.value, childExpression(ref, c), hex, ref.frame) );
 		}
 	}
 
 	Json body = Json::object();
 	body.set( "variables", vars );
 	respond( req, true, body );
+}
+
+// how an element or member is written in an expression: a[2], s.member,
+// h["key"] or h[5]; empty when the container itself has no such text
+std::string DapServer::childExpression( const VarRef& parent, const WrenchDebugChild& child )
+{
+	if ( parent.expr.empty() )
+	{
+		return std::string();
+	}
+
+	const WrenchDebugValue& p = parent.value;
+	if ( p.tag == WRD_ValArray || p.tag == WRD_ValRaw || p.tag == WRD_ValString )
+	{
+		return parent.expr + "[" + std::to_string( child.index ) + "]";
+	}
+	if ( p.tag == WRD_ValStruct )
+	{
+		return parent.expr + "." + child.name;
+	}
+	if ( p.tag != WRD_ValHash )
+	{
+		return std::string();
+	}
+
+	const WrenchDebugValue& key = child.key;
+	if ( key.tag == WRD_ValInt )
+	{
+		return parent.expr + "[" + std::to_string( key.i ) + "]";
+	}
+	if ( key.tag == WRD_ValFloat )
+	{
+		char text[32];
+		snprintf( text, sizeof(text), "%.9g", key.f );
+		std::string number = text;
+		if ( number.find_first_of(".eE") == std::string::npos )
+		{
+			number += ".0"; // stays a float key
+		}
+		return parent.expr + "[" + number + "]";
+	}
+	if ( key.isString() )
+	{
+		std::string text = key.text;
+		if ( key.count > text.size() && !m_client->getString(key, text) )
+		{
+			return std::string();
+		}
+		std::string quoted = "\"";
+		for ( char c : text )
+		{
+			switch ( c )
+			{
+				case '"': quoted += "\\\""; break;
+				case '\\': quoted += "\\\\"; break;
+				case '\n': quoted += "\\n"; break;
+				case '\r': quoted += "\\r"; break;
+				case '\t': quoted += "\\t"; break;
+				case '\0': quoted += "\\0"; break;
+				default: quoted += c; break;
+			}
+		}
+		return parent.expr + "[" + quoted + "\"]";
+	}
+	return std::string();
 }
 
 void DapServer::onSetVariable( const Json& req )
@@ -991,7 +1369,7 @@ void DapServer::onEvaluate( const Json& req )
 		return;
 	}
 
-	Json var = variableJson( expression, v, expression, hex );
+	Json var = variableJson( expression, v, expression, hex, frame );
 	Json body = Json::object();
 	std::string text = v.display( hex );
 	if ( v.isString() && context != "hover" )
@@ -1223,23 +1601,23 @@ void DapServer::onDisconnect( const Json& req, bool terminateRequest )
 	m_quit = true;
 }
 
-bool DapServer::hitConditionMet( const Breakpoint& bp )
+bool DapServer::hitConditionMet( const std::string& hitCondition, int hits )
 {
-	if ( bp.hitCondition.empty() )
+	std::string c = hitCondition;
+	c.erase( std::remove(c.begin(), c.end(), ' '), c.end() );
+	if ( c.empty() )
 	{
 		return true;
 	}
-	std::string c = bp.hitCondition;
-	c.erase( std::remove(c.begin(), c.end(), ' '), c.end() );
 	int n = 0;
-	if ( c.compare(0, 2, ">=") == 0 ) { n = atoi( c.c_str() + 2 ); return bp.hits >= n; }
-	if ( c.compare(0, 2, "<=") == 0 ) { n = atoi( c.c_str() + 2 ); return bp.hits <= n; }
-	if ( c.compare(0, 2, "==") == 0 ) { n = atoi( c.c_str() + 2 ); return bp.hits == n; }
-	if ( c[0] == '>' ) { n = atoi( c.c_str() + 1 ); return bp.hits > n; }
-	if ( c[0] == '<' ) { n = atoi( c.c_str() + 1 ); return bp.hits < n; }
-	if ( c[0] == '%' ) { n = atoi( c.c_str() + 1 ); return n > 0 && bp.hits % n == 0; }
+	if ( c.compare(0, 2, ">=") == 0 ) { n = atoi( c.c_str() + 2 ); return hits >= n; }
+	if ( c.compare(0, 2, "<=") == 0 ) { n = atoi( c.c_str() + 2 ); return hits <= n; }
+	if ( c.compare(0, 2, "==") == 0 ) { n = atoi( c.c_str() + 2 ); return hits == n; }
+	if ( c[0] == '>' ) { n = atoi( c.c_str() + 1 ); return hits > n; }
+	if ( c[0] == '<' ) { n = atoi( c.c_str() + 1 ); return hits < n; }
+	if ( c[0] == '%' ) { n = atoi( c.c_str() + 1 ); return n > 0 && hits % n == 0; }
 	n = atoi( c.c_str() );
-	return bp.hits >= n;
+	return hits >= n;
 }
 
 void DapServer::handleStopped( const WrenchDebugEvent& e )
@@ -1305,7 +1683,7 @@ void DapServer::handleStopped( const WrenchDebugEvent& e )
 			}
 
 			++bp.hits;
-			if ( !hitConditionMet(bp) )
+			if ( !hitConditionMet(bp.hitCondition, bp.hits) )
 			{
 				continue;
 			}
@@ -1360,13 +1738,60 @@ void DapServer::handleStopped( const WrenchDebugEvent& e )
 				}
 			}
 			++bp.hits;
-			if ( !bp.logMessage.empty() && hitConditionMet(bp) )
+			if ( !bp.logMessage.empty() && hitConditionMet(bp.hitCondition, bp.hits) )
 			{
 				ensureStack();
 				WrenchDebugEvaluator ev( *m_client, m_program, m_frames, 0 );
 				output( ev.interpolate(bp.logMessage) + "\n", "console" );
 			}
 		}
+	}
+	else if ( e.reason == WRD_StopWatch )
+	{
+		// conditions and hit counts are the host's, as for breakpoints
+		DataBreakpoint* hit = nullptr;
+		for ( DataBreakpoint& dbp : m_dataBreakpoints )
+		{
+			if ( dbp.watch && dbp.watch == e.watch )
+			{
+				hit = &dbp;
+			}
+		}
+		if ( hit )
+		{
+			bool stop = true;
+			if ( !hit->condition.empty() && ensureStack() )
+			{
+				WrenchDebugEvaluator ev( *m_client, m_program, m_frames, 0 );
+				WrenchDebugValue v;
+				std::string error;
+				if ( !ev.evaluate(hit->condition, v, error) )
+				{
+					output( "Watchpoint condition '" + hit->condition + "' failed: " + error + "\n", "important" );
+				}
+				else
+				{
+					stop = WrenchDebugEvaluator::truthy( v );
+				}
+			}
+			if ( stop )
+			{
+				++hit->hits;
+				stop = hitConditionMet( hit->hitCondition, hit->hits );
+			}
+			if ( !stop )
+			{
+				resetStopState();
+				if ( m_client->resume(true) )
+				{
+					m_running = true;
+				}
+				return;
+			}
+			hitIds.push( hit->id );
+			description = hit->expr + " changed";
+		}
+		reason = "data breakpoint";
 	}
 	else if ( e.reason == WRD_StopError )
 	{
@@ -1400,7 +1825,10 @@ void DapServer::handleStopped( const WrenchDebugEvent& e )
 	if ( !description.empty() )
 	{
 		body.set( "description", description );
-		body.set( "text", errorText(e.error) );
+		if ( e.reason == WRD_StopError )
+		{
+			body.set( "text", errorText(e.error) );
+		}
 	}
 	if ( hitIds.size() )
 	{
@@ -1454,6 +1882,7 @@ void DapServer::pollTarget()
 				output( "The target loaded a new program.\n", "important" );
 				break;
 			}
+			case WrenchDebugEvent::WatchRemoved: onWatchRemoved( e.watch ); break;
 			case WrenchDebugEvent::Disconnected:
 			{
 				output( "Lost the connection to the target.\n", "important" );
@@ -1521,6 +1950,8 @@ void DapServer::dispatchRequest( const Json& req, const std::string& command )
 		{ "breakpointLocations", &DapServer::onBreakpointLocations },
 		{ "exceptionInfo", &DapServer::onExceptionInfo },
 		{ "source", &DapServer::onSource },
+		{ "dataBreakpointInfo", &DapServer::onDataBreakpointInfo },
+		{ "setDataBreakpoints", &DapServer::onSetDataBreakpoints },
 		{ "disconnect", &DapServer::onDisconnectRequest },
 		{ "terminate", &DapServer::onTerminateRequest },
 	};

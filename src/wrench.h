@@ -1545,6 +1545,16 @@ private:
 #define WRENCH_DEBUG_MAX_HANDLES 64
 #endif
 
+// how many watchpoints the target can hold, and how deep each may reach into
+// containers (a[1].k is two steps). Every line marker checks each watch, so
+// keep them few on slow targets
+#ifndef WRENCH_DEBUG_MAX_WATCHES
+#define WRENCH_DEBUG_MAX_WATCHES 4
+#endif
+#ifndef WRENCH_DEBUG_MAX_WATCH_STEPS
+#define WRENCH_DEBUG_MAX_WATCH_STEPS 4
+#endif
+
 // while running, the link is polled (for pause requests and breakpoint
 // changes) once every this many source lines
 #ifndef WRENCH_DEBUG_POLL_INTERVAL

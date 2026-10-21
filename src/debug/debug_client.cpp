@@ -564,6 +564,8 @@ const char* WrenchDebugClient::errorName( uint8_t code )
 		case WRD_ErrVersion: return "debug protocol version mismatch";
 		case WRD_ErrUnsupported: return "not supported by the target";
 		case WRD_ErrUploadDisabled: return "the target does not accept uploaded programs";
+		case WRD_ErrTooManyWatches: return "the target has no room for more watchpoints";
+		case WRD_ErrBadWatch: return "the target has no such variable to watch";
 		default: return "unknown error";
 	}
 }
@@ -600,6 +602,16 @@ void WrenchDebugClient::handleFrame( const WrenchDebugFrame& frame )
 			e.line = in.i32();
 			e.error = in.u8();
 			e.missingFunction = in.u32();
+			if ( in.remaining() )
+			{
+				e.watch = in.u8();
+			}
+			break;
+		}
+		case WRD_MsgEventWatchRemoved:
+		{
+			e.type = WrenchDebugEvent::WatchRemoved;
+			e.watch = in.u8();
 			break;
 		}
 		case WRD_MsgEventOutput:
@@ -786,6 +798,7 @@ bool WrenchDebugClient::connect( WrenchDebugTargetInfo& info )
 		m_error = "malformed hello reply";
 		return false;
 	}
+	info.maxWatches = ((info.caps & WRD_CapWatch) && in.remaining()) ? in.u8() : 0;
 	info.wrenchVersion = std::to_string( major ) + "." + std::to_string( minor ) + "." + std::to_string( build );
 	m_maxPayload = info.maxPayload < 64 ? 64 : info.maxPayload;
 
@@ -917,6 +930,45 @@ bool WrenchDebugClient::setBreakpoints( const std::vector<int>& lines )
 		wr_put32( payload, (uint32_t)line );
 	}
 	return request( WRD_MsgSetBreakpoints, payload, 0 );
+}
+
+bool WrenchDebugClient::addWatch( const WrenchDebugWatchPath& path, int& id )
+{
+	id = 0;
+	if ( path.steps.size() > 255 )
+	{
+		m_error = "watch path too deep";
+		return false;
+	}
+	std::vector<uint8_t> payload;
+	payload.push_back( path.global ? WRD_WatchGlobal : WRD_WatchLocal );
+	wr_put16( payload, (uint16_t)path.frame );
+	wr_put16( payload, (uint16_t)path.slot );
+	payload.push_back( (uint8_t)path.steps.size() );
+	for ( const WrenchDebugWatchStep& s : path.steps )
+	{
+		payload.push_back( s.kind );
+		wr_put32( payload, s.value );
+	}
+	std::vector<uint8_t> reply;
+	if ( !request(WRD_MsgAddWatch, payload, &reply) )
+	{
+		return false;
+	}
+	if ( reply.empty() )
+	{
+		m_error = "malformed watch reply";
+		return false;
+	}
+	id = reply[0];
+	return true;
+}
+
+bool WrenchDebugClient::removeWatch( int id )
+{
+	std::vector<uint8_t> payload;
+	payload.push_back( (uint8_t)id );
+	return request( WRD_MsgRemoveWatch, payload, 0 );
 }
 
 bool WrenchDebugClient::getStack( std::vector<WrenchDebugStackFrame>& frames, const WrenchDebugProgram* program, int topLine )

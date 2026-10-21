@@ -215,6 +215,21 @@ Debugger and tools:
   same container once either was written. It is an empty array after
   `var a[] =` and an empty hash table anywhere else (as `{ : }`).
 
+## Open issues: debugger, done
+
+* Watchpoints: a variable, element or member (`x`, `a[2]`, `p.member`,
+  `h["key"]`, `s[0]`) is followed again from its root at every line marker
+  and the target stops on the line after a change (stop reason 5, new
+  requests AddWatch / RemoveWatch, event WatchRemoved, capability bit 0x10:
+  no protocol version change, older clients and targets ignore it). VS Code
+  sets them with Break on Value Change (conditions and hit counts on the
+  host), `wrench dbg` with `watch` / `unwatch`. A watched local goes away
+  when its call returns. Column breakpoints were left out: several
+  statements on one line are rare and every marker costs code.
+* The `for` increment entry was out of date: an increment on its own line
+  has its own line marker. A test steps through a loop written over several
+  lines.
+
 ## Open issues
 
 Language and compiler:
@@ -242,15 +257,12 @@ Debugger:
 * One debugged context per `WrenchDebugServer`; a firmware running several
   scripts needs one server (and link) per context, or a multiplexing
   extension of the protocol.
-* Breakpoints are per line; there are no data breakpoints (watchpoints) and
-  no column breakpoints for several statements on one line.
 * Stepping granularity is the source line; `stopOnEntry` for an attached
-  host-driven target means "the next line the firmware executes".
-* `for` loop increments are attributed to the last line of the loop body.
+  host-driven target means "the next line the firmware executes". Left as
+  it is: finer markers would cost code size in every debug build.
 * Programs are single source files; the line table has no file index.
-* `wrench dbg` does not ping while the target is stopped, so a target that
-  set `setLinkTimeout` releases itself while the user reads variables for
-  longer than the timeout. VS Code pings every second.
+  Modules loaded with `wr_import` or `sys::importCompile` run without the
+  line hook: they cannot be stepped into and their breakpoints never fire.
 
 Libraries:
 

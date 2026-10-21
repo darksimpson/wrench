@@ -25,7 +25,7 @@ Press F5 in a `.w` file to debug it locally, or add configurations from the snip
 | `"request": "attach"` | debugs what a target already runs, without uploading; leave `program` empty to use the source embedded in the target's bytecode |
 | `"program": "main.bin"` | debugs a program compiled with `-debugsource` without its `.w` files; the source shown is the one embedded in it |
 
-Supported: breakpoints (moved to the nearest line with code), conditional and hit-count breakpoints, logpoints, break on runtime errors (with the stack still intact), pause, step in / over / out, call stack, locals and globals with expandable arrays, hash tables and structs, editing variables, watch and hover evaluation (`a[2]`, `p.x`, `h["key"]`, `n * 2 > limit`), assignment in the debug console (`x = 5`), and debug console completion.
+Supported: breakpoints (moved to the nearest line with code), conditional and hit-count breakpoints, logpoints, break on runtime errors (with the stack still intact), pause, step in / over / out, call stack, locals and globals with expandable arrays, hash tables and structs, editing variables, watch and hover evaluation (`a[2]`, `p.x`, `h["key"]`, `n * 2 > limit`), assignment in the debug console (`x = 5`), debug console completion, and watchpoints (Break on Value Change in the variables view, with conditions and hit counts).
 
 ### Scripts for your own application
 

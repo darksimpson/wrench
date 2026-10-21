@@ -89,16 +89,19 @@ enum WrenchDebugMessage
 	WRD_MsgSetChild = 0x16, // u32 handle, u32 index, value
 	WRD_MsgPing = 0x17, // -
 	WRD_MsgDetach = 0x18, // - clear breakpoints and continue
+	WRD_MsgAddWatch = 0x19, // u8 root (WrenchDebugWatchRoot), u16 frame, u16 slot, u8 steps, (u8 kind, u32 value) * steps; reply u8 watch id
+	WRD_MsgRemoveWatch = 0x1A, // u8 watch id, 0 removes all
 
 	// replies, server to client (seq echoes the request)
 	WRD_MsgReplyOk = 0x80, // request specific payload
 	WRD_MsgReplyError = 0x81, // u8 WrenchDebugError
 
 	// unsolicited events, server to client (seq 0)
-	WRD_MsgEventStopped = 0xC0, // u8 reason, i32 line, u8 wrench error, u32 missing function hash
+	WRD_MsgEventStopped = 0xC0, // u8 reason, i32 line, u8 wrench error, u32 missing function hash, u8 watch id
 	WRD_MsgEventOutput = 0xC1, // bytes
 	WRD_MsgEventEnded = 0xC2, // u8 wrench error, u8 flags, i32 line, u32 missing function hash, value
 	WRD_MsgEventLoaded = 0xC3, // u32 bytecode hash (program changed on target)
+	WRD_MsgEventWatchRemoved = 0xC4, // u8 watch id (its frame returned, or the program changed)
 };
 
 enum WrenchDebugError
@@ -118,6 +121,8 @@ enum WrenchDebugError
 	WRD_ErrVersion,
 	WRD_ErrUnsupported,
 	WRD_ErrUploadDisabled, // the firmware turned uploads off (setAllowUpload)
+	WRD_ErrTooManyWatches,
+	WRD_ErrBadWatch, // a watch path whose root does not exist
 };
 
 enum WrenchDebugStopReason
@@ -127,6 +132,23 @@ enum WrenchDebugStopReason
 	WRD_StopStep,
 	WRD_StopPause,
 	WRD_StopError,
+	WRD_StopWatch, // a watched value changed, the stop event names the watch
+};
+
+// a watch names a value by where it lives: a global or a local of one frame,
+// then elements (WRD_WatchIndex: array, string or raw array position) and
+// members (WRD_WatchKey: the hash of a hash table key or struct member name)
+// below it. The target follows the path again at every line marker
+enum WrenchDebugWatchRoot
+{
+	WRD_WatchGlobal = 0,
+	WRD_WatchLocal = 1,
+};
+
+enum WrenchDebugWatchStepKind
+{
+	WRD_WatchIndex = 0,
+	WRD_WatchKey = 1,
 };
 
 enum WrenchDebugState
@@ -158,6 +180,7 @@ enum WrenchDebugFlags
 	WRD_CapLaunch = 1 << 1, // target can execute the program itself
 	WRD_CapSetValue = 1 << 2,
 	WRD_CapHostDriven = 1 << 3, // host firmware calls into the script itself
+	WRD_CapWatch = 1 << 4, // watchpoints, the hello reply ends with u8 max watches
 };
 
 enum WrenchDebugFrameKind

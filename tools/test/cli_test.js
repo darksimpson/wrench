@@ -108,13 +108,27 @@ async function testCommandRobustness() {
 	assert(/unknown option -bogus/.test(out), out);
 }
 
+// watch: a local goes away with its call, a global stops the loop
+async function testWatchCommands() {
+	const out = dbg([sample], 'b 13\nr\nwatch c\nwatch ::total\nwatch\nb 13\nc\nc\nunwatch\nq\n');
+	assert(/watch 1: c = 0/.test(out), out);
+	assert(/watch 2: ::total = 0/.test(out), out);
+	assert(/ {2}1: c\r?\n {2}2: ::total/.test(out), out);
+	assert(/\[watch 1: c changed\] line 14/.test(out), out);
+	assert(/c = 1/.test(out), out);
+	assert(/\[watch 1: c went out of scope\]/.test(out), out);
+	assert(/\[watch 2: ::total changed\] line 22/.test(out), out);
+	assert(/::total = 2/.test(out), out);
+	assert(/all watches removed/.test(out), out);
+}
+
 async function testAttachNeedsRemoteTarget() {
 	const out = dbg(['-attach'], '');
 	assert(/without a file the program comes from the target/.test(out), out);
 }
 
 (async () => {
-	const tests = [testBinaryFile, testBinaryWithoutSource, testAttachFetchesProgram, testUploadRefused, testAttachToWaitingScript, testCommandRobustness, testAttachNeedsRemoteTarget];
+	const tests = [testBinaryFile, testBinaryWithoutSource, testAttachFetchesProgram, testUploadRefused, testAttachToWaitingScript, testCommandRobustness, testWatchCommands, testAttachNeedsRemoteTarget];
 	let failed = 0;
 	for (const t of tests) {
 		try {

@@ -54,6 +54,7 @@ const char* stopReasonText( uint8_t reason )
 		case WRD_StopStep: return "step";
 		case WRD_StopPause: return "paused";
 		case WRD_StopError: return "runtime error";
+		case WRD_StopWatch: return "watch";
 		default: return "stopped";
 	}
 }
@@ -121,6 +122,11 @@ private:
 	void listSource( int center, int radius );
 	void toggleBreakpoint( int line );
 	bool syncBreakpoints();
+	void addWatch( const std::string& expr );
+	void removeWatch( const std::string& arg );
+	void listWatches();
+	void onWatchRemoved( int id );
+	std::string watchName( int id ) const;
 	void printExpression( const std::string& expr );
 	void setExpression( const std::string& text );
 	void help();
@@ -138,6 +144,7 @@ private:
 	bool m_sourceIsBytecode = false;
 	std::vector<std::string> m_lines;
 	std::vector<int> m_breakpoints;
+	std::map<int, std::string> m_watches; // target watch id, expression
 	std::vector<std::string> m_displays;
 	std::vector<WrenchDebugStackFrame> m_frames;
 	int m_frame = 0;
@@ -299,13 +306,101 @@ void CliDebugger::onStopped( const WrenchDebugEvent& e )
 			printf( "*** %s\n", missing.c_str() );
 		}
 	}
+	else if ( e.reason == WRD_StopWatch )
+	{
+		printf( "\n[watch %d: %s changed] line %d\n", e.watch, watchName(e.watch).c_str(), e.line );
+	}
 	else
 	{
 		printf( "\n[%s] line %d\n", stopReasonText(e.reason), e.line );
 	}
 	refreshStack();
 	showLocation();
+	if ( e.reason == WRD_StopWatch && m_watches.count(e.watch) )
+	{
+		printExpression( m_watches[e.watch] );
+	}
 	showDisplays();
+}
+
+std::string CliDebugger::watchName( int id ) const
+{
+	auto it = m_watches.find( id );
+	return it == m_watches.end() ? std::string( "?" ) : it->second;
+}
+
+void CliDebugger::onWatchRemoved( int id )
+{
+	printf( "\n[watch %d: %s went out of scope]\n", id, watchName(id).c_str() );
+	m_watches.erase( id );
+}
+
+void CliDebugger::addWatch( const std::string& expr )
+{
+	if ( !m_stopped || m_frames.empty() )
+	{
+		printf( "watches are set while stopped: variables are looked up in the selected frame\n" );
+		return;
+	}
+	WrenchDebugEvaluator ev( *m_client, m_program, m_frames, m_frame );
+	WrenchDebugWatchPath path;
+	WrenchDebugValue value;
+	std::string error;
+	if ( !ev.watchPath(expr, path, value, error) )
+	{
+		printf( "cannot watch %s: %s\n", expr.c_str(), error.c_str() );
+		return;
+	}
+	int id = 0;
+	if ( !m_client->addWatch(path, id) )
+	{
+		printf( "cannot watch %s: %s\n", expr.c_str(), m_client->lastError().c_str() );
+		return;
+	}
+	m_watches[id] = expr;
+	printf( "watch %d: %s = %s\n", id, expr.c_str(), ev.describe(value).c_str() );
+}
+
+void CliDebugger::removeWatch( const std::string& arg )
+{
+	if ( arg.empty() )
+	{
+		if ( m_client->removeWatch(0) )
+		{
+			m_watches.clear();
+			printf( "all watches removed\n" );
+		}
+		else
+		{
+			printf( "%s\n", m_client->lastError().c_str() );
+		}
+		return;
+	}
+	int id = atoi( arg.c_str() );
+	if ( !m_watches.count(id) )
+	{
+		printf( "no watch %s\n", arg.c_str() );
+		return;
+	}
+	if ( !m_client->removeWatch(id) )
+	{
+		printf( "%s\n", m_client->lastError().c_str() );
+		return;
+	}
+	printf( "watch %d (%s) removed\n", id, m_watches[id].c_str() );
+	m_watches.erase( id );
+}
+
+void CliDebugger::listWatches()
+{
+	if ( m_watches.empty() )
+	{
+		printf( "no watches\n" );
+	}
+	for ( const auto& w : m_watches )
+	{
+		printf( "  %d: %s\n", w.first, w.second.c_str() );
+	}
 }
 
 void CliDebugger::waitForStop()
@@ -383,6 +478,11 @@ void CliDebugger::waitForStop()
 			}
 			case WrenchDebugEvent::Loaded:
 			{
+				break;
+			}
+			case WrenchDebugEvent::WatchRemoved:
+			{
+				onWatchRemoved( e.watch );
 				break;
 			}
 			case WrenchDebugEvent::Disconnected:
@@ -548,6 +648,9 @@ void CliDebugger::help()
 					"s, step           step into\n"
 					"o, finish         step out of the current function\n"
 					"b <line>          toggle a breakpoint, 'b' alone lists them\n"
+					"watch <var>       stop when a variable, element or member changes: x, a[2], s.member\n"
+					"                  ('watch' alone lists them)\n"
+					"unwatch [n]       remove watch n, or all of them\n"
 					"bt, where         show the call stack\n"
 					"f <n>             select stack frame n\n"
 					"l [line]          list source around the current line or 'line'\n"
@@ -627,6 +730,10 @@ int CliDebugger::run( const char* sourcePath, const char* target, bool attach, c
 				m_running = false;
 				m_stopped = false;
 				printf( "\n[ended%s%s]\n", e.error ? " with " : "", e.error ? wr_debugErrorText(e.error).c_str() : "" );
+			}
+			else if ( e.type == WrenchDebugEvent::WatchRemoved )
+			{
+				onWatchRemoved( e.watch );
 			}
 			else if ( e.type == WrenchDebugEvent::Disconnected )
 			{
@@ -725,6 +832,21 @@ int CliDebugger::run( const char* sourcePath, const char* target, bool attach, c
 			{
 				toggleBreakpoint( atoi(arg.c_str()) );
 			}
+		}
+		else if ( cmd == "watch" )
+		{
+			if ( arg.empty() )
+			{
+				listWatches();
+			}
+			else
+			{
+				addWatch( arg );
+			}
+		}
+		else if ( cmd == "unwatch" )
+		{
+			removeWatch( arg );
 		}
 		else if ( cmd == "bt" || cmd == "where" || cmd == "w" )
 		{

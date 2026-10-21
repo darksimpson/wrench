@@ -787,6 +787,199 @@ void testHostDriven()
 	target.stop();
 }
 
+const char* c_watchProgram =
+	"var g = 0;\n" // 1
+	"var arr[] = { 1, 2, 3 };\n" // 2
+	"var h = { \"k\": 1, 5: 0 };\n" // 3
+	"var s = \"abc\";\n" // 4
+	"struct P { var x; };\n" // 5
+	"var p = new P;\n" // 6
+	"function bump( n )\n" // 7
+	"{\n" // 8
+	"  var v = n;\n" // 9
+	"  v = v + 1;\n" // 10
+	"  v = v * 2;\n" // 11
+	"  return v;\n" // 12
+	"}\n" // 13
+	"g = 1;\n" // 14
+	"arr[1] = 20;\n" // 15
+	"arr[0] = 1;\n" // 16
+	"h.k = 7;\n" // 17
+	"h[5] = 9;\n" // 18
+	"s[1] = 'x';\n" // 19
+	"p.x = 3;\n" // 20
+	"g = bump( 3 );\n" // 21
+	"g = g + 0;\n" // 22
+	"println( \"done\" );\n"; // 23
+
+// the target watch id for a variable path, -1 when it cannot be watched
+int watchExpr( WrenchDebugClient& client, const WrenchDebugProgram& program, const char* expr, int frame = 0, std::string* error = nullptr )
+{
+	std::vector<WrenchDebugStackFrame> frames;
+	client.getStack( frames, &program, 0 );
+	WrenchDebugEvaluator ev( client, program, frames, frame );
+	WrenchDebugWatchPath path;
+	WrenchDebugValue value;
+	std::string why;
+	int id = 0;
+	if ( !ev.watchPath(expr, path, value, why) )
+	{
+		if ( error )
+		{
+			*error = why;
+		}
+		return -1;
+	}
+	if ( !client.addWatch(path, id) )
+	{
+		if ( error )
+		{
+			*error = client.lastError();
+		}
+		return -1;
+	}
+	return id;
+}
+
+void testWatchpoints()
+{
+	std::vector<uint8_t> bytecode;
+	WrenchDebugProgram program;
+	DCHECK( compile(c_watchProgram, bytecode, program) );
+
+	TestTarget target;
+	target.start();
+	WrenchDebugClient client( target.pipe().client() );
+	WrenchDebugTargetInfo info;
+	DCHECK( client.connect(info) );
+	DCHECK( (info.caps & WRD_CapWatch) && info.maxWatches == WRENCH_DEBUG_MAX_WATCHES );
+	DCHECK( client.upload(bytecode) );
+
+	WrenchDebugEvent e;
+	std::string output;
+	DCHECK( client.launch(true) );
+	DCHECK( waitFor(client, WrenchDebugEvent::Stopped, e, &output) && e.reason == WRD_StopEntry );
+
+	// a global: the stop is on the line after the write
+	DCHECK( watchExpr(client, program, "g") == 1 );
+	DCHECK( client.resume() );
+	DCHECK( waitFor(client, WrenchDebugEvent::Stopped, e, &output) );
+	DCHECK( e.reason == WRD_StopWatch && e.watch == 1 && e.line == 15 );
+
+	// an element, a member of a hash table, an integer key; then the target
+	// is full until one goes
+	DCHECK( watchExpr(client, program, "arr[1]") == 2 );
+	DCHECK( watchExpr(client, program, "h.k") == 3 );
+	DCHECK( watchExpr(client, program, "h[5]") == 4 );
+	std::string error;
+	DCHECK( watchExpr(client, program, "s[1]", 0, &error) == -1 && error.find("no room") != std::string::npos );
+	DCHECK( client.removeWatch(1) );
+	DCHECK( watchExpr(client, program, "s[1]") == 1 );
+
+	DCHECK( client.resume() );
+	DCHECK( waitFor(client, WrenchDebugEvent::Stopped, e, &output) );
+	DCHECK( e.reason == WRD_StopWatch && e.watch == 2 && e.line == 16 );
+	DCHECK( evalText(client, program, "arr[1]") == "20" );
+
+	// writing the value it already has is no change
+	DCHECK( client.resume() );
+	DCHECK( waitFor(client, WrenchDebugEvent::Stopped, e, &output) );
+	DCHECK( e.reason == WRD_StopWatch && e.watch == 3 && e.line == 18 );
+
+	DCHECK( client.resume() );
+	DCHECK( waitFor(client, WrenchDebugEvent::Stopped, e, &output) );
+	DCHECK( e.reason == WRD_StopWatch && e.watch == 4 && e.line == 19 );
+
+	// a struct member takes the place of the integer key
+	DCHECK( client.removeWatch(4) );
+	DCHECK( watchExpr(client, program, "p.x") == 4 );
+
+	// a character of a string
+	DCHECK( client.resume() );
+	DCHECK( waitFor(client, WrenchDebugEvent::Stopped, e, &output) );
+	DCHECK( e.reason == WRD_StopWatch && e.watch == 1 && e.line == 20 );
+
+	DCHECK( client.resume() );
+	DCHECK( waitFor(client, WrenchDebugEvent::Stopped, e, &output) );
+	DCHECK( e.reason == WRD_StopWatch && e.watch == 4 && e.line == 21 );
+
+	// what the debugger itself writes while stopped is no change either
+	{
+		std::vector<WrenchDebugStackFrame> frames;
+		DCHECK( client.getStack(frames, &program, e.line) );
+		WrenchDebugEvaluator ev( client, program, frames, 0 );
+		WrenchDebugValue result;
+		DCHECK( ev.assign("arr[1]", "5", result, error) );
+	}
+	DCHECK( client.setBreakpoints({ 10 }) );
+	DCHECK( client.resume() );
+	DCHECK( waitFor(client, WrenchDebugEvent::Stopped, e, &output) );
+	DCHECK( e.reason == WRD_StopBreakpoint && e.line == 10 );
+
+	// paths that name no variable
+	DCHECK( watchExpr(client, program, "g + 1", 0, &error) == -1 && error.find("not a variable") != std::string::npos );
+	DCHECK( watchExpr(client, program, "arr[7]", 0, &error) == -1 && error.find("out of range") != std::string::npos );
+
+	// a local lives as long as its call
+	DCHECK( client.removeWatch(0) );
+	DCHECK( client.setBreakpoints({}) );
+	DCHECK( watchExpr(client, program, "v") == 1 );
+	DCHECK( client.resume() );
+	DCHECK( waitFor(client, WrenchDebugEvent::Stopped, e, &output) );
+	DCHECK( e.reason == WRD_StopWatch && e.watch == 1 && e.line == 11 );
+	DCHECK( evalText(client, program, "v") == "4" );
+	DCHECK( client.resume() );
+	DCHECK( waitFor(client, WrenchDebugEvent::Stopped, e, &output) );
+	DCHECK( e.reason == WRD_StopWatch && e.line == 12 );
+	DCHECK( client.resume() );
+	DCHECK( waitFor(client, WrenchDebugEvent::WatchRemoved, e, &output) && e.watch == 1 );
+	DCHECK( waitFor(client, WrenchDebugEvent::Ended, e, &output) && e.error == 0 );
+	DCHECK( output == "done\n" );
+
+	target.stop();
+}
+
+// a for loop written over several lines steps through each part on its own
+// line: body, increment, condition, body again
+void testForLoopLines()
+{
+	const char* source =
+		"var s = 0;\n" // 1
+		"for( var i = 0;\n" // 2
+		"     i < 2;\n" // 3
+		"     ++i )\n" // 4
+		"{\n" // 5
+		"  s += i;\n" // 6
+		"}\n" // 7
+		"s = s + 1;\n"; // 8
+	std::vector<uint8_t> bytecode;
+	WrenchDebugProgram program;
+	DCHECK( compile(source, bytecode, program) );
+	DCHECK( program.lines().count(4) == 1 && program.lines().count(3) == 1 );
+
+	TestTarget target;
+	target.start();
+	WrenchDebugClient client( target.pipe().client() );
+	WrenchDebugTargetInfo info;
+	DCHECK( client.connect(info) );
+	DCHECK( client.upload(bytecode) );
+	DCHECK( client.setBreakpoints({ 6 }) );
+	DCHECK( client.launch(false) );
+
+	WrenchDebugEvent e;
+	DCHECK( waitFor(client, WrenchDebugEvent::Stopped, e) && e.line == 6 );
+	DCHECK( client.setBreakpoints({}) );
+	int expected[] = { 4, 3, 6, 4, 3, 8 };
+	for ( int line : expected )
+	{
+		DCHECK( client.stepOver() );
+		DCHECK( waitFor(client, WrenchDebugEvent::Stopped, e) && e.reason == WRD_StopStep && e.line == line );
+	}
+	DCHECK( client.resume() );
+	DCHECK( waitFor(client, WrenchDebugEvent::Ended, e) );
+	target.stop();
+}
+
 void testLinkNoise()
 {
 	// framing survives garbage, truncated frames and bad CRCs
@@ -876,6 +1069,8 @@ bool testDebugger()
 
 	testLinkNoise();
 	testServerDriven();
+	testWatchpoints();
+	testForLoopLines();
 	testPauseAndErrors();
 	testHostDriven();
 	testUploadRefused();

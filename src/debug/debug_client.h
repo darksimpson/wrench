@@ -159,6 +159,7 @@ struct WrenchDebugEvent
 		Ended,
 		Loaded,
 		Disconnected,
+		WatchRemoved,
 	};
 
 	Type type = Stopped;
@@ -167,8 +168,25 @@ struct WrenchDebugEvent
 	uint8_t error = 0; // WRError
 	uint8_t flags = 0; // WRD_Ended...
 	uint32_t missingFunction = 0; // name hash for *_function_not_found errors
+	int watch = 0; // WRD_StopWatch and WatchRemoved: which watch
 	std::string text;
 	WrenchDebugValue value;
+};
+
+// where a watched value lives (see WrenchDebugWatchRoot): a global slot, or
+// a local slot of a stack frame, then elements and members below it
+struct WrenchDebugWatchStep
+{
+	uint8_t kind = WRD_WatchIndex; // WrenchDebugWatchStepKind
+	uint32_t value = 0; // element position, or key / member name hash
+};
+
+struct WrenchDebugWatchPath
+{
+	bool global = true;
+	int frame = 0; // locals: frame index of the current stop
+	int slot = 0;
+	std::vector<WrenchDebugWatchStep> steps;
 };
 
 struct WrenchDebugTargetInfo
@@ -178,6 +196,7 @@ struct WrenchDebugTargetInfo
 	uint16_t maxPayload = 0;
 	uint8_t caps = 0;
 	uint16_t maxBreakpoints = 0;
+	uint8_t maxWatches = 0; // 0: the target has no watchpoints
 
 	uint8_t state = 0;
 	uint32_t programHash = 0;
@@ -218,6 +237,12 @@ public:
 	bool ping();
 
 	bool setBreakpoints( const std::vector<int>& lines );
+
+	// watchpoints: the target stops (WRD_StopWatch) on the line after one
+	// that changed the value. A local can only be named while stopped, and
+	// goes away (a WatchRemoved event) when its call returns
+	bool addWatch( const WrenchDebugWatchPath& path, int& id );
+	bool removeWatch( int id ); // 0 removes all
 
 	// stack, innermost frame first; names and lines filled from 'program'
 	bool getStack( std::vector<WrenchDebugStackFrame>& frames, const WrenchDebugProgram* program, int topLine );

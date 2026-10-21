@@ -75,6 +75,10 @@ public:
 	// write a value to a known location
 	bool store( const WrenchDebugLocation& where, const WrenchDebugValue& value, WrenchDebugValue& result, std::string& error );
 
+	// a plain variable path (x, ::g, a[3].k, h["key"]) as the target follows
+	// a watch, with the value it has now
+	bool watchPath( const std::string& path, WrenchDebugWatchPath& out, WrenchDebugValue& current, std::string& error );
+
 	// expand {expression} parts of a log message
 	std::string interpolate( const std::string& message );
 
