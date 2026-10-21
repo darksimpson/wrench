@@ -119,6 +119,9 @@ Debugger, rebuilt:
   "unwatch" in wrench dbg. Protocol: AddWatch / RemoveWatch requests, stop reason 5,
   WatchRemoved event, capability bit 0x10 (version stays 2). Children in the VS Code
   variables view carry their expression (evaluateName), so Add to Watch works for them
+- wrench dbg pings a halted remote target while it waits at the prompt, a target with
+  setLinkTimeout no longer lets go while the user reads variables; new wrench dbgserver
+  -linktimeout <ms>
 
 Compiler fixes:
 - peephole optimizer merged instructions across jump targets (ternary true arms,

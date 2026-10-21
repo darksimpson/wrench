@@ -544,7 +544,8 @@ static void wr_serverPrintln( WRContext* c, const WRValue* argv, const int argn,
 	}
 }
 
-int wr_debugServerMain( const WrenchTransportSpec& spec, const char* programPath, bool verbose, const WrenchProject* project, bool allowUpload, bool hold )
+int wr_debugServerMain( const WrenchTransportSpec& spec, const char* programPath, bool verbose, const WrenchProject* project, bool allowUpload, bool hold,
+	uint32_t linkTimeoutMs )
 {
 	if ( hold && !programPath )
 	{
@@ -611,6 +612,7 @@ int wr_debugServerMain( const WrenchTransportSpec& spec, const char* programPath
 	{
 		printf( "uploads from debuggers are refused\n" );
 	}
+	server.setLinkTimeout( linkTimeoutMs );
 	wr_registerFunction( w, "print", wr_serverPrint );
 	wr_registerFunction( w, "println", wr_serverPrintln );
 	WrenchHostNatives natives;

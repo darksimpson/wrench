@@ -142,8 +142,10 @@ private:
 // allowUpload: false refuses programs sent by a debugger (setAllowUpload)
 // hold: run the preloaded program at once like firmware would, halted on its
 // first line until a debugger attaches (breakOnEntry)
+// linkTimeoutMs: while halted, let go of a silent debugger after this long
+// (setLinkTimeout), 0 waits forever
 int wr_debugServerMain( const WrenchTransportSpec& spec, const char* programPath, bool verbose, const WrenchProject* project = nullptr,
-	bool allowUpload = true, bool hold = false );
+	bool allowUpload = true, bool hold = false, uint32_t linkTimeoutMs = 0 );
 
 #endif
 

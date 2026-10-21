@@ -229,6 +229,10 @@ Debugger and tools:
 * The `for` increment entry was out of date: an increment on its own line
   has its own line marker. A test steps through a loop written over several
   lines.
+* `wrench dbg` pings a halted remote target every second while waiting at
+  its prompt (a thread, the client handed over under a lock), so a target
+  with `setLinkTimeout` no longer lets go while the user reads variables.
+  `wrench dbgserver -linktimeout <ms>` sets the timeout on a PC target.
 
 ## Open issues
 

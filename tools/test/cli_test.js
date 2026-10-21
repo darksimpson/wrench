@@ -108,6 +108,34 @@ async function testCommandRobustness() {
 	assert(/unknown option -bogus/.test(out), out);
 }
 
+// a target with a link timeout stays halted while the user thinks: dbg
+// pings it from the prompt
+async function testPingWhileStopped() {
+	const port = 29000 + Math.floor(Math.random() * 2000);
+	const server = spawn(exe, ['dbgserver', '-target', `tcp:${port}`, '-hold', '-linktimeout', '1500', sample], { stdio: ['ignore', 'pipe', 'pipe'] });
+	await sleep(500);
+	const client = spawn(exe, ['dbg', '-attach', '-target', `tcp:127.0.0.1:${port}`], { stdio: ['pipe', 'pipe', 'pipe'] });
+	let out = '';
+	client.stdout.on('data', (d) => { out += d.toString(); });
+	client.stderr.on('data', (d) => { out += d.toString(); });
+	const exited = new Promise((resolve) => client.on('exit', resolve));
+	try {
+		client.stdin.write('b 14\nc\n');
+		for (let i = 0; i < 100 && !/\[breakpoint\] line 14/.test(out); ++i) {
+			await sleep(50);
+		}
+		assert(/\[breakpoint\] line 14/.test(out), out);
+		await sleep(3000); // twice the target's link timeout
+		client.stdin.write('p a\nbt\nq\n');
+		await exited;
+		assert(/a = 0/.test(out), out);
+		assert(/#1\s+outer\s+line 18/.test(out), out);
+	} finally {
+		client.kill();
+		server.kill();
+	}
+}
+
 // watch: a local goes away with its call, a global stops the loop
 async function testWatchCommands() {
 	const out = dbg([sample], 'b 13\nr\nwatch c\nwatch ::total\nwatch\nb 13\nc\nc\nunwatch\nq\n');
@@ -128,7 +156,7 @@ async function testAttachNeedsRemoteTarget() {
 }
 
 (async () => {
-	const tests = [testBinaryFile, testBinaryWithoutSource, testAttachFetchesProgram, testUploadRefused, testAttachToWaitingScript, testCommandRobustness, testWatchCommands, testAttachNeedsRemoteTarget];
+	const tests = [testBinaryFile, testBinaryWithoutSource, testAttachFetchesProgram, testUploadRefused, testAttachToWaitingScript, testCommandRobustness, testPingWhileStopped, testWatchCommands, testAttachNeedsRemoteTarget];
 	let failed = 0;
 	for (const t of tests) {
 		try {

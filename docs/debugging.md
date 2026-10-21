@@ -167,7 +167,7 @@ Ctrl+C pauses a running program.
 ## PC as a target
 
 ```
-wrench dbgserver -target tcp:5050 [-v] [-noupload] [-hold] [file.w | file.bin]
+wrench dbgserver -target tcp:5050 [-v] [-noupload] [-hold] [-linktimeout ms] [file.w | file.bin]
 wrench dbgserver -target serial:COM9:115200 file.w
 ```
 
@@ -175,6 +175,8 @@ The server preloads the file if given (a client can still upload another
 program unless `-noupload` is given), executes launches, and accepts a new
 client after a disconnect. `-hold` starts the preloaded program right away,
 halted on its first line until a debugger attaches (see below).
+`-linktimeout` lets a halted program go on when the debugger has been silent
+that long, like `setLinkTimeout()` on a device (see "Targets").
 
 Without a `wrench.json` (see "Scripts for a host application" below), the
 server stands in for a generic device: native functions a device script
@@ -321,8 +323,9 @@ while the script is halted, it stays halted, servicing the link, until a
 debugger connects again. `WrenchDebugServer::setLinkTimeout( ms )` (0, the
 default, waits forever) makes a halted target let go of a client it has not
 heard from for that long, as if it had disconnected. `wrench dap` (VS Code)
-pings a halted target every second to stay within it; `wrench dbg` does
-not, so use a generous value, or none, with the console debugger.
+and `wrench dbg` ping a halted target every second to stay within it, also
+while nobody touches them. `wrench dbgserver -linktimeout <ms>` gives a PC
+target the same timeout.
 
 While script code runs, the server polls the link every
 `WRENCH_DEBUG_POLL_INTERVAL` source lines (64 by default), so a pause

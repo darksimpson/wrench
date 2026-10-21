@@ -33,6 +33,10 @@ SOFTWARE.
 #include <signal.h>
 #include <atomic>
 #include <algorithm>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <chrono>
 
 namespace
 {
@@ -131,6 +135,10 @@ private:
 	void setExpression( const std::string& text );
 	void help();
 	bool refreshStack();
+	void pingLoop();
+	void startPinger();
+	void stopPinger();
+	char* readCommand( char* buf, int size );
 
 	FILE* m_in;
 	std::string m_sourcePath;
@@ -152,7 +160,65 @@ private:
 	bool m_stopped = false;
 	bool m_running = false;
 	bool m_hex = false;
+
+	// a halted target may give up on a debugger it has not heard from
+	// (setLinkTimeout): while the prompt waits for the user, a thread pings
+	// it. The client is only used by whichever thread holds m_clientLock
+	// while m_idleAtPrompt says the prompt is waiting
+	std::thread m_pinger;
+	std::mutex m_clientLock;
+	std::condition_variable m_pingWake;
+	bool m_pingQuit = false;
+	bool m_idleAtPrompt = false;
 };
+
+void CliDebugger::pingLoop()
+{
+	std::unique_lock<std::mutex> lock( m_clientLock );
+	while ( !m_pingQuit )
+	{
+		m_pingWake.wait_for( lock, std::chrono::seconds(1) );
+		if ( !m_pingQuit && m_idleAtPrompt && m_client && m_client->linkUp() )
+		{
+			m_client->ping();
+		}
+	}
+}
+
+void CliDebugger::startPinger()
+{
+	m_pinger = std::thread( [this]() { pingLoop(); } );
+}
+
+void CliDebugger::stopPinger()
+{
+	if ( !m_pinger.joinable() )
+	{
+		return;
+	}
+	{
+		std::lock_guard<std::mutex> lock( m_clientLock );
+		m_pingQuit = true;
+	}
+	m_pingWake.notify_all();
+	m_pinger.join();
+}
+
+// the next command line; meanwhile the pinger keeps a halted remote target
+// from letting go of us
+char* CliDebugger::readCommand( char* buf, int size )
+{
+	{
+		std::lock_guard<std::mutex> lock( m_clientLock );
+		m_idleAtPrompt = m_stopped && !m_link.isLocal();
+	}
+	char* line = fgets( buf, size, m_in );
+	{
+		std::lock_guard<std::mutex> lock( m_clientLock );
+		m_idleAtPrompt = false;
+	}
+	return line;
+}
 
 // a .w file is compiled, a .bin is used as it is with its embedded source
 bool CliDebugger::loadProgram( std::string& error )
@@ -709,6 +775,7 @@ int CliDebugger::run( const char* sourcePath, const char* target, bool attach, c
 					(int)m_lines.size(), (int)m_program.functions().size() - 1 );
 
 	signal( SIGINT, onInterrupt );
+	startPinger();
 
 	char buf[1024];
 	for ( ;; )
@@ -745,7 +812,7 @@ int CliDebugger::run( const char* sourcePath, const char* target, bool attach, c
 
 		printf( m_stopped ? "(wdb) " : "(wdb:idle) " );
 		fflush( stdout );
-		if ( !fgets(buf, sizeof(buf), m_in) )
+		if ( !readCommand(buf, (int)sizeof(buf)) )
 		{
 			break;
 		}
@@ -928,6 +995,7 @@ int CliDebugger::run( const char* sourcePath, const char* target, bool attach, c
 		}
 	}
 
+	stopPinger();
 	if ( m_client && m_client->linkUp() )
 	{
 		if ( m_link.isLocal() )

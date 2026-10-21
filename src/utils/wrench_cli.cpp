@@ -498,7 +498,7 @@ int usage()
 	"    the wrench.json that describes the host application to imitate,\n"
 	"    default the nearest one, none to ignore it\n"
 	"\n"
-	"dbgserver -target T [-noupload] [-hold] [-v] [-project P] [file]\n"
+	"dbgserver -target T [-noupload] [-hold] [-linktimeout MS] [-v] [-project P] [file]\n"
 	"  run as a debug target that a debugger connects to, optionally\n"
 	"  preloaded with file (source or bytecode)\n"
 	"  -target T\n"
@@ -508,6 +508,9 @@ int usage()
 	"  -hold\n"
 	"    start file at once, halted on its first line until a debugger\n"
 	"    attaches, like breakOnEntry()\n"
+	"  -linktimeout MS\n"
+	"    while halted, let go of a debugger not heard from for MS\n"
+	"    milliseconds, like setLinkTimeout()\n"
 	"  -v\n"
 	"    report attaches, detaches, uploads and program ends\n"
 	"  -project P\n"
@@ -610,10 +613,20 @@ int main( int argn, char* argv[] )
 		bool verbose = false;
 		bool noUpload = false;
 		bool hold = false;
+		uint32_t linkTimeout = 0;
 		for ( int a = 2; a < argn; ++a )
 		{
 			std::string arg = argv[a];
-			if ( arg == "-target" || arg == "-project" )
+			if ( arg == "-linktimeout" )
+			{
+				if ( a + 1 >= argn )
+				{
+					printf( "%s needs a value\n", arg.c_str() );
+					return usage();
+				}
+				linkTimeout = (uint32_t)strtoul( argv[++a], 0, 10 );
+			}
+			else if ( arg == "-target" || arg == "-project" )
 			{
 				if ( a + 1 >= argn )
 				{
@@ -685,7 +698,7 @@ int main( int argn, char* argv[] )
 			printf( "%s\n", error.c_str() );
 			return -1;
 		}
-		return wr_debugServerMain( spec, file.empty() ? 0 : file.c_str(), verbose, project.loaded() ? &project : 0, !noUpload, hold );
+		return wr_debugServerMain( spec, file.empty() ? 0 : file.c_str(), verbose, project.loaded() ? &project : 0, !noUpload, hold, linkTimeout );
 	}
 	else if ( command == "dap" )
 	{
