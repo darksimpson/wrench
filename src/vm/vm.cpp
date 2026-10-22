@@ -182,6 +182,16 @@ static void dumpStack( const WRValue* bottom, const WRValue* top )
 #define WR_IMPORT_CALL_END
 #endif
 
+// a debugger walks a stack trace through a call into an imported module (a
+// nested call) by where it was made
+#ifdef WRENCH_INCLUDE_DEBUG_CODE
+#define WR_DEBUG_IMPORT_CALL( IMPORT ) if ( context->debugServer ) { context->debugServer->onImportCall( context, pc, frameBase, (IMPORT) ); }
+#define WR_DEBUG_IMPORT_RETURN if ( context->debugServer ) { context->debugServer->onImportReturn(); }
+#else
+#define WR_DEBUG_IMPORT_CALL( IMPORT )
+#define WR_DEBUG_IMPORT_RETURN
+#endif
+
 // native code may call back into this context with wr_callFunction(): such a
 // nested call must start above the live stack, not on top of running frames.
 // It cannot yield (nothing could resume the native in between), so time
@@ -1002,7 +1012,9 @@ doYield:
 									uint16_t savedOffset = import->stackOffset;
 									import->stackOffset = (uint16_t)(stackTop - context->stack);
 									WR_IMPORT_CALL_BEGIN
+									WR_DEBUG_IMPORT_CALL( import )
 									register0 = wr_callFunction( import, I->wrf, stackTop - args, args );
+									WR_DEBUG_IMPORT_RETURN
 									WR_IMPORT_CALL_END
 									import->stackOffset = savedOffset;
 									if ( import->yield_pc )
@@ -1102,7 +1114,9 @@ newObjOut:
 								uint16_t savedOffset = import->stackOffset;
 								import->stackOffset = (uint16_t)(stackTop - context->stack);
 								WR_IMPORT_CALL_BEGIN
+								WR_DEBUG_IMPORT_CALL( import )
 								register0 = wr_callFunction( import, register0->wrf, stackTop - args, args );
+								WR_DEBUG_IMPORT_RETURN
 								WR_IMPORT_CALL_END
 								import->stackOffset = savedOffset;
 								if ( import->yield_pc )

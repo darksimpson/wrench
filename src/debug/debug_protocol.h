@@ -71,8 +71,8 @@ enum WrenchDebugMessage
 	WRD_MsgLoadBegin = 0x03, // u32 total size
 	WRD_MsgLoadData = 0x04, // u32 offset, bytes
 	WRD_MsgLoadEnd = 0x05, // -
-	WRD_MsgReadProgram = 0x06, // u8 section, u32 offset, u16 max length
-	WRD_MsgSetBreakpoints = 0x07, // u16 count, i32 line * count (replaces all)
+	WRD_MsgReadProgram = 0x06, // u8 program, u8 section, u32 offset, u16 max length
+	WRD_MsgSetBreakpoints = 0x07, // u8 program, u16 count, i32 line * count (replaces that program's)
 	WRD_MsgLaunch = 0x08, // u8 flags (WRD_LaunchStopOnEntry)
 	WRD_MsgContinue = 0x09, // optional u8 flags (WRD_ContinueResumeStep)
 	WRD_MsgPause = 0x0A, // -
@@ -80,29 +80,35 @@ enum WrenchDebugMessage
 	WRD_MsgStepOver = 0x0C, // -
 	WRD_MsgStepOut = 0x0D, // -
 	WRD_MsgTerminate = 0x0E, // -
-	WRD_MsgGetStack = 0x10, // u16 first frame, u16 max frames
+	WRD_MsgGetStack = 0x10, // u16 first frame, u16 max frames; frames name their program
 	WRD_MsgGetLocals = 0x11, // u16 frame, u16 first slot, u16 count
-	WRD_MsgGetGlobals = 0x12, // u16 first slot, u16 count
+	WRD_MsgGetGlobals = 0x12, // u8 program, u16 first slot, u16 count
 	WRD_MsgGetChildren = 0x13, // u32 handle, u32 first, u16 count
 	WRD_MsgSetLocal = 0x14, // u16 frame, u16 slot, value
-	WRD_MsgSetGlobal = 0x15, // u16 slot, value
+	WRD_MsgSetGlobal = 0x15, // u8 program, u16 slot, value
 	WRD_MsgSetChild = 0x16, // u32 handle, u32 index, value
 	WRD_MsgPing = 0x17, // -
 	WRD_MsgDetach = 0x18, // - clear breakpoints and continue
-	WRD_MsgAddWatch = 0x19, // u8 root (WrenchDebugWatchRoot), u16 frame, u16 slot, u8 steps, (u8 kind, u32 value) * steps; reply u8 watch id
+	WRD_MsgAddWatch = 0x19, // u8 root (WrenchDebugWatchRoot), u8 program (globals), u16 frame, u16 slot, u8 steps, (u8 kind, u32 value) * steps; reply u8 watch id
 	WRD_MsgRemoveWatch = 0x1A, // u8 watch id, 0 removes all
+	WRD_MsgGetPrograms = 0x1B, // -; reply u8 n, n * program (see docs/debugging.md)
 
 	// replies, server to client (seq echoes the request)
 	WRD_MsgReplyOk = 0x80, // request specific payload
 	WRD_MsgReplyError = 0x81, // u8 WrenchDebugError
 
 	// unsolicited events, server to client (seq 0)
-	WRD_MsgEventStopped = 0xC0, // u8 reason, i32 line, u8 wrench error, u32 missing function hash, u8 watch id
+	WRD_MsgEventStopped = 0xC0, // u8 reason, i32 line, u8 wrench error, u32 missing function hash, u8 watch id, u8 program
 	WRD_MsgEventOutput = 0xC1, // bytes
 	WRD_MsgEventEnded = 0xC2, // u8 wrench error, u8 flags, i32 line, u32 missing function hash, value
 	WRD_MsgEventLoaded = 0xC3, // u32 bytecode hash (program changed on target)
 	WRD_MsgEventWatchRemoved = 0xC4, // u8 watch id (its frame returned, or the program changed)
+	WRD_MsgEventProgramAdded = 0xC5, // u8 program (attached, or imported by a debugged program)
+	WRD_MsgEventProgramRemoved = 0xC6, // u8 program (detached or destroyed)
 };
+
+// no program, or none that is debugged
+#define WRD_NoProgram 0xFF
 
 enum WrenchDebugError
 {
@@ -176,11 +182,15 @@ enum WrenchDebugFlags
 	WRD_EndedAborted = 1 << 0, // terminated by the debugger
 	WRD_EndedHostDriven = 1 << 1, // target keeps running host code after this
 
+	WRD_ProgramOwned = 1 << 0, // GetPrograms: the server made the context (program 0 after loadBytes or an upload)
+	WRD_ProgramImported = 1 << 1, // a debugged program imported it
+	WRD_ProgramRan = 1 << 2, // its global code has run
+
 	WRD_CapLoad = 1 << 0, // target accepts uploaded bytecode
 	WRD_CapLaunch = 1 << 1, // target can execute the program itself
 	WRD_CapSetValue = 1 << 2,
 	WRD_CapHostDriven = 1 << 3, // host firmware calls into the script itself
-	WRD_CapWatch = 1 << 4, // watchpoints, the hello reply ends with u8 max watches
+	WRD_CapWatch = 1 << 4, // watchpoints, the hello reply ends with u8 max watches, u8 max programs
 };
 
 enum WrenchDebugFrameKind

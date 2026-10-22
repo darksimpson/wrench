@@ -179,7 +179,54 @@ struct WrenchDebugStackFrame
 	uint32_t pcOffset = 0;
 	int line = 0;
 	int slots = 0; // arguments + locals
+	int program = 0; // whose code it runs (a call into an imported module)
 	std::string name;
+};
+
+// what the target says about one of its programs (GetPrograms)
+struct WrenchDebugProgramInfo
+{
+	int id = 0;
+	uint8_t flags = 0; // WRD_Program...
+	int importer = -1; // the program that imported it, -1 for none
+	uint32_t hash = 0;
+	uint32_t bytecodeLen = 0;
+	uint8_t compilerFlags = 0;
+	uint32_t symbolsLen = 0;
+	uint32_t sourceLen = 0;
+	int globals = 0;
+	int functions = 0;
+	std::string name; // given by the firmware, may be empty
+};
+
+// the symbols of a target's programs, by program number
+class WrenchDebugPrograms
+{
+public:
+	// null when the program is not known
+	const WrenchDebugProgram* get( int program ) const;
+	const WrenchDebugProgramInfo* info( int program ) const;
+
+	// a pinned program keeps these symbols whatever the target says (the
+	// local file a debugger was started with, even when the target runs
+	// another build of it)
+	void set( int program, const WrenchDebugProgram& symbols, bool pinned = false );
+	void clear();
+	std::vector<int> ids() const;
+
+	// the target's list of programs: ones gone are dropped, new or changed
+	// ones get their symbols read from the target. A program already known
+	// with the same hash keeps its symbols (a local compile of program 0)
+	bool sync( class WrenchDebugClient& client, std::string* error = nullptr );
+
+	// a name for people: the firmware's, else the file the program was
+	// compiled from, else "program n" / "import n"
+	std::string displayName( int program ) const;
+
+private:
+	std::map<int, WrenchDebugProgram> m_symbols;
+	std::map<int, WrenchDebugProgramInfo> m_info;
+	std::vector<int> m_pinned;
 };
 
 struct WrenchDebugEvent
@@ -192,6 +239,8 @@ struct WrenchDebugEvent
 		Loaded,
 		Disconnected,
 		WatchRemoved,
+		ProgramAdded,
+		ProgramRemoved,
 	};
 
 	Type type = Stopped;
@@ -201,6 +250,7 @@ struct WrenchDebugEvent
 	uint8_t flags = 0; // WRD_Ended...
 	uint32_t missingFunction = 0; // name hash for *_function_not_found errors
 	int watch = 0; // WRD_StopWatch and WatchRemoved: which watch
+	int program = 0; // Stopped: where; ProgramAdded / ProgramRemoved: which
 	std::string text;
 	WrenchDebugValue value;
 };
@@ -216,6 +266,7 @@ struct WrenchDebugWatchStep
 struct WrenchDebugWatchPath
 {
 	bool global = true;
+	int program = 0; // globals: whose
 	int frame = 0; // locals: frame index of the current stop
 	int slot = 0;
 	std::vector<WrenchDebugWatchStep> steps;
@@ -229,6 +280,7 @@ struct WrenchDebugTargetInfo
 	uint8_t caps = 0;
 	uint16_t maxBreakpoints = 0;
 	uint8_t maxWatches = 0; // 0: the target has no watchpoints
+	uint8_t maxPrograms = 1;
 
 	uint8_t state = 0;
 	uint32_t programHash = 0;
@@ -253,8 +305,12 @@ public:
 	// send a program to the target, progress gets (sent, total)
 	bool upload( const std::vector<uint8_t>& bytecode, std::function<void(uint32_t, uint32_t)> progress = nullptr );
 
-	// fetch the target's own program (to attach without local files)
-	bool readSection( uint8_t section, std::vector<uint8_t>& out );
+	// fetch a program of the target (to attach without local files)
+	bool readSection( uint8_t section, std::vector<uint8_t>& out, int program = 0 );
+
+	// the programs the target debugs: program 0 (loaded or uploaded),
+	// attached contexts, modules they imported
+	bool getPrograms( std::vector<WrenchDebugProgramInfo>& programs );
 
 	bool launch( bool stopOnEntry );
 	// resumeStep: continue the step a breakpoint interrupted, if any (the
@@ -268,7 +324,8 @@ public:
 	bool detach();
 	bool ping();
 
-	bool setBreakpoints( const std::vector<int>& lines );
+	// replaces one program's breakpoints (virtual lines)
+	bool setBreakpoints( const std::vector<int>& lines, int program = 0 );
 
 	// watchpoints: the target stops (WRD_StopWatch) on the line after one
 	// that changed the value. A local can only be named while stopped, and
@@ -278,16 +335,18 @@ public:
 
 	// stack, innermost frame first; names and lines filled from 'program'
 	bool getStack( std::vector<WrenchDebugStackFrame>& frames, const WrenchDebugProgram* program, int topLine );
+	// the same, each frame named from the symbols of its own program
+	bool getStack( std::vector<WrenchDebugStackFrame>& frames, const WrenchDebugPrograms& programs, int topLine );
 
 	bool getLocals( int frame, std::vector<WrenchDebugValue>& values );
-	bool getGlobals( std::vector<WrenchDebugValue>& values );
+	bool getGlobals( std::vector<WrenchDebugValue>& values, int program = 0 );
 	bool getChildren( const WrenchDebugValue& parent, uint32_t first, uint32_t count,
 										std::vector<WrenchDebugChild>& children, uint32_t& total,
 										const WrenchDebugProgram* program );
 	bool getString( const WrenchDebugValue& value, std::string& out, uint32_t maxLen = 65536 );
 
 	bool setLocal( int frame, int slot, const WrenchDebugValue& value, WrenchDebugValue& result );
-	bool setGlobal( int slot, const WrenchDebugValue& value, WrenchDebugValue& result );
+	bool setGlobal( int slot, const WrenchDebugValue& value, WrenchDebugValue& result, int program = 0 );
 	bool setChild( const WrenchDebugValue& parent, uint32_t index, const WrenchDebugValue& value, WrenchDebugValue& result );
 
 	// next event, waiting up to timeoutMs (0 polls). Returns false on timeout

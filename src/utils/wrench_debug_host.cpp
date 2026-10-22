@@ -156,11 +156,12 @@ static thread_local WrenchHostNatives* t_hostNatives = 0;
 static std::string wr_hostNativeName( WrenchHostNatives* h, uint32_t hash )
 {
 	WrenchDebugServerPrivate* I = h->server ? h->server->I : 0;
-	if ( I && I->bytes && I->bytes != h->namedProgram )
+	const WrenchDebugProgramSlot* p = I ? &I->programs[0] : 0;
+	if ( p && p->bytes && p->bytes != h->namedProgram )
 	{
-		h->namedProgram = I->bytes;
+		h->namedProgram = p->bytes;
 		WrenchDebugProgram program;
-		h->programSource = program.parse( I->bytes, I->bytesLen ) ? program.source() : std::string();
+		h->programSource = program.parse( p->bytes, p->bytesLen ) ? program.source() : std::string();
 	}
 	std::string name = wr_functionNameForHash( hash, h->programSource, h->project );
 	if ( name.empty() )

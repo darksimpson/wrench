@@ -438,6 +438,14 @@ WRContext* wr_import( WRContext* context, const unsigned char* block, const int 
 	w->instructionsPerSlice = 0;
 #endif
 
+#ifdef WRENCH_INCLUDE_DEBUG_CODE
+	// a module a debugged program imports is debugged too, from its first line
+	if ( context->debugServer )
+	{
+		context->debugServer->onImport( context, import );
+	}
+#endif
+
 	WRValue* ran = wr_callFunction( import, (WRFunction*)0 );
 
 #ifdef WRENCH_TIME_SLICES
@@ -535,6 +543,13 @@ WRContext* wr_run( WRState* w,
 //------------------------------------------------------------------------------
 void wr_destroyContextEx( WRContext* context )
 {
+#ifdef WRENCH_INCLUDE_DEBUG_CODE
+	if ( context->debugServer )
+	{
+		context->debugServer->onContextDestroyed( context );
+	}
+#endif
+
 	// g_free all memory allocations by forcing the gc to collect everything
 	context->globals = 0;
 	context->allocatedMemoryHint = 0xFFFFFFFF; // above any limit, so gc() really runs

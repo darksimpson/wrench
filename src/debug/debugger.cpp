@@ -637,6 +637,11 @@ void CliDebugger::waitForStop()
 				onWatchRemoved( e.watch );
 				break;
 			}
+			case WrenchDebugEvent::ProgramAdded:
+			case WrenchDebugEvent::ProgramRemoved:
+			{
+				break;
+			}
 			case WrenchDebugEvent::Disconnected:
 			{
 				m_running = false;

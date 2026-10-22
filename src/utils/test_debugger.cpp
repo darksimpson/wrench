@@ -1036,6 +1036,255 @@ void testIncludedFiles()
 	target.stop();
 }
 
+// host driven firmware with two scripts: program 0 from loadBytes(), a
+// second context attached; both are called every tick, each on its stack
+class TwoProgramTarget
+{
+public:
+	~TwoProgramTarget() { stop(); }
+
+	void start( const std::vector<uint8_t>& first, const std::vector<uint8_t>& second )
+	{
+		m_first = first;
+		m_second = second;
+		m_thread = std::thread( [this]() { run(); } );
+	}
+
+	void stop()
+	{
+		if ( m_thread.joinable() )
+		{
+			m_quit = true;
+			m_pipe.close();
+			m_thread.join();
+		}
+	}
+
+	WrenchDebugPipe& pipe() { return m_pipe; }
+	std::atomic<bool> destroySecond{ false };
+	std::atomic<int> attachedAs{ -2 };
+
+private:
+	void run()
+	{
+		WRState* w = wr_newState( 256 );
+		wr_loadAllLibs( w );
+		WrenchDebugServer server( w, m_pipe.server() );
+		server.setHostDriven( true );
+		WRContext* first = server.loadBytes( m_first.data(), (int)m_first.size() );
+		wr_executeContext( first );
+		WRContext* second = wr_newContext( w, m_second.data(), (int)m_second.size() );
+		wr_executeContext( second );
+		attachedAs = server.attach( second, "second" );
+
+		int counter = 0;
+		while ( !m_quit )
+		{
+			server.tick();
+			if ( destroySecond && second )
+			{
+				wr_destroyContext( second ); // the server hears of it and lets go
+				second = 0;
+			}
+			WRValue arg;
+			arg.init( counter++ );
+			wr_callFunction( server.context(), "onTick", &arg, 1 );
+			if ( second )
+			{
+				wr_callFunction( second, "onTick", &arg, 1 );
+			}
+			std::this_thread::sleep_for( std::chrono::milliseconds(1) );
+		}
+		server.detach();
+		wr_destroyState( w );
+	}
+
+	WrenchDebugPipe m_pipe;
+	std::thread m_thread;
+	std::atomic<bool> m_quit{ false };
+	std::vector<uint8_t> m_first;
+	std::vector<uint8_t> m_second;
+};
+
+std::string evalIn( WrenchDebugClient& client, const WrenchDebugPrograms& programs, int line, int frame, const char* expr )
+{
+	std::vector<WrenchDebugStackFrame> frames;
+	client.getStack( frames, programs, line );
+	WrenchDebugEvaluator ev( client, programs, frames, frame );
+	WrenchDebugValue v;
+	std::string error;
+	if ( !ev.evaluate(expr, v, error) )
+	{
+		return "error: " + error;
+	}
+	return ev.describe( v, 0 );
+}
+
+void testAttachedPrograms()
+{
+	const char* first =
+		"var a = 0;\n" // 1
+		"function onTick( n )\n" // 2
+		"{\n" // 3
+		"  a = n;\n" // 4
+		"  return a;\n" // 5
+		"}\n"; // 6
+	const char* second =
+		"var b = 100;\n" // 1
+		"function onTick( n )\n" // 2
+		"{\n" // 3
+		"  b = b + 1;\n" // 4
+		"  return b;\n" // 5
+		"}\n"; // 6
+	std::vector<uint8_t> firstCode;
+	std::vector<uint8_t> secondCode;
+	WrenchDebugProgram firstProgram;
+	WrenchDebugProgram secondProgram;
+	DCHECK( compile(first, firstCode, firstProgram) && compile(second, secondCode, secondProgram) );
+
+	TwoProgramTarget target;
+	target.start( firstCode, secondCode );
+	WrenchDebugClient client( target.pipe().client() );
+	WrenchDebugTargetInfo info;
+	DCHECK( client.connect(info) && info.maxPrograms == WRENCH_DEBUG_MAX_PROGRAMS );
+	for ( int i = 0; i < 100 && target.attachedAs == -2; ++i )
+	{
+		std::this_thread::sleep_for( std::chrono::milliseconds(10) );
+	}
+	DCHECK( target.attachedAs == 1 );
+
+	std::vector<WrenchDebugProgramInfo> list;
+	DCHECK( client.getPrograms(list) && list.size() == 2 );
+	if ( list.size() == 2 )
+	{
+		DCHECK( list[0].id == 0 && (list[0].flags & WRD_ProgramOwned) && list[0].hash == firstProgram.hash() );
+		DCHECK( list[1].id == 1 && list[1].name == "second" && list[1].hash == secondProgram.hash() && list[1].importer == -1 );
+	}
+	WrenchDebugPrograms programs;
+	DCHECK( programs.sync(client) && programs.get(0) && programs.get(1) );
+	DCHECK( programs.displayName(1) == "second" );
+
+	// the same line in the other program does not stop
+	WrenchDebugEvent e;
+	DCHECK( client.setBreakpoints({ 4 }, 1) );
+	DCHECK( waitFor(client, WrenchDebugEvent::Stopped, e) && e.program == 1 && e.line == 4 );
+	std::vector<WrenchDebugStackFrame> frames;
+	DCHECK( client.getStack(frames, programs, e.line) && !frames.empty() && frames[0].program == 1 && frames[0].name == "onTick" );
+	std::string b = evalIn( client, programs, e.line, 0, "b" );
+	DCHECK( atoi(b.c_str()) >= 100 );
+	DCHECK( evalIn(client, programs, e.line, 0, "a").find("no variable") != std::string::npos );
+	std::vector<WrenchDebugValue> globals;
+	DCHECK( client.getGlobals(globals, 1) && globals.size() == 1 && globals[0].i >= 100 );
+	DCHECK( client.getGlobals(globals, 0) && globals.size() == 1 && globals[0].i < 100 );
+
+	// a step stays on its program's stack: the first program runs between
+	// two calls of the second without stopping it
+	DCHECK( client.stepOver() );
+	DCHECK( waitFor(client, WrenchDebugEvent::Stopped, e) && e.program == 1 && e.line == 5 );
+	DCHECK( client.setBreakpoints({}, 1) );
+	DCHECK( client.stepOver() );
+	DCHECK( waitFor(client, WrenchDebugEvent::Stopped, e) && e.program == 1 );
+
+	DCHECK( client.setBreakpoints({ 4 }, 0) );
+	DCHECK( client.resume() );
+	DCHECK( waitFor(client, WrenchDebugEvent::Stopped, e) && e.program == 0 && e.line == 4 );
+	DCHECK( client.setBreakpoints({}, 0) );
+
+	// a watch on the other program's global
+	WrenchDebugWatchPath path;
+	path.global = true;
+	path.program = 1;
+	path.slot = 0;
+	int watch = 0;
+	DCHECK( client.addWatch(path, watch) && watch > 0 );
+	DCHECK( client.resume() );
+	DCHECK( waitFor(client, WrenchDebugEvent::Stopped, e) && e.reason == WRD_StopWatch && e.program == 1 && e.line == 5 );
+	DCHECK( client.removeWatch(0) );
+
+	// the firmware destroys the second context: the target lets go of it
+	target.destroySecond = true;
+	DCHECK( client.resume() );
+	DCHECK( waitFor(client, WrenchDebugEvent::ProgramRemoved, e) && e.program == 1 );
+	DCHECK( client.getPrograms(list) && list.size() == 1 );
+
+	DCHECK( client.detach() );
+	target.stop();
+}
+
+// a module imported at run time is a program of its own: breakpoints in
+// it, its frames named, and the stack goes on in the program that called it
+void testImportedModule()
+{
+	const char* source =
+		"var src = \"function triple( x )\\n{\\n  var t = x * 3;\\n  return t;\\n}\\n\";\n" // 1
+		"sys::importCompile( src );\n" // 2
+		"var r = triple( 5 );\n" // 3
+		"println( r );\n"; // 4
+	std::vector<uint8_t> bytecode;
+	WrenchDebugProgram program;
+	DCHECK( compile(source, bytecode, program) );
+
+	TestTarget target;
+	target.start();
+	WrenchDebugClient client( target.pipe().client() );
+	WrenchDebugTargetInfo info;
+	DCHECK( client.connect(info) );
+	DCHECK( client.upload(bytecode) );
+	DCHECK( client.setBreakpoints({ 3 }) );
+	DCHECK( client.launch(false) );
+
+	WrenchDebugEvent e;
+	std::string output;
+	DCHECK( waitFor(client, WrenchDebugEvent::ProgramAdded, e, &output) && e.program == 1 );
+	DCHECK( waitFor(client, WrenchDebugEvent::Stopped, e, &output) && e.program == 0 && e.line == 3 );
+
+	std::vector<WrenchDebugProgramInfo> list;
+	DCHECK( client.getPrograms(list) && list.size() == 2 );
+	if ( list.size() == 2 )
+	{
+		DCHECK( (list[1].flags & WRD_ProgramImported) && list[1].importer == 0 && (list[1].compilerFlags & WR_EMBED_DEBUG_CODE) );
+	}
+	WrenchDebugPrograms programs;
+	programs.set( 0, program );
+	DCHECK( programs.sync(client) && programs.get(1) && programs.get(1)->hasSource() );
+
+	DCHECK( client.setBreakpoints({ 3 }, 1) );
+	DCHECK( client.setBreakpoints({}, 0) );
+	DCHECK( client.resume() );
+	DCHECK( waitFor(client, WrenchDebugEvent::Stopped, e, &output) && e.program == 1 && e.line == 3 );
+
+	std::vector<WrenchDebugStackFrame> frames;
+	DCHECK( client.getStack(frames, programs, e.line) && frames.size() == 2 );
+	if ( frames.size() == 2 )
+	{
+		DCHECK( frames[0].program == 1 && frames[0].name == "triple" );
+		DCHECK( frames[1].program == 0 && frames[1].function == -1 && frames[1].line == 3 );
+	}
+	DCHECK( evalIn(client, programs, e.line, 0, "x") == "5" );
+	DCHECK( evalIn(client, programs, e.line, 1, "src").find("function triple") != std::string::npos );
+
+	// out of the module, back in the program
+	DCHECK( client.setBreakpoints({}, 1) );
+	DCHECK( client.stepOut() );
+	DCHECK( waitFor(client, WrenchDebugEvent::Stopped, e, &output) && e.program == 0 && e.line == 4 );
+	DCHECK( client.setBreakpoints({ 4 }, 1) );
+	DCHECK( client.resume() );
+	DCHECK( waitFor(client, WrenchDebugEvent::Ended, e, &output) );
+	DCHECK( output == "15\n" );
+
+	// the next run imports the module again: its breakpoints were kept for
+	// it, they hit without the client setting them again
+	output.clear();
+	DCHECK( client.launch(false) );
+	DCHECK( waitFor(client, WrenchDebugEvent::ProgramRemoved, e, &output) && e.program == 1 );
+	DCHECK( waitFor(client, WrenchDebugEvent::ProgramAdded, e, &output) && e.program == 1 );
+	DCHECK( waitFor(client, WrenchDebugEvent::Stopped, e, &output) && e.program == 1 && e.line == 4 );
+	DCHECK( client.resume() );
+	DCHECK( waitFor(client, WrenchDebugEvent::Ended, e, &output) );
+	DCHECK( output == "15\n" );
+	target.stop();
+}
+
 // a breakpoint on a line with several calls stops once: the calls do not
 // make the line start again
 void testOneStopPerLine()
@@ -1200,6 +1449,8 @@ bool testDebugger()
 	testForLoopLines();
 	testIncludedFiles();
 	testOneStopPerLine();
+	testAttachedPrograms();
+	testImportedModule();
 	testPauseAndErrors();
 	testHostDriven();
 	testUploadRefused();

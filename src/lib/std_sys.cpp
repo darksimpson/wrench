@@ -97,9 +97,17 @@ void wr_importCompile( WRValue* stackTop, const int argn, WRContext* c )
 		char* data = (char *)((stackTop - argn)->array( &len, SV_CHAR ));
 		if ( data )
 		{
+			// under a debugger the module is compiled to be debugged as well
+			uint8_t flags = WR_INCLUDE_GLOBALS;
+#ifdef WRENCH_INCLUDE_DEBUG_CODE
+			if ( c->debugServer && c->debugServer->clientAttached() )
+			{
+				flags |= WR_EMBED_DEBUG_CODE | WR_EMBED_SOURCE_CODE;
+			}
+#endif
 			unsigned char* out;
 			int outlen;
-			if ( (stackTop->i = wr_compile(data, len, &out, &outlen)) == WR_ERR_None )
+			if ( (stackTop->i = wr_compile(data, len, &out, &outlen, 0, flags)) == WR_ERR_None )
 			{
 				wr_import( c, out, outlen, true );
 			}

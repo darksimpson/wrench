@@ -76,23 +76,23 @@ struct WrenchDebugWatch
 {
 	uint8_t used;
 	uint8_t root; // WrenchDebugWatchRoot
+	uint8_t program; // a global's program
 	uint16_t slot;
 	const WRValue* frameBase; // a local's frame
+	const WRValue* stack; // and the stack it is on
 	int16_t function; // and the function running in it
+	WRContext* functionContext; // whose function table that is
 	uint8_t stepCount;
 	uint8_t stepKind[WRENCH_DEBUG_MAX_WATCH_STEPS]; // WrenchDebugWatchStepKind
 	uint32_t step[WRENCH_DEBUG_MAX_WATCH_STEPS];
 	WrenchDebugWatchSnapshot last;
 };
 
-struct WrenchDebugServerPrivate
+// one program the server debugs: the one it loads or is sent (program 0), a
+// context the firmware attached, or one a debugged program imported
+struct WrenchDebugProgramSlot
 {
-	WrenchDebugServer* parent;
-	WRState* w;
-	WrenchDebugTransport* transport;
-
-	// program
-	WRContext* context;
+	WRContext* context; // 0: the slot is free
 	bool ownsContext;
 	const uint8_t* bytes;
 	uint32_t bytesLen;
@@ -103,6 +103,37 @@ struct WrenchDebugServerPrivate
 	uint32_t symbolsLen;
 	const uint8_t* source;
 	uint32_t sourceLen;
+	uint8_t importer; // the program that imported it, WRD_NoProgram for none
+	char name[WRENCH_DEBUG_PROGRAM_NAME]; // given to attach(), may be empty
+};
+
+// a call from a debugged program into a function of one it imported: the
+// VM runs it as a nested call, a stack walk goes on in the caller from here
+struct WrenchDebugImportCall
+{
+	WRContext* caller;
+	const unsigned char* pc;
+	WRValue* frameBase;
+	WRContext* callee;
+};
+
+struct WrenchDebugBreakpoint
+{
+	uint8_t program; // WRD_NoProgram: parked, its program is gone
+	int32_t line;
+	uint32_t parkedHash; // of the program a parked breakpoint was in, it is set again when that comes back
+};
+
+struct WrenchDebugServerPrivate
+{
+	WrenchDebugServer* parent;
+	WRState* w;
+	WrenchDebugTransport* transport;
+
+	// the programs; program 0 is the one loadBytes() or an upload gives
+	WrenchDebugProgramSlot programs[WRENCH_DEBUG_MAX_PROGRAMS];
+	WrenchDebugImportCall importCalls[WRENCH_DEBUG_MAX_IMPORT_CALLS];
+	uint8_t importCallDepth; // may exceed WRENCH_DEBUG_MAX_IMPORT_CALLS, only those are kept
 
 	// upload in progress
 	uint8_t* upload;
@@ -113,6 +144,7 @@ struct WrenchDebugServerPrivate
 	uint8_t state; // WrenchDebugState
 	uint8_t stepMode; // WrenchDebugStepMode
 	uint32_t stepKey;
+	const WRValue* stepStack; // a step only stops on this stack (in its "thread")
 	uint32_t pollCounter;
 	bool hostDriven;
 	bool abortOnDisconnect;
@@ -145,23 +177,25 @@ struct WrenchDebugServerPrivate
 	// picks it up again (the client decided not to stop there)
 	uint8_t interruptedStepMode;
 	uint32_t interruptedStepKey;
+	const WRValue* interruptedStepStack;
 
 	// setLinkTimeout(): a halted target gives up on a client it has not
 	// heard from for this long (0: never)
 	uint32_t linkTimeoutMs;
 	uint32_t lastRxMs;
 
-	// script code of the current context has run (even if a terminate or an
-	// error cut it short): a launch needs a fresh context
+	// script code of program 0 has run (even if a terminate or an error cut
+	// it short): a launch needs a fresh context
 	bool contextRan;
 
 	// where we are stopped
 	WRContext* stopContext;
+	uint8_t stopProgram;
 	const unsigned char* stopPc;
 	WRValue* stopFrameBase;
 	WRValue* stopStackTop;
 
-	int32_t breakpoints[WRENCH_DEBUG_MAX_BREAKPOINTS];
+	WrenchDebugBreakpoint breakpoints[WRENCH_DEBUG_MAX_BREAKPOINTS];
 	uint16_t breakpointCount;
 
 	WrenchDebugWatch watches[WRENCH_DEBUG_MAX_WATCHES]; // watch id is index + 1

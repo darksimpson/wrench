@@ -781,12 +781,24 @@ void WrenchDebugClient::handleFrame( const WrenchDebugFrame& frame )
 			{
 				e.watch = in.u8();
 			}
+			if ( in.remaining() )
+			{
+				uint8_t program = in.u8();
+				e.program = (program == WRD_NoProgram) ? 0 : (int)program;
+			}
 			break;
 		}
 		case WRD_MsgEventWatchRemoved:
 		{
 			e.type = WrenchDebugEvent::WatchRemoved;
 			e.watch = in.u8();
+			break;
+		}
+		case WRD_MsgEventProgramAdded:
+		case WRD_MsgEventProgramRemoved:
+		{
+			e.type = (frame.type == WRD_MsgEventProgramAdded) ? WrenchDebugEvent::ProgramAdded : WrenchDebugEvent::ProgramRemoved;
+			e.program = in.u8();
 			break;
 		}
 		case WRD_MsgEventOutput:
@@ -974,6 +986,7 @@ bool WrenchDebugClient::connect( WrenchDebugTargetInfo& info )
 		return false;
 	}
 	info.maxWatches = ((info.caps & WRD_CapWatch) && in.remaining()) ? in.u8() : 0;
+	info.maxPrograms = in.remaining() ? in.u8() : 1;
 	info.wrenchVersion = std::to_string( major ) + "." + std::to_string( minor ) + "." + std::to_string( build );
 	m_maxPayload = info.maxPayload < 64 ? 64 : info.maxPayload;
 
@@ -1040,13 +1053,14 @@ bool WrenchDebugClient::upload( const std::vector<uint8_t>& bytecode, std::funct
 	return request( WRD_MsgLoadEnd, std::vector<uint8_t>(), &reply );
 }
 
-bool WrenchDebugClient::readSection( uint8_t section, std::vector<uint8_t>& out )
+bool WrenchDebugClient::readSection( uint8_t section, std::vector<uint8_t>& out, int program )
 {
 	out.clear();
 	uint32_t total = 0;
 	do
 	{
 		std::vector<uint8_t> payload;
+		payload.push_back( (uint8_t)program );
 		payload.push_back( section );
 		wr_put32( payload, (uint32_t)out.size() );
 		wr_put16( payload, (uint16_t)(m_maxPayload - 6) );
@@ -1069,6 +1083,163 @@ bool WrenchDebugClient::readSection( uint8_t section, std::vector<uint8_t>& out 
 	} while ( out.size() < total );
 
 	return true;
+}
+
+bool WrenchDebugClient::getPrograms( std::vector<WrenchDebugProgramInfo>& programs )
+{
+	programs.clear();
+	std::vector<uint8_t> reply;
+	if ( !request(WRD_MsgGetPrograms, std::vector<uint8_t>(), &reply) )
+	{
+		return false;
+	}
+	WrenchDebugReader in( reply.data(), (uint32_t)reply.size() );
+	uint8_t count = in.u8();
+	for ( uint8_t i = 0; i < count && !in.bad(); ++i )
+	{
+		WrenchDebugProgramInfo p;
+		p.id = in.u8();
+		p.flags = in.u8();
+		uint8_t importer = in.u8();
+		p.importer = (importer == WRD_NoProgram) ? -1 : (int)importer;
+		p.hash = in.u32();
+		p.bytecodeLen = in.u32();
+		p.compilerFlags = in.u8();
+		p.symbolsLen = in.u32();
+		p.sourceLen = in.u32();
+		p.globals = in.u16();
+		p.functions = in.u8();
+		uint8_t nameLen = in.u8();
+		const uint8_t* name = in.bytes( nameLen );
+		if ( name )
+		{
+			p.name.assign( (const char*)name, nameLen );
+		}
+		programs.push_back( p );
+	}
+	if ( in.bad() )
+	{
+		m_error = "malformed programs reply";
+		return false;
+	}
+	return true;
+}
+
+const WrenchDebugProgram* WrenchDebugPrograms::get( int program ) const
+{
+	auto it = m_symbols.find( program );
+	return it == m_symbols.end() ? nullptr : &it->second;
+}
+
+const WrenchDebugProgramInfo* WrenchDebugPrograms::info( int program ) const
+{
+	auto it = m_info.find( program );
+	return it == m_info.end() ? nullptr : &it->second;
+}
+
+void WrenchDebugPrograms::set( int program, const WrenchDebugProgram& symbols, bool pinned )
+{
+	m_symbols[program] = symbols;
+	m_pinned.erase( std::remove(m_pinned.begin(), m_pinned.end(), program), m_pinned.end() );
+	if ( pinned )
+	{
+		m_pinned.push_back( program );
+	}
+}
+
+void WrenchDebugPrograms::clear()
+{
+	m_symbols.clear();
+	m_info.clear();
+	m_pinned.clear();
+}
+
+std::vector<int> WrenchDebugPrograms::ids() const
+{
+	std::vector<int> all;
+	for ( const auto& p : m_symbols )
+	{
+		all.push_back( p.first );
+	}
+	for ( const auto& p : m_info )
+	{
+		if ( !m_symbols.count(p.first) )
+		{
+			all.push_back( p.first );
+		}
+	}
+	std::sort( all.begin(), all.end() );
+	return all;
+}
+
+bool WrenchDebugPrograms::sync( WrenchDebugClient& client, std::string* error )
+{
+	std::vector<WrenchDebugProgramInfo> list;
+	if ( !client.getPrograms(list) )
+	{
+		if ( error )
+		{
+			*error = client.lastError();
+		}
+		return false;
+	}
+
+	std::map<int, WrenchDebugProgramInfo> now;
+	for ( const WrenchDebugProgramInfo& p : list )
+	{
+		now[p.id] = p;
+	}
+	for ( auto it = m_symbols.begin(); it != m_symbols.end(); )
+	{
+		auto there = now.find( it->first );
+		bool pinned = std::find( m_pinned.begin(), m_pinned.end(), it->first ) != m_pinned.end();
+		bool keep = pinned || (there != now.end() && (there->second.hash == it->second.hash() || !it->second.valid()));
+		it = keep ? std::next( it ) : m_symbols.erase( it );
+	}
+	m_info = now;
+
+	bool ok = true;
+	for ( const WrenchDebugProgramInfo& p : list )
+	{
+		if ( m_symbols.count(p.id) )
+		{
+			continue;
+		}
+		std::vector<uint8_t> bytes;
+		WrenchDebugProgram symbols;
+		std::string why;
+		if ( client.readSection(WRD_SectionBytecode, bytes, p.id) && symbols.parse(bytes.data(), (uint32_t)bytes.size(), &why) )
+		{
+			m_symbols[p.id] = symbols;
+		}
+		else
+		{
+			ok = false;
+			if ( error )
+			{
+				*error = why.empty() ? client.lastError() : why;
+			}
+		}
+	}
+	return ok;
+}
+
+std::string WrenchDebugPrograms::displayName( int program ) const
+{
+	const WrenchDebugProgramInfo* i = info( program );
+	if ( i && !i->name.empty() )
+	{
+		return i->name;
+	}
+	const WrenchDebugProgram* s = get( program );
+	if ( s && !s->files().empty() && !s->files()[0].name.empty() )
+	{
+		const std::string& full = s->files()[0].name;
+		size_t slash = full.find_last_of( "/\\" );
+		return slash == std::string::npos ? full : full.substr( slash + 1 );
+	}
+	bool imported = i && (i->flags & WRD_ProgramImported);
+	return (imported ? "import " : "program ") + std::to_string( program );
 }
 
 bool WrenchDebugClient::launch( bool stopOnEntry )
@@ -1096,9 +1267,10 @@ bool WrenchDebugClient::terminate() { return control( WRD_MsgTerminate ); }
 bool WrenchDebugClient::detach() { return control( WRD_MsgDetach ); }
 bool WrenchDebugClient::ping() { return control( WRD_MsgPing ); }
 
-bool WrenchDebugClient::setBreakpoints( const std::vector<int>& lines )
+bool WrenchDebugClient::setBreakpoints( const std::vector<int>& lines, int program )
 {
 	std::vector<uint8_t> payload;
+	payload.push_back( (uint8_t)program );
 	wr_put16( payload, (uint16_t)lines.size() );
 	for ( int line : lines )
 	{
@@ -1117,6 +1289,7 @@ bool WrenchDebugClient::addWatch( const WrenchDebugWatchPath& path, int& id )
 	}
 	std::vector<uint8_t> payload;
 	payload.push_back( path.global ? WRD_WatchGlobal : WRD_WatchLocal );
+	payload.push_back( (uint8_t)path.program );
 	wr_put16( payload, (uint16_t)path.frame );
 	wr_put16( payload, (uint16_t)path.slot );
 	payload.push_back( (uint8_t)path.steps.size() );
@@ -1146,6 +1319,28 @@ bool WrenchDebugClient::removeWatch( int id )
 	return request( WRD_MsgRemoveWatch, payload, 0 );
 }
 
+bool WrenchDebugClient::getStack( std::vector<WrenchDebugStackFrame>& frames, const WrenchDebugPrograms& programs, int topLine )
+{
+	if ( !getStack(frames, nullptr, topLine) )
+	{
+		return false;
+	}
+	for ( size_t i = 0; i < frames.size(); ++i )
+	{
+		WrenchDebugStackFrame& f = frames[i];
+		const WrenchDebugProgram* program = programs.get( f.program );
+		if ( program )
+		{
+			f.name = program->functionName( f.function );
+			if ( i > 0 || topLine <= 0 )
+			{
+				f.line = program->lineForPc( f.pcOffset );
+			}
+		}
+	}
+	return true;
+}
+
 bool WrenchDebugClient::getStack( std::vector<WrenchDebugStackFrame>& frames, const WrenchDebugProgram* program, int topLine )
 {
 	frames.clear();
@@ -1172,6 +1367,8 @@ bool WrenchDebugClient::getStack( std::vector<WrenchDebugStackFrame>& frames, co
 			f.pcOffset = in.u32();
 			in.u16(); // frame base, informational
 			f.slots = in.u16();
+			uint8_t frameProgram = in.u8();
+			f.program = (frameProgram == WRD_NoProgram) ? -1 : (int)frameProgram;
 			f.function = (f.kind == WRD_FrameFunction) ? (int)function : -1;
 			if ( program )
 			{
@@ -1304,13 +1501,14 @@ bool WrenchDebugClient::getLocals( int frame, std::vector<WrenchDebugValue>& val
 	}
 }
 
-bool WrenchDebugClient::getGlobals( std::vector<WrenchDebugValue>& values )
+bool WrenchDebugClient::getGlobals( std::vector<WrenchDebugValue>& values, int program )
 {
 	values.clear();
 	uint16_t first = 0;
 	for ( ;; )
 	{
 		std::vector<uint8_t> payload;
+		payload.push_back( (uint8_t)program );
 		wr_put16( payload, first );
 		wr_put16( payload, 0xFFFF );
 		std::vector<uint8_t> reply;
@@ -1479,9 +1677,10 @@ bool WrenchDebugClient::setLocal( int frame, int slot, const WrenchDebugValue& v
 	return readValue( in, result );
 }
 
-bool WrenchDebugClient::setGlobal( int slot, const WrenchDebugValue& value, WrenchDebugValue& result )
+bool WrenchDebugClient::setGlobal( int slot, const WrenchDebugValue& value, WrenchDebugValue& result, int program )
 {
 	std::vector<uint8_t> payload;
+	payload.push_back( (uint8_t)program );
 	wr_put16( payload, (uint16_t)slot );
 	writeValue( payload, value );
 	std::vector<uint8_t> reply;

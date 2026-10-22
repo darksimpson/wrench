@@ -1595,6 +1595,22 @@ private:
 #define WRENCH_DEBUG_MAX_WATCH_STEPS 4
 #endif
 
+// how many programs one server debugs: the one it loads (or is sent), the
+// contexts the firmware attaches and the modules they import. Each costs
+// about 60 bytes
+#ifndef WRENCH_DEBUG_MAX_PROGRAMS
+#define WRENCH_DEBUG_MAX_PROGRAMS 4
+#endif
+#ifndef WRENCH_DEBUG_PROGRAM_NAME
+#define WRENCH_DEBUG_PROGRAM_NAME 24 // bytes kept of a name given to attach()
+#endif
+
+// calls into imported modules nested this deep show their callers in a
+// stack trace (deeper ones work, the stack just ends at the import)
+#ifndef WRENCH_DEBUG_MAX_IMPORT_CALLS
+#define WRENCH_DEBUG_MAX_IMPORT_CALLS 8
+#endif
+
 // while running, the link is polled (for pause requests and breakpoint
 // changes) once every this many source lines
 #ifndef WRENCH_DEBUG_POLL_INTERVAL
@@ -1636,16 +1652,22 @@ public:
 	// inside a script callback
 	int tick();
 
-	// create a debuggable context from bytecode. The bytes are not copied
-	// unless takeOwnership is set (then they must come from wr_malloc and
-	// are freed by the server). Replaces any previous program.
+	// create a debuggable context from bytecode, program 0. The bytes are
+	// not copied unless takeOwnership is set (then they must come from
+	// wr_malloc and are freed by the server). Replaces the previous program
+	// 0, which is also the one a debugger uploads and launches.
 	WRContext* loadBytes( const uint8_t* bytes, const int len, const bool takeOwnership =false );
 
-	// debug a context you created yourself, the server does not own it
-	void attach( WRContext* context );
-	void detach();
+	// debug a context you created yourself as one more program (the server
+	// does not own it), named for the debugger. Returns its program number,
+	// -1 when WRENCH_DEBUG_MAX_PROGRAMS are taken. Modules a debugged program
+	// imports become programs of their own; a context that is destroyed
+	// stops being debugged
+	int attach( WRContext* context, const char* name =0 );
+	void detach( WRContext* context ); // that one
+	void detach(); // all of them
 
-	WRContext* context() const;
+	WRContext* context( const int program =0 ) const;
 
 	// true when context() exists and its global code has run, so its
 	// functions can be called (false while the debugger is launching it)
@@ -1693,6 +1715,14 @@ public:
 
 	// called by the VM right before it fails with a runtime error
 	void onError( WRContext* context, const unsigned char* pc, WRValue* frameBase, WRValue* stackTop );
+
+	// called by the VM: 'importer' imported 'import'; a call from a debugged
+	// program into an imported one begins (with where it is made) and ends;
+	// a context is destroyed
+	void onImport( WRContext* importer, WRContext* import );
+	void onImportCall( WRContext* caller, const unsigned char* pc, WRValue* frameBase, WRContext* callee );
+	void onImportReturn();
+	void onContextDestroyed( WRContext* context );
 
 	WrenchDebugServerPrivate* I;
 
@@ -2366,7 +2396,14 @@ WRstr& WRstr::insert( const char* buf, const unsigned int len, const unsigned in
 
 		const unsigned int pos = (startPos > m_len) ? m_len : startPos; // no gaps
 
-		alloc( m_len + len, true ); // make sure there is enough room for the new string
+		// make sure there is enough room for the new string, growing by half
+		// again at least so building a string piece by piece stays linear
+		const unsigned int needed = m_len + len;
+		if ( needed >= m_buflen )
+		{
+			const unsigned int grown = m_buflen + (m_buflen >> 1);
+			alloc( needed > grown ? needed : grown, true );
+		}
 
 		if ( pos < m_len ) // text after the insert, move everything up
 		{

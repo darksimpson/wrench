@@ -52,6 +52,7 @@ struct WrenchDebugLocation
 	Kind kind = None;
 	int frame = 0;
 	int slot = 0;
+	int program = 0; // a global's
 	WrenchDebugValue parent;
 	uint32_t index = 0;
 };
@@ -61,7 +62,14 @@ class WrenchDebugEvaluator
 public:
 	WrenchDebugEvaluator( WrenchDebugClient& client, const WrenchDebugProgram& program,
 												const std::vector<WrenchDebugStackFrame>& frames, int frame )
-		: m_client( client ), m_program( program ), m_frames( frames ), m_frame( frame ) {}
+		: m_client( client ), m_program( program ), m_frames( frames ), m_frame( frame ), m_programId( 0 ) {}
+
+	// a target with several programs: names mean what they mean in the
+	// selected frame's program (its locals, then its globals)
+	WrenchDebugEvaluator( WrenchDebugClient& client, const WrenchDebugPrograms& programs,
+												const std::vector<WrenchDebugStackFrame>& frames, int frame )
+		: m_client( client ), m_program( symbolsFor(programs, frames, frame) ), m_frames( frames ), m_frame( frame ),
+		m_programId( (frame >= 0 && (size_t)frame < frames.size() && frames[frame].program >= 0) ? frames[frame].program : 0 ) {}
 
 	// evaluate any expression
 	bool evaluate( const std::string& expression, WrenchDebugValue& result, std::string& error );
@@ -100,10 +108,13 @@ private:
 	bool child( const WrenchDebugValue& parent, const WrenchDebugValue& key, bool member,
 							WrenchDebugValue& result, WrenchDebugLocation& where, std::string& error );
 
+	static const WrenchDebugProgram& symbolsFor( const WrenchDebugPrograms& programs, const std::vector<WrenchDebugStackFrame>& frames, int frame );
+
 	WrenchDebugClient& m_client;
 	const WrenchDebugProgram& m_program;
 	const std::vector<WrenchDebugStackFrame>& m_frames;
 	int m_frame;
+	int m_programId; // whose globals plain names mean
 };
 
 #endif

@@ -619,6 +619,7 @@ struct WrenchDebugEvaluator::Parser
 			if ( record )
 			{
 				record->global = (where.kind == WrenchDebugLocation::Global);
+				record->program = where.program;
 				record->frame = where.frame;
 				record->slot = where.slot;
 				record->steps.clear();
@@ -796,7 +797,7 @@ bool WrenchDebugEvaluator::lookupName( const std::string& name, bool forceGlobal
 	if ( slot >= 0 )
 	{
 		std::vector<WrenchDebugValue> globals;
-		if ( !m_client.getGlobals(globals) )
+		if ( !m_client.getGlobals(globals, m_programId) )
 		{
 			error = m_client.lastError();
 			return false;
@@ -806,12 +807,21 @@ bool WrenchDebugEvaluator::lookupName( const std::string& name, bool forceGlobal
 			result = globals[slot];
 			where.kind = WrenchDebugLocation::Global;
 			where.slot = slot;
+			where.program = m_programId;
 			return true;
 		}
 	}
 
 	error = "no variable named '" + name + "'";
 	return false;
+}
+
+const WrenchDebugProgram& WrenchDebugEvaluator::symbolsFor( const WrenchDebugPrograms& programs, const std::vector<WrenchDebugStackFrame>& frames, int frame )
+{
+	static const WrenchDebugProgram none;
+	int program = (frame >= 0 && (size_t)frame < frames.size()) ? frames[frame].program : 0;
+	const WrenchDebugProgram* symbols = programs.get( program < 0 ? 0 : program );
+	return symbols ? *symbols : none;
 }
 
 bool WrenchDebugEvaluator::child( const WrenchDebugValue& parent, const WrenchDebugValue& key, bool member,
@@ -981,7 +991,7 @@ bool WrenchDebugEvaluator::store( const WrenchDebugLocation& where, const Wrench
 	switch ( where.kind )
 	{
 		case WrenchDebugLocation::Local: ok = m_client.setLocal( where.frame, where.slot, v, result ); break;
-		case WrenchDebugLocation::Global: ok = m_client.setGlobal( where.slot, v, result ); break;
+		case WrenchDebugLocation::Global: ok = m_client.setGlobal( where.slot, v, result, where.program ); break;
 		case WrenchDebugLocation::Child: ok = m_client.setChild( where.parent, where.index, v, result ); break;
 		default:
 		{

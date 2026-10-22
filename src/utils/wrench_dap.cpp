@@ -1954,6 +1954,8 @@ void DapServer::pollTarget()
 				break;
 			}
 			case WrenchDebugEvent::WatchRemoved: onWatchRemoved( e.watch ); break;
+			case WrenchDebugEvent::ProgramAdded:
+			case WrenchDebugEvent::ProgramRemoved: break;
 			case WrenchDebugEvent::Disconnected:
 			{
 				output( "Lost the connection to the target.\n", "important" );
