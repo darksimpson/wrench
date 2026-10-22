@@ -149,8 +149,11 @@ private:
 // first line until a debugger attaches (breakOnEntry)
 // linkTimeoutMs: while halted, let go of a silent debugger after this long
 // (setLinkTimeout), 0 waits forever
+// contexts: more scripts the host runs beside the program, each in a context
+// of its own that it attaches (attach()); their global code runs at start,
+// then the host keeps calling their function tick(), if they have one
 int wr_debugServerMain( const WrenchTransportSpec& spec, const char* programPath, bool verbose, const WrenchProject* project = nullptr,
-	bool allowUpload = true, bool hold = false, uint32_t linkTimeoutMs = 0 );
+	bool allowUpload = true, bool hold = false, uint32_t linkTimeoutMs = 0, const std::vector<std::string>& contexts = std::vector<std::string>() );
 
 #endif
 

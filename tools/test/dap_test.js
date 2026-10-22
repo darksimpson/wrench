@@ -324,6 +324,73 @@ async function testIncludedFiles() {
 	dap.close();
 }
 
+// a module the script compiles: a program of its own on the importer's
+// thread, its source served by reference, breakpoints set in it
+async function testImportedModule() {
+	const dap = new DapClient();
+	const program = path.join(fixtures, 'import.w');
+	await dap.ok('initialize', { adapterID: 'wrench' });
+	await dap.ok('launch', { program });
+	await dap.waitEvent('initialized');
+	await dap.ok('setBreakpoints', { source: { path: program }, breakpoints: [{ line: 3 }] });
+	await dap.ok('configurationDone');
+
+	const module = await dap.waitEvent('module');
+	assert.strictEqual(module.reason, 'new');
+	assert.strictEqual(module.module.id, 1);
+	assert.strictEqual(module.module.name, 'import 1');
+	const stopped = await dap.waitEvent('stopped');
+	assert.strictEqual(stopped.reason, 'breakpoint');
+	assert.strictEqual(stopped.threadId, 1);
+	const modules = await dap.ok('modules', {});
+	assert.deepStrictEqual(modules.modules.map((m) => m.name), ['import.w', 'import 1']);
+	const threads = await dap.ok('threads');
+	assert.strictEqual(threads.threads.length, 1); // a module runs on its importer's stack
+
+	await dap.ok('stepIn', { threadId: 1 });
+	assert.strictEqual((await dap.waitEvent('stopped')).threadId, 1);
+	const st = await dap.ok('stackTrace', { threadId: 1 });
+	assert.strictEqual(st.stackFrames.length, 2);
+	const inModule = st.stackFrames[0];
+	assert.strictEqual(inModule.name, 'triple');
+	assert.strictEqual(inModule.line, 3);
+	assert.strictEqual(inModule.moduleId, 1);
+	assert(inModule.source.sourceReference >= 1, JSON.stringify(inModule.source));
+	assert(/import 1/.test(inModule.source.name), inModule.source.name);
+	assert.strictEqual(st.stackFrames[1].line, 3);
+	assert(path.resolve(st.stackFrames[1].source.path).toLowerCase() === path.resolve(program).toLowerCase());
+
+	const text = await dap.ok('source', { source: inModule.source, sourceReference: inModule.source.sourceReference });
+	assert(/var t = x \* 3;/.test(text.content), text.content);
+
+	const scopes = await dap.ok('scopes', { frameId: 1 });
+	assert.deepStrictEqual(scopes.scopes.map((s) => s.name), ['Locals', 'Globals of import 1']);
+	const locals = await variablesByName(dap, scopes.scopes[0].variablesReference);
+	assert.strictEqual(locals.x.value, '5');
+	const outer = await dap.ok('scopes', { frameId: 2 });
+	const globals = await variablesByName(dap, outer.scopes[0].variablesReference);
+	assert(/function triple/.test(globals.src.value), JSON.stringify(globals.src));
+	assert.strictEqual((await dap.ok('evaluate', { expression: 'x', frameId: 1, context: 'watch' })).result, '5');
+
+	// a breakpoint in the module's embedded source
+	const bps = await dap.ok('setBreakpoints', { source: inModule.source, breakpoints: [{ line: 4 }] });
+	assert(bps.breakpoints[0].verified, JSON.stringify(bps));
+	assert.strictEqual(bps.breakpoints[0].line, 4);
+	await dap.ok('continue', { threadId: 1 });
+	const hit = await dap.waitEvent('stopped');
+	assert.strictEqual(hit.reason, 'breakpoint');
+	assert.deepStrictEqual(hit.hitBreakpointIds, [bps.breakpoints[0].id]);
+	const st2 = await dap.ok('stackTrace', { threadId: 1 });
+	assert.strictEqual(st2.stackFrames[0].line, 4);
+	assert.strictEqual((await dap.ok('evaluate', { expression: 't', frameId: 1, context: 'watch' })).result, '15');
+
+	await dap.ok('continue', { threadId: 1 });
+	await dap.waitEvent('exited');
+	assert(/15/.test(dap.output()), dap.output());
+	await dap.ok('disconnect', { terminateDebuggee: true });
+	dap.close();
+}
+
 async function testRuntimeError() {
 	const dap = new DapClient();
 	const program = path.join(fixtures, 'failing.w');
@@ -605,8 +672,61 @@ async function testRemoteAttach() {
 	}
 }
 
+// a target that runs a second script in a context of its own: a thread of
+// its own, breakpoints in its file, its globals
+async function testAttachedContext() {
+	const port = 15000 + Math.floor(Math.random() * 2000);
+	const program = path.join(fixtures, 'sample.w');
+	const ticker = path.join(fixtures, 'ticker.w');
+	const server = spawn(exe, ['dbgserver', '-target', `tcp:${port}`, '-context', ticker, program], { stdio: ['ignore', 'pipe', 'pipe'] });
+	await new Promise((resolve) => setTimeout(resolve, 500));
+
+	try {
+		const dap = new DapClient();
+		await dap.ok('initialize', { adapterID: 'wrench' });
+		await dap.ok('attach', { program, transport: 'tcp', host: '127.0.0.1', port });
+		await dap.waitEvent('initialized');
+		const threads = await dap.ok('threads');
+		assert.deepStrictEqual(threads.threads.map((t) => [t.id, t.name]), [[1, 'wrench'], [2, 'ticker.w']]);
+		const modules = await dap.ok('modules', {});
+		assert.deepStrictEqual(modules.modules.map((m) => m.name), ['sample.w', 'ticker.w']);
+
+		const bps = await dap.ok('setBreakpoints', { source: { path: ticker }, breakpoints: [{ line: 6 }] });
+		assert(bps.breakpoints[0].verified, JSON.stringify(bps));
+		await dap.ok('configurationDone');
+
+		const stopped = await dap.waitEvent('stopped');
+		assert.strictEqual(stopped.reason, 'breakpoint');
+		assert.strictEqual(stopped.threadId, 2);
+		const st = await dap.ok('stackTrace', { threadId: 2 });
+		assert.strictEqual(st.stackFrames[0].name, 'tick');
+		assert.strictEqual(st.stackFrames[0].line, 6);
+		assert(path.resolve(st.stackFrames[0].source.path).toLowerCase() === path.resolve(ticker).toLowerCase(), JSON.stringify(st.stackFrames[0].source));
+		const idle = await dap.ok('stackTrace', { threadId: 1 });
+		assert.strictEqual(idle.stackFrames.length, 0);
+
+		const scopes = await dap.ok('scopes', { frameId: 1 });
+		assert.deepStrictEqual(scopes.scopes.map((s) => s.name), ['Locals', 'Globals of ticker.w']);
+		const globals = await variablesByName(dap, scopes.scopes[1].variablesReference);
+		assert(parseInt(globals.ticks.value, 10) >= 1, JSON.stringify(globals));
+		const ticks = await dap.ok('evaluate', { expression: 'ticks', frameId: 1, context: 'watch' });
+		assert.strictEqual(ticks.result, globals.ticks.value);
+
+		// the program's own breakpoints and globals stay apart
+		const info = await dap.ok('dataBreakpointInfo', { name: 'ticks', variablesReference: scopes.scopes[1].variablesReference });
+		assert(/@1\|/.test(info.dataId), info.dataId);
+
+		await dap.ok('setBreakpoints', { source: { path: ticker }, breakpoints: [] });
+		await dap.ok('continue', { threadId: 2 });
+		await dap.ok('disconnect', { terminateDebuggee: false });
+		dap.close();
+	} finally {
+		server.kill();
+	}
+}
+
 (async () => {
-	const tests = [testLaunchSession, testDataBreakpoints, testIncludedFiles, testRuntimeError, testHostProject, testBinaryProgram, testUploadRefused, testAttachToWaitingScript, testRobustness, testErrors, testRemoteAttach];
+	const tests = [testLaunchSession, testDataBreakpoints, testIncludedFiles, testImportedModule, testRuntimeError, testHostProject, testBinaryProgram, testUploadRefused, testAttachToWaitingScript, testRobustness, testErrors, testRemoteAttach, testAttachedContext];
 	let failed = 0;
 	for (const t of tests) {
 		try {

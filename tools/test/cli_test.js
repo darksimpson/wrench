@@ -150,13 +150,51 @@ async function testWatchCommands() {
 	assert(/all watches removed/.test(out), out);
 }
 
+// a module the script compiles is a program of its own: stepping into it,
+// the stack through it, its breakpoints kept for the next run
+async function testImportedModule() {
+	const script = path.join(__dirname, 'fixtures', 'import.w');
+	const out = dbg([script], 'b 3\nr\nprograms\ns\nbt\np x\nb 4\nc\nc\nr\nb\nc\np t\nc\nq\n');
+	assert(/\[program 1: import 1 imported by program 0\]/.test(out), out);
+	assert(/>0 {2}import\.w\r?\n 1 {2}import 1 {2}\(imported by program 0\)/.test(out), out);
+	assert(/\[step\] line 3 in import 1/.test(out), out);
+	assert(/#0 {2}triple {2}line 3 in import 1\r?\n #1 {2}<global> {2}line 3/.test(out), out);
+	assert(/x = 5/.test(out), out);
+	assert(/breakpoint at line 4 in import 1/.test(out), out);
+	assert(/\[program 1 \(import 1\) is gone\]/.test(out), out);
+	assert(/ {2}line 4 in import 1: return t;/.test(out), out);
+	assert((out.match(/\[breakpoint\] line 4 in import 1/g) || []).length === 2, out);
+	assert(/t = 15/.test(out), out);
+}
+
+// a target that runs a script in a context of its own beside the program:
+// 'c' waits for it to stop, its file takes breakpoints
+async function testAttachedContext() {
+	const port = 27000 + Math.floor(Math.random() * 2000);
+	const ticker = path.join(__dirname, 'fixtures', 'ticker.w');
+	const server = spawn(exe, ['dbgserver', '-target', `tcp:${port}`, '-context', ticker, sample], { stdio: ['ignore', 'pipe', 'pipe'] });
+	await sleep(500);
+	try {
+		const out = dbg(['-attach', '-target', `tcp:127.0.0.1:${port}`, sample], 'b ticker.w:6\nc\nbt\np ticks\nq\n');
+		assert(/the target debugs 2 programs/.test(out), out);
+		assert(/>0 {2}sample\.w\r?\n 1 {2}ticker\.w/.test(out), out);
+		assert(/breakpoint at line 6 in ticker\.w/.test(out), out);
+		assert(/waiting for a program of the target to stop/.test(out), out);
+		assert(/\[breakpoint\] line 6 in ticker\.w/.test(out), out);
+		assert(/#0 {2}tick {2}line 6 in ticker\.w/.test(out), out);
+		assert(/ticks = \d+/.test(out), out);
+	} finally {
+		server.kill();
+	}
+}
+
 async function testAttachNeedsRemoteTarget() {
 	const out = dbg(['-attach'], '');
 	assert(/without a file the program comes from the target/.test(out), out);
 }
 
 (async () => {
-	const tests = [testBinaryFile, testBinaryWithoutSource, testAttachFetchesProgram, testUploadRefused, testAttachToWaitingScript, testCommandRobustness, testPingWhileStopped, testWatchCommands, testAttachNeedsRemoteTarget];
+	const tests = [testBinaryFile, testBinaryWithoutSource, testAttachFetchesProgram, testUploadRefused, testAttachToWaitingScript, testCommandRobustness, testPingWhileStopped, testWatchCommands, testImportedModule, testAttachedContext, testAttachNeedsRemoteTarget];
 	let failed = 0;
 	for (const t of tests) {
 		try {

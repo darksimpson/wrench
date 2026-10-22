@@ -544,8 +544,14 @@ static void wr_serverPrintln( WRContext* c, const WRValue* argv, const int argn,
 }
 
 int wr_debugServerMain( const WrenchTransportSpec& spec, const char* programPath, bool verbose, const WrenchProject* project, bool allowUpload, bool hold,
-	uint32_t linkTimeoutMs )
+	uint32_t linkTimeoutMs, const std::vector<std::string>& contexts )
 {
+	if ( contexts.size() >= WRENCH_DEBUG_MAX_PROGRAMS )
+	{
+		fprintf( stderr, "at most %d contexts beside the program\n", WRENCH_DEBUG_MAX_PROGRAMS - 1 );
+		return -1;
+	}
+
 	if ( hold && !programPath )
 	{
 		fprintf( stderr, "-hold needs a program file\n" );
@@ -643,7 +649,50 @@ int wr_debugServerMain( const WrenchTransportSpec& spec, const char* programPath
 		}
 		printf( "loaded %s (%d bytes)\n", programPath, (int)bytecode.size() );
 		fflush( stdout );
+	}
+	else if ( !contexts.empty() )
+	{
+		fprintf( stderr, "-context needs a program file, it would be program 0 and an upload would replace it\n" );
+		wr_destroyState( w );
+		return -1;
+	}
 
+	// the other scripts, programs 1 and up, as firmware attaches the
+	// contexts it runs itself
+	std::vector<WRContext*> ticking;
+	for ( const std::string& path : contexts )
+	{
+		std::vector<uint8_t> bytecode;
+		std::string source;
+		std::string error;
+		if ( !wr_loadForDebug(path, bytecode, source, error, nullptr, project) )
+		{
+			fprintf( stderr, "%s\n", error.c_str() );
+			wr_destroyState( w );
+			return -1;
+		}
+		uint8_t* copy = (uint8_t*)g_malloc( bytecode.size() );
+		memcpy( copy, bytecode.data(), bytecode.size() );
+		WRContext* context = wr_newContext( w, copy, (int)bytecode.size(), true );
+		size_t slash = path.find_last_of( "/\\" );
+		int program = context ? server.attach( context, path.c_str() + (slash == std::string::npos ? 0 : slash + 1) ) : -1;
+		if ( program < 0 )
+		{
+			fprintf( stderr, "cannot run %s as a context of its own\n", path.c_str() );
+			wr_destroyState( w );
+			return -1;
+		}
+		wr_executeContext( context );
+		printf( "attached %s as program %d, global code: %s\n", path.c_str(), program, wr_debugErrorText((uint8_t)wr_getLastError(w)).c_str() );
+		fflush( stdout );
+		if ( wr_getLastError(w) == WR_ERR_None && wr_getFunction(context, "tick") )
+		{
+			ticking.push_back( context );
+		}
+	}
+
+	if ( programPath )
+	{
 		if ( hold )
 		{
 			// what firmware does with breakOnEntry(): start the script itself,
@@ -659,8 +708,31 @@ int wr_debugServerMain( const WrenchTransportSpec& spec, const char* programPath
 	}
 
 	bool attached = false;
+	std::chrono::steady_clock::time_point lastTick = std::chrono::steady_clock::now();
 	for ( ;; )
 	{
+		// the attached scripts' tick(), ten times a second; one that fails
+		// is not called again
+		std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+		if ( now - lastTick >= std::chrono::milliseconds(100) )
+		{
+			lastTick = now;
+			for ( size_t t = 0; t < ticking.size(); )
+			{
+				wr_callFunction( ticking[t], "tick" );
+				WRError err = wr_getLastError( w );
+				if ( err == WR_ERR_None )
+				{
+					++t;
+					continue;
+				}
+				printf( "a tick() failed: %s, it is not called again\n", wr_debugErrorText((uint8_t)err).c_str() );
+				fflush( stdout );
+				w->err = WR_ERR_None;
+				ticking.erase( ticking.begin() + t );
+			}
+		}
+
 		int flags = server.tick();
 		if ( verbose )
 		{
