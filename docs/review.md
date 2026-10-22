@@ -270,6 +270,39 @@ grammar tests cover this.
   between two markers of one line made a breakpoint there stop twice
   (`println( f() )`), call markers no longer start the line again.
 
+## Several programs per debug server, done
+
+The internal test `[debugger protocol]` (attached contexts, an imported
+module, its breakpoints over a rerun), the console debugger and VS Code
+adapter tests (`import.w`, `ticker.w` run by `dbgserver -context`) cover
+this.
+
+* One `WrenchDebugServer` debugs up to `WRENCH_DEBUG_MAX_PROGRAMS` (4)
+  programs: program 0 (`loadBytes()`, uploads), contexts the firmware hands
+  over with `attach( context, name )` / `detach()`, and the modules a
+  debugged program imports with `sys::importCompile` or
+  `sys::importByteCode`. A destroyed context stops being debugged (a hook in
+  `wr_destroyContextEx`). Protocol version 2 was extended in place, it was
+  not released: GetPrograms, ProgramAdded / ProgramRemoved, a program number
+  on ReadProgram, SetBreakpoints, GetGlobals, SetGlobal, AddWatch, stack
+  frames and Stopped.
+* Imported modules run with the line hook now: `sys::importCompile`
+  compiles them with debug information and source while a debugger is
+  attached. The VM records each call into an import (caller, pc, frame), so
+  a stack walk goes on from the module into its caller and steps go in and
+  out. A step ends only on its own stack. A module's breakpoints are kept
+  by bytecode hash on the target and are back when the next run imports it.
+* VS Code: a thread per program with its own stack (a module runs on its
+  importer's), the Modules view, module sources by reference (stable over a
+  re-import), breakpoints bound in every program with the file, Globals of
+  the frame's program, watchpoints in other programs. `wrench dbg`:
+  `programs`, "line 3 in import 1", `b file.w:line` in any program, `c`
+  waits while firmware contexts run. `wrench dbgserver -context file.w`
+  attaches more scripts and calls their `tick()`.
+* Found on the way: `WRstr::insert` grew its buffer by the inserted length
+  only, so building a long text piece by piece (the disassembler on a large
+  program) was quadratic; it grows by half now.
+
 ## Open issues
 
 Language and compiler:
@@ -302,15 +335,12 @@ VM:
 
 Debugger:
 
-* One debugged context per `WrenchDebugServer`; a firmware running several
-  scripts needs one server (and link) per context, or a multiplexing
-  extension of the protocol.
 * Stepping granularity is the source line; `stopOnEntry` for an attached
   host-driven target means "the next line the firmware executes". Left as
   it is: finer markers would cost code size in every debug build.
-* Modules loaded with `wr_import` or `sys::importCompile` run without the
-  line hook: they cannot be stepped into and their breakpoints never fire
-  (planned together with several contexts per server).
+* A module imported for the first time cannot have breakpoints set before
+  its global code runs (its source is only known once it is there); break
+  in the importer and step in, or set them and run again.
 
 Libraries:
 

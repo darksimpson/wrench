@@ -136,6 +136,18 @@ Debugger, rebuilt:
   an included file's error on its include
 - a breakpoint on a line with a call followed by more of the line (println( f() )) stopped
   twice
+- several programs per WrenchDebugServer (WRENCH_DEBUG_MAX_PROGRAMS, 4): attach( context,
+  name ) / detach() hand over contexts the firmware runs itself, modules a debugged program
+  imports (sys::importCompile, sys::importByteCode) are programs too and can be stepped
+  into, a destroyed context stops being debugged. sys::importCompile embeds debug code and
+  source while a debugger is attached. A module's breakpoints come back when it is imported
+  again. Protocol (version stays 2): GetPrograms, ProgramAdded / ProgramRemoved events, a
+  program number on ReadProgram, SetBreakpoints, GetGlobals, SetGlobal, AddWatch, stack
+  frames and Stopped. VS Code: a thread per attached context, Modules view, module sources
+  by reference; wrench dbg: programs, b file.w:line in any program; wrench dbgserver
+  -context file.w runs more scripts beside the program
+- WRstr::insert grows its buffer by half, building a long text piece by piece (the
+  disassembler on a large program) was quadratic
 
 Compiler fixes:
 - peephole optimizer merged instructions across jump targets (ternary true arms,

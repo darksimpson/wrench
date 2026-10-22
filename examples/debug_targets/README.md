@@ -117,6 +117,12 @@ for ( ;; )
   keeping the pointer. `tick()` returns `WRD_TickProgramLoaded` when that
   happens. `debugger.setAllowUpload( false )` refuses uploads for builds
   that must only run their own program; attaching and stepping still work.
+* Firmware that runs more scripts in contexts of its own hands each one to
+  the same server with `debugger.attach( context, "name.w" )`; the
+  debugger then sees them all (a thread each in VS Code). The server does
+  not own those contexts, destroying one is enough to stop debugging it.
+  Modules a debugged script imports are debugged too. See "Several
+  programs" in docs/debugging.md.
 * When the server learns that the debugger is gone, it clears the
   breakpoints and a halted script continues (`setAbortOnDisconnect( true )`
   terminates it instead). It learns that from an explicit detach (ending

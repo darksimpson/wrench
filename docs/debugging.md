@@ -157,6 +157,53 @@ to the including file, then in the `"include"` folders of `wrench.json`
 private global of an included file shows as `count@util.w`; an expression
 written while stopped in that file means its own `count`.
 
+## Several programs: attached contexts and imported modules
+
+One server debugs up to `WRENCH_DEBUG_MAX_PROGRAMS` (4, about 60 bytes
+each) programs at once. Program 0 is the one `loadBytes()` loads or a
+debugger uploads. Firmware that runs more scripts in contexts of its own
+hands each one to the server:
+
+```cpp
+WRContext* ui = wr_run( w, uiBytecode, uiSize );
+int program = debugger->attach( ui, "ui.w" ); // -1 when all are taken
+...
+debugger->detach( ui ); // or just wr_destroyContext( ui )
+```
+
+`attach()` takes program 0 when nothing is loaded there, otherwise the next
+free number. The server does not own an attached context: destroying it is
+enough to stop debugging it. Modules a debugged program loads with
+`sys::importCompile()` or `sys::importByteCode()` become programs too, for
+as long as their importer lives. `sys::importCompile()` compiles the module
+with debug information and its source while a debugger is attached; a
+module given to `sys::importByteCode()` is debuggable when it was compiled
+with `-debugsource`.
+
+Breakpoints, stepping, watchpoints and variables work in every program. A
+call from a program into a module it imported shows both in the call stack,
+and stepping goes in and out of it. A step only ends on its own stack: while
+you step through program 0, the firmware calling into another attached
+context does not end the step there. A program's breakpoints go with it
+when it goes away, except a module's: the target keeps them, and they are
+back the moment the same module is imported again (the next run).
+
+In VS Code each program with a stack of its own (program 0 and each
+attached context) is a thread; a module runs on its importer's thread. The
+Modules view lists all programs. A file of another program that is on this
+machine opens from there and takes breakpoints like any other; a module
+compiled from a string shows as a read-only "import 1 (embedded source)"
+document, which takes breakpoints too. The Globals scope of a frame shows
+its own program's globals.
+
+In `wrench dbg`, `programs` lists them, locations in another program read
+"line 3 in import 1", and `b ticker.w:6` sets a breakpoint in another
+program's file. When the firmware runs contexts of its own, `c` while
+nothing is stopped waits for one of them to stop (Ctrl+C pauses).
+`wrench dbgserver -context ticker.w main.w` tries this out on a PC: it
+attaches a context for `ticker.w`, runs its global code and calls its
+`tick()` ten times a second.
+
 ## Debugging from the console
 
 Run in the local VM, upload and run on a device, debug what a device
@@ -174,13 +221,14 @@ Commands: `r` run/restart, `c` continue, `n` next, `s` step in, `o` step
 out, `b <line>` toggle breakpoint, `watch <var>` watchpoint (`watch` alone
 lists them), `unwatch [n]` remove one or all, `bt` call stack, `f <n>`
 select frame, `l [line]` list, `p <expr>` print, `set <var> = <value>`,
-`locals`, `globals`, `d <expr>` display at every stop, `x` hex, `kill`, `q`.
-Ctrl+C pauses a running program.
+`locals`, `globals`, `d <expr>` display at every stop, `x` hex, `programs`
+the programs the target debugs, `kill`, `q`. Ctrl+C pauses a running
+program.
 
 ## PC as a target
 
 ```
-wrench dbgserver -target tcp:5050 [-v] [-noupload] [-hold] [-linktimeout ms] [file.w | file.bin]
+wrench dbgserver -target tcp:5050 [-v] [-noupload] [-hold] [-linktimeout ms] [-context other.w] [file.w | file.bin]
 wrench dbgserver -target serial:COM9:115200 file.w
 ```
 
@@ -189,7 +237,9 @@ program unless `-noupload` is given), executes launches, and accepts a new
 client after a disconnect. `-hold` starts the preloaded program right away,
 halted on its first line until a debugger attaches (see below).
 `-linktimeout` lets a halted program go on when the debugger has been silent
-that long, like `setLinkTimeout()` on a device (see "Targets").
+that long, like `setLinkTimeout()` on a device (see "Targets"). `-context`
+(up to 3 times) runs another script beside the file in a context of its
+own, as firmware does with `attach()` (see "Several programs" above).
 
 Without a `wrench.json` (see "Scripts for a host application" below), the
 server stands in for a generic device: native functions a device script
@@ -379,13 +429,13 @@ again (ok or the same error) without acting twice.
 
 | Type | Name | Payload | Reply payload |
 |---|---|---|---|
-| 0x01 | Hello | u16 protocol version | u16 version, u8 major, u8 minor, u8 build, u16 max payload, u8 capabilities, u16 max breakpoints, u8 max watches (with the watch capability) |
-| 0x02 | GetInfo | | u8 state, u32 program hash, u32 bytecode length, u8 compiler flags, u32 symbols length, u32 source length, u16 globals, u8 functions, i32 last line |
+| 0x01 | Hello | u16 protocol version | u16 version, u8 major, u8 minor, u8 build, u16 max payload, u8 capabilities, u16 max breakpoints, u8 max watches, u8 max programs |
+| 0x02 | GetInfo | | program 0: u8 state, u32 program hash, u32 bytecode length, u8 compiler flags, u32 symbols length, u32 source length, u16 globals, u8 functions, i32 last line |
 | 0x03 | LoadBegin | u32 size | |
 | 0x04 | LoadData | u32 offset, bytes | |
 | 0x05 | LoadEnd | | u32 program hash |
-| 0x06 | ReadProgram | u8 section (0 bytecode, 1 symbols, 2 source), u32 offset, u16 max | u32 total, u16 n, n bytes |
-| 0x07 | SetBreakpoints | u16 count, i32 line x count (replaces all) | |
+| 0x06 | ReadProgram | u8 program, u8 section (0 bytecode, 1 symbols, 2 source), u32 offset, u16 max | u32 total, u16 n, n bytes |
+| 0x07 | SetBreakpoints | u8 program, u16 count, i32 line x count (replaces that program's) | |
 | 0x08 | Launch | u8 flags (1 = stop on entry) | |
 | 0x09 | Continue | optional u8 flags (1 = carry on with the step a breakpoint interrupted) | |
 | 0x0A | Pause | | |
@@ -393,17 +443,18 @@ again (ok or the same error) without acting twice.
 | 0x0C | StepOver | | |
 | 0x0D | StepOut | | |
 | 0x0E | Terminate | | |
-| 0x10 | GetStack | u16 first, u16 max | u16 total, u16 n, n x (u8 kind, u8 function, u32 pc offset, u16 frame base, u16 slots) |
+| 0x10 | GetStack | u16 first, u16 max | u16 total, u16 n, n x (u8 kind, u8 function, u32 pc offset, u16 frame base, u16 slots, u8 program) |
 | 0x11 | GetLocals | u16 frame, u16 first, u16 count | u16 total, u16 n, n values |
-| 0x12 | GetGlobals | u16 first, u16 count | u16 total, u16 n, n values |
+| 0x12 | GetGlobals | u8 program, u16 first, u16 count | u16 total, u16 n, n values |
 | 0x13 | GetChildren | u32 handle, u32 first, u16 count | u32 total, u16 n, children |
 | 0x14 | SetLocal | u16 frame, u16 slot, value | new value |
-| 0x15 | SetGlobal | u16 slot, value | new value |
+| 0x15 | SetGlobal | u8 program, u16 slot, value | new value |
 | 0x16 | SetChild | u32 handle, u32 index, value | new value |
 | 0x17 | Ping | | |
 | 0x18 | Detach | | clears breakpoints and watches, resumes, ends the session |
-| 0x19 | AddWatch | u8 root (0 global, 1 local), u16 frame (locals), u16 slot, u8 n, n x (u8 kind, u32 value) | u8 watch id |
+| 0x19 | AddWatch | u8 root (0 global, 1 local), u8 program (globals), u16 frame (locals), u16 slot, u8 n, n x (u8 kind, u32 value) | u8 watch id |
 | 0x1A | RemoveWatch | u8 watch id (0 all) | |
+| 0x1B | GetPrograms | | u8 n, n programs (see "Programs" below) |
 
 Replies are type 0x80 (ok, payload as listed) or 0x81 (error, u8 code: 1
 unknown request, 2 bad request, 3 no program, 4 not stopped, 5 bad frame, 6
@@ -488,16 +539,41 @@ Values sent to the target (Set*) are int, float or string (`u16 n, bytes`).
 
 | Type | Name | Payload |
 |---|---|---|
-| 0xC0 | Stopped | u8 reason (0 entry, 1 breakpoint, 2 step, 3 pause, 4 error, 5 watch), i32 line, u8 wrench error, u32 hash of the missing function name (function_not_found errors, else 0), u8 watch id (reason 5, else 0) |
+| 0xC0 | Stopped | u8 reason (0 entry, 1 breakpoint, 2 step, 3 pause, 4 error, 5 watch), i32 line, u8 wrench error, u32 hash of the missing function name (function_not_found errors, else 0), u8 watch id (reason 5, else 0), u8 program the line is in |
 | 0xC1 | Output | text |
 | 0xC2 | Ended | u8 wrench error, u8 flags (1 aborted, 2 host keeps running), i32 last line, u32 missing function hash (as for Stopped), value |
 | 0xC3 | Loaded | u32 program hash |
 | 0xC4 | WatchRemoved | u8 watch id: a watched local's call returned, or the program it watched is gone |
+| 0xC5 | ProgramAdded | u8 program: the firmware attached a context, or a debugged program imported a module |
+| 0xC6 | ProgramRemoved | u8 program: detached, or its context was destroyed |
 
 Events are not acknowledged. So that a lost Stopped event (or a debugger that
 attaches to a target already halted) cannot leave the client believing the
 program runs, a halted server sends Stopped again, with the original reason,
 line and error, after answering a Hello or a Pause.
+
+### Programs
+
+A server debugs up to its "max programs" (Hello reply) programs; 0xFF names
+none. Lines, breakpoints, globals and global watches are per program, so
+the requests about them carry a program number; locals are reached through
+stack frames, which name their program. GetPrograms answers one record per
+program:
+
+| Field | Meaning |
+|---|---|
+| u8 id | program number, 0 is the one loadBytes() or an upload gives |
+| u8 flags | 1 the server made the context, 2 imported by a debugged program, 4 its global code ran |
+| u8 importer | the program that imported it, 0xFF for none |
+| u32 hash, u32 bytecode length, u8 compiler flags, u32 symbols length, u32 source length, u16 globals, u8 functions | as in GetInfo |
+| u8 n, n bytes | the name the firmware gave `attach()`, may be empty |
+
+A stack walk that reaches the native call by which a program called into a
+module it imported goes on in the caller: one stack can hold frames of
+several programs. When a module goes away its breakpoints are kept by the
+bytecode hash, and set again when a module with the same hash is added; a
+SetBreakpoints that needs their room drops them. Other programs' breakpoints
+go with them.
 
 ### Line markers
 
