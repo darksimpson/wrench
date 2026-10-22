@@ -303,6 +303,26 @@ this.
   only, so building a long text piece by piece (the disassembler on a large
   program) was quadratic; it grows by half now.
 
+## Libraries and tools, done
+
+* The old serial helpers (`utils/win32_comm.cpp`, `linux_comm.cpp`,
+  `arduino_comm.cpp`, `lib/std_serial.h`) are gone: nothing called them and
+  scripts could not reach them. `WRENCH_WIN32_SERIAL` / `WRENCH_LINUX_SERIAL`
+  still switch on the debugger's serial transport.
+* `WRstr::format()` emptied the string before formatting (the C++11 path,
+  every current build), so `s.format( "<%s>", s.c_str() )` lost the text;
+  it formats first now, like appending. Internal test `[WRstr format with
+  its own text]`.
+* The language server reads the files a document includes: hover, go to
+  definition, completion and signature help reach what they declare at the
+  top level, a private name stays its file's own. A variable only ever
+  given `new S` has the type S: completion after `p.` offers the members of
+  S, and references and rename of `p.member` follow S. Without such a type
+  it stays as it was (every struct's members, a link only when one struct
+  has the member).
+* `examples/arduino/debug` (an empty sketch with bytecode in an old format)
+  is gone; `examples/debug_targets/arduino_serial` replaces it.
+
 ## Open issues
 
 Language and compiler:
@@ -344,21 +364,11 @@ Debugger:
 
 Libraries:
 
-* The old serial helpers (`utils/win32_comm.cpp`, `linux_comm.cpp`,
-  `arduino_comm.cpp`, `lib/std_serial.h`) are no longer used by the debugger
-  and have known gaps (short write timeouts, DTR/RTS forced low, the Linux
-  version is a stub, the Arduino one lacks close). Remove them or turn them
-  into a script-visible serial library.
 * The SPIFFS / LittleFS file backend and the FastLED library were fixed from
   reading only; they have not been compiled for ESP32 in this round.
-* `WRstr::format()` called with its own `c_str()` as an argument reads freed
-  memory.
 
 Tools:
 
-* The language server analyses one file at a time and does not infer types,
-  so member completion after `.` offers the members of every struct.
-  Diagnostics follow includes; completion, hover and go to definition do
-  not reach into included files yet.
-* `examples/arduino/debug` is an empty sketch with bytecode in an old
-  format; `examples/debug_targets/arduino_serial` replaces it.
+* The language server's find references and rename stay within one file,
+  and types are only the evident ones (`new S`): a variable given the
+  result of a call, a parameter or a member gets no type.
