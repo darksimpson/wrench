@@ -2087,6 +2087,38 @@ bool testIncludes()
 	return ok;
 }
 
+// formatting reads its arguments before the string changes: one of them may
+// be the string itself, short or long
+bool testStrFormat()
+{
+	printf( "test [-][WRstr format with its own text]: " );
+	bool ok = true;
+
+	WRstr s( "abc" );
+	s.format( "<%s>", s.c_str() );
+	ok = ok && s.isMatch( "<abc>" );
+	s.appendFormat( "%s", s.c_str() );
+	ok = ok && s.isMatch( "<abc><abc>" );
+
+	WRstr longer;
+	for ( int i = 0; i < 40; ++i )
+	{
+		longer.appendFormat( "%d,", i );
+	}
+	WRstr expected;
+	expected.format( "[%s]", longer.c_str() );
+	longer.format( "[%s]", longer.c_str() );
+	ok = ok && longer.size() > c_formatBaseTrySize && longer.isMatch( expected.c_str() );
+	longer.appendFormat( "%s", longer.c_str() );
+	ok = ok && longer.size() == 2 * expected.size() && strncmp( longer.c_str(expected.size()), expected.c_str(), expected.size() ) == 0;
+
+	s.format( "%s", "" );
+	ok = ok && s.size() == 0;
+
+	printf( ok ? "PASS\n" : "FAIL\n" );
+	return ok;
+}
+
 bool testVmRobustness()
 {
 	printf( "test [-][vm: callback errors, bad opcodes, copies, stack, threads]: " );
@@ -2993,6 +3025,10 @@ int runTests( const char* testDir, int number )
 		++failures;
 	}
 	if ( !testVmRobustness() )
+	{
+		++failures;
+	}
+	if ( !testStrFormat() )
 	{
 		++failures;
 	}

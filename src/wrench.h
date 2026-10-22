@@ -1785,10 +1785,13 @@ public:
 
 	WRstr& clear() { m_str[m_len = 0] = 0; return *this; }
 #ifdef STR_COPY_ARG
-	WRstr& format( const char* format, ... ) { va_list arg; va_start( arg, format ); clear(); appendFormatVA( format, arg ); va_end( arg ); return *this; }
-	WRstr& formatVA( const char* format, va_list arg ) { clear(); return appendFormatVA(format, arg); }
-	WRstr& appendFormat( const char* format, ... ) { va_list arg; va_start( arg, format ); appendFormatVA( format, arg ); va_end( arg ); return *this; }
-	inline WRstr& appendFormatVA( const char* format, va_list arg );
+	// the text is formatted before the string changes, so an argument may be
+	// the string itself (s.format( "<%s>", s.c_str() ))
+	WRstr& format( const char* format, ... ) { va_list arg; va_start( arg, format ); formatVA( format, arg, false ); va_end( arg ); return *this; }
+	WRstr& formatVA( const char* format, va_list arg ) { return formatVA( format, arg, false ); }
+	WRstr& appendFormat( const char* format, ... ) { va_list arg; va_start( arg, format ); formatVA( format, arg, true ); va_end( arg ); return *this; }
+	WRstr& appendFormatVA( const char* format, va_list arg ) { return formatVA( format, arg, true ); }
+	inline WRstr& formatVA( const char* format, va_list arg, const bool append );
 #else
 	inline WRstr& format( const char* format, ... );
 	inline WRstr& appendFormat( const char* format, ... );
@@ -2435,7 +2438,7 @@ WRstr& WRstr::append( const char c )
 #ifdef STR_COPY_ARG
 
 //------------------------------------------------------------------------------
-WRstr& WRstr::appendFormatVA( const char* format, va_list arg )
+WRstr& WRstr::formatVA( const char* format, va_list arg, const bool append )
 {
 	char buf[ c_formatBaseTrySize + 1 ]; // SOME space, malloc if we need a ton more
 
@@ -2447,10 +2450,21 @@ WRstr& WRstr::appendFormatVA( const char* format, va_list arg )
 	if ( len < 0 )
 	{
 		// encoding error, nothing to add
+		if ( !append )
+		{
+			clear();
+		}
 	}
 	else if ( len < (int)sizeof(buf) )
 	{
-		insert( buf, len, m_len );
+		if ( append )
+		{
+			insert( buf, len, m_len );
+		}
+		else
+		{
+			set( buf, len );
+		}
 	}
 	else
 	{
@@ -2459,7 +2473,7 @@ WRstr& WRstr::appendFormatVA( const char* format, va_list arg )
 		// 'arg' was consumed by the first pass, only the copy is still valid
 		len = vsnprintf( alloc, len, format, vacopy );
 
-		if ( m_len )
+		if ( append && m_len )
 		{
 			insert( alloc, len, m_len );
 			g_free( alloc );
