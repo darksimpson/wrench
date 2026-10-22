@@ -209,6 +209,22 @@ async function testIncludes(lsp) {
 	let diags = await openDoc(lsp, mainUri, mainText);
 	assert.deepStrictEqual(diags.diagnostics, [], JSON.stringify(diags.diagnostics));
 
+	// what the included files declare: hover, definition, completion and
+	// signature help reach it, a private name stays theirs
+	const mainLines = mainText.split(/\r?\n/);
+	const td = { uri: mainUri };
+	const square = { line: 5, character: mainLines[5].indexOf('utilSquare') + 2 };
+	const hover = await lsp.request('textDocument/hover', { textDocument: td, position: square });
+	assert(/function utilSquare\( x \)/.test(hover.contents.value) && /declared in util\.w/.test(hover.contents.value), hover.contents.value);
+	const def = await lsp.request('textDocument/definition', { textDocument: td, position: square });
+	assert(/lib\/util\.w$/i.test(decodeURIComponent(def.uri)), def.uri);
+	assert.deepStrictEqual(def.range.start, { line: 2, character: 9 });
+	const items = await lsp.request('textDocument/completion', { textDocument: td, position: { line: 7, character: 0 } });
+	assert(items.some((i) => i.label === 'utilSquare') && items.some((i) => i.label === 'extraBonus'), 'included functions in completion');
+	assert(!items.some((i) => i.label === 'calls'), 'a private global of an included file is not offered');
+	const sig = await lsp.request('textDocument/signatureHelp', { textDocument: td, position: { line: 5, character: mainLines[5].indexOf('( i') + 2 } });
+	assert.strictEqual(sig.signatures[0].label, 'utilSquare( x )');
+
 	await openDoc(lsp, utilUri, 'function utilSquare( x )\n{\n\treturn x * ;\n}\n');
 	lsp.notify('textDocument/didChange', { textDocument: { uri: mainUri, version: 2 }, contentChanges: [{ text: mainText }] });
 	diags = await lsp.waitNotification('textDocument/publishDiagnostics', (p) => p.uri === mainUri && p.version === 2);
@@ -242,6 +258,10 @@ async function testAuditFixes(lsp) {
 		'var str = "a.b";', // 16
 		'var f = 1.5;', // 17
 		'function sw( v ) { switch ( v ) { case 1: return 2; default: return 3; } }', // 18
+		'var mixed = new B;', // 19
+		'mixed = 0;', // 20
+		'mixed.size = 1;', // 21
+		'function make() { var q = new B; q.size = 2; return q; }', // 22
 	];
 	const diags = await openDoc(lsp, docUri, lines.join('\n'));
 	assert.strictEqual(diags.diagnostics.length, 0, JSON.stringify(diags.diagnostics));
@@ -265,11 +285,18 @@ async function testAuditFixes(lsp) {
 	let items = await lsp.request('textDocument/completion', { textDocument: td, position: pos(13, '::g') });
 	assert(items.some((i) => i.label === 'count') && items.some((i) => i.label === '::count'), 'global completion in a function');
 
-	// 2: .size belongs to A or B, unknown without types: no link, no rename
-	const prep = await lsp.request('textDocument/prepareRename', { textDocument: td, position: pos(6, 'size') });
+	// 2: .size belongs to A or B. a is only ever given new A, q new B: their
+	// members are known; mixed is given other values too: no link, no rename
+	const prep = await lsp.request('textDocument/prepareRename', { textDocument: td, position: pos(21, 'size') });
 	assert.strictEqual(prep, null);
 	edit = await lsp.request('textDocument/rename', { textDocument: td, position: pos(4, 'size'), newName: 'length' });
-	assert.deepStrictEqual(edit.changes[docUri].map((e) => e.range.start.line), [4]);
+	assert.deepStrictEqual(edit.changes[docUri].map((e) => e.range.start.line).sort((a, b) => a - b), [4, 22]);
+	def = await lsp.request('textDocument/definition', { textDocument: td, position: pos(6, 'size') });
+	assert.deepStrictEqual(def.range.start, { line: 3, character: at(lines[3], 'size') });
+	items = await lsp.request('textDocument/completion', { textDocument: td, position: pos(22, 'q.', 0, 2), context: { triggerKind: 2, triggerCharacter: '.' } });
+	assert(items.some((i) => i.label === 'size') && !items.some((i) => i.label === 'only'), 'members of the variable\'s struct');
+	items = await lsp.request('textDocument/completion', { textDocument: td, position: pos(21, '.', 0, 1), context: { triggerKind: 2, triggerCharacter: '.' } });
+	assert(items.some((i) => i.label === 'size') && items.some((i) => i.label === 'only'), 'every struct\'s members without a type');
 	// .only exists in one struct
 	edit = await lsp.request('textDocument/rename', { textDocument: td, position: pos(7, 'only'), newName: 'single' });
 	assert.deepStrictEqual(edit.changes[docUri].map((e) => e.range.start.line).sort(), [3, 5, 7]);
@@ -278,7 +305,7 @@ async function testAuditFixes(lsp) {
 	edit = await lsp.request('textDocument/rename', { textDocument: td, position: pos(8, 'size'), newName: 'big' });
 	assert.deepStrictEqual(edit.changes[docUri].map((e) => e.range.start.line).sort(), [8, 9, 9]);
 	edit = await lsp.request('textDocument/rename', { textDocument: td, position: pos(3, 'size'), newName: 'length' });
-	assert.deepStrictEqual(edit.changes[docUri].map((e) => e.range.start.line).sort(), [3, 5]);
+	assert.deepStrictEqual(edit.changes[docUri].map((e) => e.range.start.line).sort(), [3, 5, 6]);
 
 	// 3: unit is a synonym for function
 	const symbols = await lsp.request('textDocument/documentSymbol', { textDocument: td });

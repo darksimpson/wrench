@@ -351,6 +351,9 @@ struct Symbol
 	std::vector<std::string> params;
 	std::string doc;
 	std::string value; // enum member value text
+	bool isPrivate = false; // private var / private function: its file's own
+	std::string type; // a variable only ever given new <type>: that struct
+	bool untyped = false; // given something else too, or a parameter
 };
 
 struct Reference
@@ -379,13 +382,16 @@ struct Document
 	std::vector<std::pair<int, int> > folds; // line ranges
 	int nesting = 0; // estimated recursion depth of the compiler
 	int nestingToken = -1; // token where the nesting first goes over c_maxNesting
+	std::vector<std::string> includes; // files it includes, as its last check read them
 
 	void index();
 	int tokenAt( const Position& p ) const; // code token covering p, -1 for none
+	int structNamed( const std::string& name ) const; // -1 for none
+	int findLocal( int scope, const std::string& name ) const;
 
 private:
-	int findLocal( int scope, const std::string& name ) const;
 	int findGlobal( const std::string& name ) const;
+	void noteType( int symbol, const std::string& structName );
 	std::string commentBefore( size_t tokenIndex ) const;
 	int addSymbol( SymbolKind kind, const Token& t, int scope, int parent = -1 );
 	void measureNesting( const std::vector<size_t>& code );
@@ -480,6 +486,41 @@ int Document::findGlobal( const std::string& name ) const
 {
 	auto it = m_globals.find( name );
 	return it == m_globals.end() ? -1 : it->second;
+}
+
+int Document::structNamed( const std::string& name ) const
+{
+	for ( size_t s = 0; s < symbols.size(); ++s )
+	{
+		if ( symbols[s].kind == SymStruct && symbols[s].name == name )
+		{
+			return (int)s;
+		}
+	}
+	return -1;
+}
+
+// a value given to a variable: new S (structName S) or anything else (empty).
+// It has a type only while every value it is given is a new of one struct
+void Document::noteType( int symbol, const std::string& structName )
+{
+	Symbol& s = symbols[symbol];
+	if ( s.kind != SymGlobal && s.kind != SymLocal )
+	{
+		return;
+	}
+	if ( structName.empty() || (!s.type.empty() && s.type != structName) )
+	{
+		s.untyped = true;
+	}
+	if ( !s.untyped )
+	{
+		s.type = structName;
+	}
+	else
+	{
+		s.type.clear();
+	}
 }
 
 int Document::tokenAt( const Position& p ) const
@@ -670,6 +711,7 @@ void Document::index()
 			int s = addSymbol( t.text == "struct" ? SymStruct : SymFunction, *tok(k + 1), -1 );
 			symbols[s].fullRange.start = t.range.start;
 			symbols[s].doc = commentBefore( code[k] );
+			symbols[s].isPrivate = k > 0 && isWord( k - 1, "private" );
 			k += 1;
 			if ( is(k + 1, "(") )
 			{
@@ -679,7 +721,8 @@ void Document::index()
 					if ( tok(k)->kind == TokIdent && tok(k)->text != "var" )
 					{
 						symbols[s].params.push_back( tok(k)->text );
-						addSymbol( SymParam, *tok(k), s );
+						int param = addSymbol( SymParam, *tok(k), s );
+						symbols[param].untyped = true;
 					}
 					++k;
 				}
@@ -775,11 +818,26 @@ void Document::index()
 				{
 					kind = symbols[scope].kind == SymStruct ? SymMember : SymLocal;
 				}
-				if ( decl.text.find("::") == std::string::npos
-						&& (kind == SymGlobal ? findGlobal(decl.text) : findLocal(scope, decl.text)) < 0 )
+				int s = -1;
+				if ( decl.text.find("::") == std::string::npos )
 				{
-					int s = addSymbol( kind, decl, kind == SymGlobal ? -1 : scope, kind == SymMember ? scope : -1 );
-					symbols[s].doc = commentBefore( code[k] );
+					s = kind == SymGlobal ? findGlobal( decl.text ) : findLocal( scope, decl.text );
+					if ( s < 0 )
+					{
+						s = addSymbol( kind, decl, kind == SymGlobal ? -1 : scope, kind == SymMember ? scope : -1 );
+						symbols[s].doc = commentBefore( code[k] );
+						symbols[s].isPrivate = k > 0 && isWord( k - 1, "private" );
+					}
+				}
+				// var p = new S gives it a type, var a[], var n = 5 none
+				if ( s >= 0 && is(j + 1, "=") )
+				{
+					bool made = isWord( j + 2, "new" ) && tok( j + 3 ) && tok( j + 3 )->kind == TokIdent && !is( j + 4, "[" );
+					noteType( s, made ? tok(j + 3)->text : std::string() );
+				}
+				else if ( s >= 0 && is(j + 1, "[") )
+				{
+					noteType( s, std::string() );
 				}
 			}
 			fill( k + 1, j, scope );
@@ -878,6 +936,11 @@ void Document::index()
 		auto it = structs.find( tok(k)->text );
 		return it == structs.end() ? -2 : it->second;
 	};
+
+	// what each identifier resolved to; names after '.' wait for the end,
+	// when the types of the variables in front of them are known
+	std::vector<int> resolved( code.size(), -1 );
+	std::vector<size_t> memberTokens;
 
 	for ( size_t k = 0; k < code.size(); ++k )
 	{
@@ -979,14 +1042,8 @@ void Document::index()
 		}
 		else if ( k > 0 && is(k - 1, ".") )
 		{
-			// without types the struct is only known when a single struct has
-			// a member of this name; guessing would let rename edit another
-			// struct's members
-			auto it = members.find( name );
-			if ( it != members.end() && it->second.second == 1 )
-			{
-				target = it->second.first;
-			}
+			memberTokens.push_back( k );
+			continue;
 		}
 		else
 		{
@@ -1024,9 +1081,49 @@ void Document::index()
 
 		if ( target >= 0 )
 		{
+			resolved[k] = target;
 			Reference r;
 			r.symbol = target;
 			r.range = nameRange;
+			r.declaration = false;
+			refs.push_back( r );
+
+			// p = new S gives the variable a type, p = anything else takes it
+			if ( is(k + 1, "=") )
+			{
+				bool made = isWord( k + 2, "new" ) && tok( k + 3 ) && tok( k + 3 )->kind == TokIdent && !is( k + 4, "[" );
+				noteType( target, made ? tok(k + 3)->text : std::string() );
+			}
+		}
+	}
+
+	// p.member: the member of p's struct when p has a type; else known only
+	// when a single struct has a member of this name, guessing would let
+	// rename edit another struct's members
+	for ( size_t k : memberTokens )
+	{
+		const std::string& name = tok( k )->text;
+		int target = -1;
+		int object = (k >= 2 && tok(k - 2)->kind == TokIdent && !(k >= 3 && is(k - 3, "."))) ? resolved[k - 2] : -1;
+		auto typed = (object >= 0 && !symbols[object].type.empty()) ? structs.find( symbols[object].type ) : structs.end();
+		if ( typed != structs.end() )
+		{
+			int member = findLocal( typed->second, name );
+			target = (member >= 0 && symbols[member].kind == SymMember) ? member : -1;
+		}
+		else
+		{
+			auto it = members.find( name );
+			if ( it != members.end() && it->second.second == 1 )
+			{
+				target = it->second.first;
+			}
+		}
+		if ( target >= 0 )
+		{
+			Reference r;
+			r.symbol = target;
+			r.range = tok( k )->range;
 			r.declaration = false;
 			refs.push_back( r );
 		}
@@ -1063,6 +1160,14 @@ private:
 	std::string describe( const Document& d, int symbol );
 	int scopeAt( const Document& d, const Position& p );
 
+	// the files a document includes, indexed: what they declare at the top
+	// level (and do not keep private) is declared for the document too
+	std::vector<const Document*> includedDocs( const Document& d );
+	const Document* includedSymbol( const Document& d, const std::string& name, int& symbol );
+	static bool sharedTopLevel( const Symbol& s );
+	void readIncludes( Document& d, const WrenchIncludeResolver& includes, bool complete );
+	bool memberObjectType( Document& d, const Position& p, const std::string& prefixLine, size_t dot, std::string& type );
+
 	// wrench.json of the document's host application, null if there is none
 	// (or it is broken, then 'error' says why)
 	const WrenchProject* projectFor( const Document& d, std::string* error = nullptr );
@@ -1080,6 +1185,7 @@ private:
 	JsonStdioStream m_stream;
 	std::map<std::string, Document> m_docs;
 	std::map<std::string, CachedProject> m_projects;
+	std::map<std::string, Document> m_included; // by normalized path
 	bool m_shutdown = false;
 	bool m_exit = false;
 	bool m_nonStrict = false;
@@ -1551,24 +1657,15 @@ void LspServer::publishDiagnostics( Document& d )
 		diagnostics.push( diag );
 	}
 
+	readIncludes( d, includes, err == WR_ERR_None );
+
 	if ( project )
 	{
 		// what the included files define is defined for this script too
 		std::set<std::string> includedNames;
-		for ( const std::string& file : includes.filesRead )
+		for ( const Document* included : includedDocs(d) )
 		{
-			Document included;
-			auto open = includes.overrides.find( file );
-			if ( open != includes.overrides.end() )
-			{
-				included.text = open->second;
-			}
-			else if ( !wr_readHostFile(file, included.text) )
-			{
-				continue;
-			}
-			included.index();
-			for ( const Symbol& s : included.symbols )
+			for ( const Symbol& s : included->symbols )
 			{
 				if ( s.kind != SymMember )
 				{
@@ -1684,6 +1781,116 @@ int LspServer::scopeAt( const Document& d, const Position& p )
 	return scope;
 }
 
+// the included files as the check just read them, from the editor when they
+// are open there. A check that failed may have stopped before reading them
+// all, then the ones it did not read stay from before
+void LspServer::readIncludes( Document& d, const WrenchIncludeResolver& includes, bool complete )
+{
+	if ( complete )
+	{
+		d.includes.clear();
+	}
+	for ( const std::string& file : includes.filesRead )
+	{
+		std::string text;
+		auto open = includes.overrides.find( file );
+		if ( open != includes.overrides.end() )
+		{
+			text = open->second;
+		}
+		else if ( !wr_readHostFile(file, text) )
+		{
+			continue;
+		}
+		Document& included = m_included[file];
+		if ( included.uri.empty() || included.text != text )
+		{
+			included.uri = pathToUri( file );
+			included.text = text;
+			included.index();
+		}
+		if ( std::find(d.includes.begin(), d.includes.end(), file) == d.includes.end() )
+		{
+			d.includes.push_back( file );
+		}
+	}
+}
+
+std::vector<const Document*> LspServer::includedDocs( const Document& d )
+{
+	std::vector<const Document*> docs;
+	for ( const std::string& file : d.includes )
+	{
+		auto it = m_included.find( file );
+		if ( it != m_included.end() )
+		{
+			docs.push_back( &it->second );
+		}
+	}
+	return docs;
+}
+
+// a name another file can use: declared at the top level, not private
+bool LspServer::sharedTopLevel( const Symbol& s )
+{
+	bool topLevel = s.kind == SymFunction || s.kind == SymStruct || s.kind == SymEnum || s.kind == SymGlobal
+		|| (s.kind == SymEnumMember && s.scope < 0);
+	return topLevel && !s.isPrivate;
+}
+
+const Document* LspServer::includedSymbol( const Document& d, const std::string& name, int& symbol )
+{
+	std::string plain = name.compare( 0, 2, "::" ) == 0 ? name.substr( 2 ) : name;
+	for ( const Document* included : includedDocs(d) )
+	{
+		for ( size_t s = 0; s < included->symbols.size(); ++s )
+		{
+			if ( included->symbols[s].name == plain && sharedTopLevel(included->symbols[s]) )
+			{
+				symbol = (int)s;
+				return included;
+			}
+		}
+	}
+	return nullptr;
+}
+
+// the struct of the variable in front of the '.' at byte 'dot' of the line
+// typed so far, when it has one (p. but not f()., a[1]. or p.q.)
+bool LspServer::memberObjectType( Document& d, const Position& p, const std::string& prefixLine, size_t dot, std::string& type )
+{
+	size_t nameStart = dot;
+	while ( nameStart > 0 && (isalnum((unsigned char)prefixLine[nameStart - 1]) || prefixLine[nameStart - 1] == '_' || prefixLine[nameStart - 1] == ':') )
+	{
+		--nameStart;
+	}
+	if ( nameStart == dot || (nameStart > 0 && prefixLine[nameStart - 1] == '.') )
+	{
+		return false;
+	}
+
+	// the reference on the name's last character
+	Position last;
+	last.line = p.line;
+	last.character = 0;
+	for ( size_t i = 0; i + 1 < dot; ++i )
+	{
+		last.character += utf16Units( (unsigned char)prefixLine[i] );
+	}
+	int s = symbolAt( d, last );
+	if ( s >= 0 )
+	{
+		type = d.symbols[s].type;
+	}
+	else
+	{
+		int included = -1;
+		const Document* from = includedSymbol( d, prefixLine.substr(nameStart, dot - nameStart), included );
+		type = from ? from->symbols[included].type : std::string();
+	}
+	return !type.empty();
+}
+
 std::string LspServer::describe( const Document& d, int symbol )
 {
 	const Symbol& s = d.symbols[symbol];
@@ -1743,13 +1950,21 @@ void LspServer::onHover( const Json& msg )
 		std::string word = t->text;
 		// member functions are written ._name
 		size_t ti = (size_t)(t - d->tokens.data());
-		if ( ti > 0 && d->tokens[ti - 1].text == "." && word[0] == '_' )
+		bool member = ti > 0 && d->tokens[ti - 1].text == ".";
+		if ( member && word[0] == '_' )
 		{
 			word = "." + word;
 		}
 		const WrenchProject* project = projectFor( *d );
 		const WrenchNative* native = project ? project->native( word.compare(0, 2, "::") == 0 ? word.substr(2) : word ) : nullptr;
-		if ( native )
+		int included = -1;
+		const Document* from = (t->kind == TokIdent && !member) ? includedSymbol( *d, word, included ) : nullptr;
+		if ( from )
+		{
+			std::string file = uriToPath( from->uri );
+			markdown = describe( *from, included ) + "\n\n*declared in " + file.substr( file.find_last_of("/\\") + 1 ) + "*";
+		}
+		else if ( native )
 		{
 			markdown = describeNative( *native );
 		}
@@ -1790,8 +2005,22 @@ void LspServer::onDefinition( const Json& msg )
 	int s = d ? symbolAt( *d, p ) : -1;
 	if ( s < 0 )
 	{
-		// host functions are declared in wrench.json
+		// declared in an included file
 		const Token* t = d ? tokenAt( *d, p ) : nullptr;
+		size_t ti = t ? (size_t)(t - d->tokens.data()) : 0;
+		int included = -1;
+		const Document* from = (t && t->kind == TokIdent && !(ti > 0 && d->tokens[ti - 1].text == "."))
+			? includedSymbol( *d, t->text, included ) : nullptr;
+		if ( from )
+		{
+			Json loc = Json::object();
+			loc.set( "uri", from->uri );
+			loc.set( "range", rangeJson(from->symbols[included].nameRange) );
+			reply( msg["id"], loc );
+			return;
+		}
+
+		// host functions are declared in wrench.json
 		const WrenchProject* project = t ? projectFor( *d ) : nullptr;
 		const WrenchNative* native = (project && t->kind == TokIdent)
 			? project->native( t->text.compare(0, 2, "::") == 0 ? t->text.substr(2) : t->text ) : nullptr;
@@ -2079,21 +2308,40 @@ void LspServer::onCompletion( const Json& msg )
 		items.push( item );
 	};
 
+	std::vector<const Document*> included = includedDocs( *d );
+
 	if ( afterDot )
 	{
-		// member functions and struct members
+		// the members of the variable's struct when it has one, else of every
+		// struct; then member functions
+		std::vector<const Document*> docs( 1, d );
+		docs.insert( docs.end(), included.begin(), included.end() );
+		std::string type;
+		const Document* typeDoc = nullptr;
+		int owner = -1;
+		if ( memberObjectType(*d, p, prefixLine, start - 1, type) )
+		{
+			for ( size_t i = 0; i < docs.size() && owner < 0; ++i )
+			{
+				owner = docs[i]->structNamed( type );
+				typeDoc = docs[i];
+			}
+		}
+		for ( const Document* from : docs )
+		{
+			for ( const Symbol& s : from->symbols )
+			{
+				if ( s.kind == SymMember && (owner < 0 || (from == typeDoc && s.scope == owner)) )
+				{
+					add( s.name, 5, "member of " + from->symbols[s.scope].name, std::string() );
+				}
+			}
+		}
 		for ( const WrenchLibraryEntry* e = c_library; e->name; ++e )
 		{
 			if ( e->kind == 2 )
 			{
 				add( e->name + 1, 2, e->signature, e->doc );
-			}
-		}
-		for ( const Symbol& s : d->symbols )
-		{
-			if ( s.kind == SymMember )
-			{
-				add( s.name, 5, "member of " + d->symbols[s.scope].name, std::string() );
 			}
 		}
 		reply( msg["id"], items );
@@ -2124,11 +2372,16 @@ void LspServer::onCompletion( const Json& msg )
 				add( e->name + ns.size(), e->kind == 0 ? 3 : 21, e->signature, e->doc );
 			}
 		}
-		for ( const Symbol& s : d->symbols )
+		std::vector<const Document*> docs( 1, d );
+		docs.insert( docs.end(), included.begin(), included.end() );
+		for ( const Document* from : docs )
 		{
-			if ( s.kind == SymEnumMember && s.name.compare(0, ns.size(), ns) == 0 )
+			for ( const Symbol& s : from->symbols )
 			{
-				add( s.name.substr(ns.size()), 20, s.value.empty() ? std::string() : "= " + s.value, std::string() );
+				if ( s.kind == SymEnumMember && s.name.compare(0, ns.size(), ns) == 0 )
+				{
+					add( s.name.substr(ns.size()), 20, s.value.empty() ? std::string() : "= " + s.value, std::string() );
+				}
 			}
 		}
 		reply( msg["id"], items );
@@ -2186,6 +2439,39 @@ void LspServer::onCompletion( const Json& msg )
 		else if ( s.kind == SymEnumMember && s.parent < 0 && s.scope < 0 )
 		{
 			add( s.name, 20, "enum", std::string() );
+		}
+	}
+
+	// what the included files share; they come before any code of this file
+	for ( const Document* from : included )
+	{
+		std::string file = uriToPath( from->uri );
+		file = file.substr( file.find_last_of("/\\") + 1 );
+		for ( size_t i = 0; i < from->symbols.size(); ++i )
+		{
+			const Symbol& s = from->symbols[i];
+			if ( !sharedTopLevel(s) || (s.kind == SymEnumMember && s.parent >= 0) )
+			{
+				continue;
+			}
+			if ( s.kind == SymGlobal )
+			{
+				bool plain = scope < 0 || d->symbols[scope].kind == SymFunction;
+				if ( plain && !globalsOnly )
+				{
+					add( s.name, 6, "global, " + file, describe(*from, (int)i) );
+				}
+				if ( scope >= 0 || globalsOnly )
+				{
+					add( "::" + s.name, 6, "global, " + file, describe(*from, (int)i), "::" + s.name );
+				}
+			}
+			else if ( !globalsOnly )
+			{
+				int kind = s.kind == SymFunction ? 3 : s.kind == SymStruct ? 22 : s.kind == SymEnum ? 13 : 20;
+				std::string what = s.kind == SymFunction ? "function" : s.kind == SymStruct ? "struct" : "enum";
+				add( s.name, kind, what + ", " + file, s.kind == SymEnumMember ? std::string() : describe(*from, (int)i) );
+			}
 		}
 	}
 
@@ -2310,19 +2596,29 @@ void LspServer::onSignatureHelp( const Json& msg )
 	std::string documentation;
 	std::vector<std::string> params;
 
+	auto signatureOf = [&]( const Symbol& s )
+	{
+		label = name + "(";
+		for ( size_t i = 0; i < s.params.size(); ++i )
+		{
+			label += (i ? ", " : " ") + s.params[i];
+		}
+		label += s.params.empty() ? ")" : " )";
+		params = s.params;
+		documentation = s.doc;
+	};
 	for ( const Symbol& s : d->symbols )
 	{
 		if ( (s.kind == SymFunction || s.kind == SymStruct) && s.name == name )
 		{
-			label = name + "(";
-			for ( size_t i = 0; i < s.params.size(); ++i )
-			{
-				label += (i ? ", " : " ") + s.params[i];
-			}
-			label += s.params.empty() ? ")" : " )";
-			params = s.params;
-			documentation = s.doc;
+			signatureOf( s );
 		}
+	}
+	int included = -1;
+	const Document* from = label.empty() ? includedSymbol( *d, name, included ) : nullptr;
+	if ( from && (from->symbols[included].kind == SymFunction || from->symbols[included].kind == SymStruct) )
+	{
+		signatureOf( from->symbols[included] );
 	}
 
 	const WrenchProject* project = label.empty() ? projectFor( *d ) : nullptr;

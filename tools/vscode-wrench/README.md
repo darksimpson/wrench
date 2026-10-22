@@ -9,10 +9,10 @@ Everything is powered by the `wrench` executable (`wrench lsp` and `wrench dap`)
 - Syntax highlighting for `.w` and `.wrench` files
 - Errors from the wrench compiler as you type (strict `var` mode by default, see `wrench.nonStrict`)
 - Hover documentation for your functions, variables and the standard library
-- Completion: locals, `::globals`, functions, structs, enums, `math::` / `str::` / ... library members, `._count` style members
+- Completion: locals, `::globals`, functions, structs, enums, `math::` / `str::` / ... library members, `._count` style members; after `p.` the members of p's struct when p is only ever given `new S`
 - Signature help, go to definition, find references, highlights, rename, outline and folding
 - Functions of your own host application from `wrench.json` (see below)
-- `include "file.w"`: errors of included files show on the include, their functions count as defined; search folders come from `"include"` in `wrench.json`
+- `include "file.w"`: errors of included files show on the include; hover, completion, signature help and go to definition reach what the included files declare (not their `private` names); search folders come from `"include"` in `wrench.json`
 
 ## Debugging
 
