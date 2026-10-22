@@ -2562,7 +2562,6 @@ WRstr& WRstr::appendFormat( const char* format, ... )
 #include "debug/debug.h"
 #include "cc/cc.h"
 #include "lib/std_tcp.h"
-#include "lib/std_serial.h"
 #include "lib/std_io_defs.h"
 #endif
 

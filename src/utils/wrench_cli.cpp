@@ -393,7 +393,6 @@ const char* sourceOrder[]=
 	"/cc/cc.h",
 	"/debug/debug_protocol.h",
 	"/debug/debug.h",
-	"/lib/std_serial.h",
 	"/lib/std_tcp.h",
 	"/lib/std_io_defs.h",
 	"/lib/std_tcp.h",
@@ -432,8 +431,6 @@ const char* sourceOrder[]=
 	"/lib/esp32_lib.cpp",
 	"/lib/arduino_lib.cpp",
 	"/lib/fastled_lib.cpp",
-	"/utils/arduino_comm.cpp",
-	"/utils/linux_comm.cpp",
 	""
 };
 

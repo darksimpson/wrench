@@ -39,7 +39,6 @@
     <ClCompile Include="..\src\utils\test_debugger.cpp" />
     <ClCompile Include="..\src\utils\serializer.cpp" />
     <ClCompile Include="..\src\utils\utils.cpp" />
-    <ClCompile Include="..\src\utils\win32_comm.cpp" />
     <ClCompile Include="..\src\utils\wrench_cli.cpp" />
     <ClCompile Include="..\src\utils\wrench_dap.cpp" />
     <ClCompile Include="..\src\utils\wrench_debug_eval.cpp" />

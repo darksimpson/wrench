@@ -60,7 +60,6 @@ CORE_OBJS = \
 	$(OBJDIR)/std_serialize.o \
 	$(OBJDIR)/std_container.o \
 	$(OBJDIR)/debug_lib.o \
-	$(OBJDIR)/linux_comm.o \
 	$(OBJDIR)/fastled_lib.o \
 
 HOST_OBJS = \
@@ -159,9 +158,6 @@ $(OBJDIR)/utils.o: src/utils/utils.cpp
 	$(CC) $@ $<
 
 $(OBJDIR)/serializer.o: src/utils/serializer.cpp
-	$(CC) $@ $<
-
-$(OBJDIR)/linux_comm.o: src/utils/linux_comm.cpp
 	$(CC) $@ $<
 
 $(OBJDIR)/debug_client.o: src/debug/debug_client.cpp
