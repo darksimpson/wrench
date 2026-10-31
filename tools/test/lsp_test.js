@@ -363,6 +363,76 @@ async function testAuditFixes(lsp) {
 	assert(/global/.test(hover.contents.value));
 }
 
+// strict mode scopes names by block: two loops in a row have an i each, a
+// name of a block that ended is not offered, var ::g belongs to the program
+async function testBlockScope(lsp) {
+	const docUri = 'file:///c%3A/work/blocks.w';
+	const td = { uri: docUri };
+	const lines = [
+		'function f( n )', // 0
+		'{', // 1
+		'\tvar total = 0;', // 2
+		'\tfor ( var i = 0; i < n; ++i ) { total += i; }', // 3
+		'\tfor ( var i = 0; i < n; ++i ) { total += i * 2; }', // 4
+		'\tif ( n ) { var inner = 1; total += inner; } else { var inner = 2; total -= inner; }', // 5
+		'\tfor ( var j = 0; j < n; ++j ) total += j;', // 6
+		'\tvar j = total;', // 7
+		'\t', // 8
+		'\treturn j;', // 9
+		'}', // 10
+		'if ( 1 ) { var hidden = 2; var ::shared = 3; }', // 11
+		'var v = shared + f( 2 );', // 12
+		'var p = { "k": { 1 } };', // 13
+		'', // 14
+	];
+	const diags = await openDoc(lsp, docUri, lines.join('\n'));
+	assert.strictEqual(diags.diagnostics.length, 0, JSON.stringify(diags.diagnostics));
+	const pos = (line, needle, n = 0, offset = 0) => ({ line, character: at(lines[line], needle, n) + offset });
+	const editLines = (edit) => edit.changes[docUri].map((e) => `${e.range.start.line}:${e.range.start.character}`).sort();
+
+	// the i of each loop is its own
+	let edit = await lsp.request('textDocument/rename', { textDocument: td, position: pos(4, 'i <'), newName: 'k' });
+	assert.deepStrictEqual(editLines(edit), [pos(4, 'i ='), pos(4, 'i <'), pos(4, '++i', 0, 2), pos(4, 'i *')].map((p) => `${p.line}:${p.character}`).sort());
+	let def = await lsp.request('textDocument/definition', { textDocument: td, position: pos(4, '++i', 0, 2) });
+	assert.deepStrictEqual(def.range.start, pos(4, 'i ='));
+	let refs = await lsp.request('textDocument/references', { textDocument: td, position: pos(3, 'i ='), context: { includeDeclaration: true } });
+	assert.deepStrictEqual(refs.map((r) => r.range.start.line), [3, 3, 3, 3]);
+
+	// the two branches of an if, a loop without braces and the var after it
+	edit = await lsp.request('textDocument/rename', { textDocument: td, position: pos(5, 'inner', 1), newName: 'x' });
+	assert.deepStrictEqual(editLines(edit), [pos(5, 'inner', 0), pos(5, 'inner', 1)].map((p) => `${p.line}:${p.character}`).sort());
+	def = await lsp.request('textDocument/definition', { textDocument: td, position: pos(9, 'j') });
+	assert.deepStrictEqual(def.range.start, pos(7, 'j'));
+	def = await lsp.request('textDocument/definition', { textDocument: td, position: pos(6, '++j', 0, 2) });
+	assert.deepStrictEqual(def.range.start, pos(6, 'j ='));
+
+	// completion offers what is in view
+	let items = await lsp.request('textDocument/completion', { textDocument: td, position: { line: 8, character: 1 } });
+	let labels = items.map((i) => i.label);
+	assert(labels.includes('total') && labels.includes('n') && labels.includes('j'), labels.join(','));
+	assert(!labels.includes('inner') && !labels.includes('i') && !labels.includes('hidden'), labels.join(','));
+	items = await lsp.request('textDocument/completion', { textDocument: td, position: { line: 14, character: 0 } });
+	labels = items.map((i) => i.label);
+	assert(labels.includes('shared') && labels.includes('v') && labels.includes('p') && !labels.includes('hidden'), labels.join(','));
+
+	// var ::shared in a block is a global of the program
+	def = await lsp.request('textDocument/definition', { textDocument: td, position: pos(12, 'shared') });
+	assert.deepStrictEqual(def.range.start, pos(11, '::shared', 0, 2));
+
+	// non-strict code has no block scope: one i for both loops
+	lsp.notify('workspace/didChangeConfiguration', { settings: { wrench: { nonStrict: true } } });
+	await lsp.waitNotification('textDocument/publishDiagnostics', (p) => p.uri === docUri);
+	edit = await lsp.request('textDocument/rename', { textDocument: td, position: pos(4, 'i <'), newName: 'k' });
+	assert.deepStrictEqual([...new Set(edit.changes[docUri].map((e) => e.range.start.line))].sort(), [3, 4]);
+	lsp.notify('workspace/didChangeConfiguration', { settings: { wrench: { nonStrict: false } } });
+	await lsp.waitNotification('textDocument/publishDiagnostics', (p) => p.uri === docUri);
+	edit = await lsp.request('textDocument/rename', { textDocument: td, position: pos(4, 'i <'), newName: 'k' });
+	assert.deepStrictEqual([...new Set(edit.changes[docUri].map((e) => e.range.start.line))], [4]);
+
+	lsp.notify('textDocument/didClose', { textDocument: { uri: docUri } });
+	await lsp.waitNotification('textDocument/publishDiagnostics', (p) => p.uri === docUri && p.diagnostics.length === 0);
+}
+
 (async () => {
 	const lsp = new LspClient();
 	try {
@@ -443,6 +513,7 @@ async function testAuditFixes(lsp) {
 		await testHostProject(lsp);
 		await testAuditFixes(lsp);
 		await testIncludes(lsp);
+		await testBlockScope(lsp);
 
 		await lsp.request('shutdown', null);
 		lsp.notify('exit', null);

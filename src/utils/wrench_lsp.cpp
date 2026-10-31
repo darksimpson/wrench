@@ -354,7 +354,18 @@ struct Symbol
 	bool isPrivate = false; // private var / private function: its file's own
 	std::string type; // a variable only ever given new <type>: that struct
 	bool untyped = false; // given something else too, or a parameter
+	// strict mode scopes names by block: a variable of a block that ended is
+	// out of view after visibleEnd (unscoped: to the end of its function, or
+	// of the program for a global)
+	bool scoped = false;
+	Position visibleEnd;
 };
+
+// s can be named at p (declared before p or not, see findLocalAt)
+bool inView( const Symbol& s, const Position& p )
+{
+	return !s.scoped || !before( s.visibleEnd, p );
+}
 
 struct Reference
 {
@@ -384,21 +395,24 @@ struct Document
 	int nestingToken = -1; // token where the nesting first goes over c_maxNesting
 	std::vector<std::string> includes; // files it includes, as its last check read them
 
-	void index();
+	void index( bool blockScope = true );
 	int tokenAt( const Position& p ) const; // code token covering p, -1 for none
 	int structNamed( const std::string& name ) const; // -1 for none
-	int findLocal( int scope, const std::string& name ) const;
+	int findLocal( int scope, const std::string& name ) const; // the first one
+	int findLocalAt( int scope, const std::string& name, const Position& p ) const; // declared before p, in view at p
 
 private:
-	int findGlobal( const std::string& name ) const;
+	int findGlobal( const std::string& name ) const; // the first one
+	int findGlobalAt( const std::string& name, const Position& p ) const;
+	static int lastInView( const std::vector<Symbol>& symbols, const std::vector<int>& candidates, const Position& p );
 	void noteType( int symbol, const std::string& structName );
 	std::string commentBefore( size_t tokenIndex ) const;
 	int addSymbol( SymbolKind kind, const Token& t, int scope, int parent = -1 );
 	void measureNesting( const std::vector<size_t>& code );
 
 	std::vector<char> m_declToken; // per token, set when it declares a symbol
-	std::map<std::string, int> m_globals; // first global scope symbol of each name
-	std::map<std::pair<int, std::string>, int> m_locals; // first local of each scope and name
+	std::map<std::string, std::vector<int> > m_globals; // global scope symbols of each name, in source order
+	std::map<std::pair<int, std::string>, std::vector<int> > m_locals; // locals of each scope and name, in source order
 };
 
 int Document::addSymbol( SymbolKind kind, const Token& t, int scope, int parent )
@@ -415,11 +429,11 @@ int Document::addSymbol( SymbolKind kind, const Token& t, int scope, int parent 
 
 	if ( scope == -1 && kind != SymParam )
 	{
-		m_globals.insert( std::make_pair(t.text, index) );
+		m_globals[t.text].push_back( index );
 	}
 	if ( kind == SymLocal || kind == SymParam || kind == SymMember || kind == SymEnumMember )
 	{
-		m_locals.insert( std::make_pair(std::make_pair(scope, t.text), index) );
+		m_locals[std::make_pair(scope, t.text)].push_back( index );
 	}
 
 	// t may be a modified copy, the offset still names the token
@@ -479,13 +493,40 @@ std::string Document::commentBefore( size_t i ) const
 int Document::findLocal( int scope, const std::string& name ) const
 {
 	auto it = m_locals.find( std::make_pair(scope, name) );
-	return it == m_locals.end() ? -1 : it->second;
+	return it == m_locals.end() ? -1 : it->second.front();
 }
 
 int Document::findGlobal( const std::string& name ) const
 {
 	auto it = m_globals.find( name );
-	return it == m_globals.end() ? -1 : it->second;
+	return it == m_globals.end() ? -1 : it->second.front();
+}
+
+// the latest declaration before p that is still in view at p: two blocks in
+// a row may each declare the name
+int Document::lastInView( const std::vector<Symbol>& symbols, const std::vector<int>& candidates, const Position& p )
+{
+	int found = -1;
+	for ( int s : candidates )
+	{
+		if ( !before(p, symbols[s].nameRange.start) && inView(symbols[s], p) )
+		{
+			found = s;
+		}
+	}
+	return found;
+}
+
+int Document::findLocalAt( int scope, const std::string& name, const Position& p ) const
+{
+	auto it = m_locals.find( std::make_pair(scope, name) );
+	return it == m_locals.end() ? -1 : lastInView( symbols, it->second, p );
+}
+
+int Document::findGlobalAt( const std::string& name, const Position& p ) const
+{
+	auto it = m_globals.find( name );
+	return it == m_globals.end() ? -1 : lastInView( symbols, it->second, p );
 }
 
 int Document::structNamed( const std::string& name ) const
@@ -613,7 +654,7 @@ void Document::measureNesting( const std::vector<size_t>& code )
 	}
 }
 
-void Document::index()
+void Document::index( bool blockScope )
 {
 	stale = false;
 	lex( text, tokens );
@@ -659,14 +700,124 @@ void Document::index()
 		}
 	};
 
+	// the blocks names are scoped by, as the compiler sees them: statement
+	// braces (not initializers) and for statements, whose header belongs to
+	// the loop. A block lists the variables declared in it, they go out of
+	// view where it ends
+	struct Block
+	{
+		bool brace; // { }, else a for statement
+		size_t braces; // braceStack size when it opened
+		int parens; // open ( and [ when it opened
+		bool body; // a for statement past its header
+		std::vector<int> names;
+	};
+	std::vector<Block> blocks;
+	std::vector<bool> braceIsBlock; // per braceStack entry
+	std::vector<size_t> parenOpen; // code index of each open ( and [
+	std::vector<size_t> openOf( code.size(), (size_t)-1 ); // open ( or [ of each closing one
+	auto closeBlock = [&]( const Position& end )
+	{
+		for ( int s : blocks.back().names )
+		{
+			symbols[s].scoped = blockScope;
+			symbols[s].visibleEnd = end;
+		}
+		blocks.pop_back();
+	};
+	// a statement ended: the for statements it was the body of end with it
+	auto statementEnded = [&]( const Position& end )
+	{
+		while ( !blocks.empty() && !blocks.back().brace && blocks.back().body
+				&& blocks.back().braces == braceStack.size() && blocks.back().parens == (int)parenOpen.size() )
+		{
+			closeBlock( end );
+		}
+	};
+	auto isStatementBrace = [&]( size_t k ) -> bool
+	{
+		if ( pendingOwner >= 0 )
+		{
+			return true;
+		}
+		if ( !braceIsBlock.empty() && !braceIsBlock.back() )
+		{
+			return false; // in an initializer
+		}
+		const Token* prev = k > 0 ? tok( k - 1 ) : nullptr;
+		if ( !prev )
+		{
+			return true;
+		}
+		if ( prev->kind == TokIdent )
+		{
+			return prev->text == "else" || prev->text == "do";
+		}
+		if ( prev->text == ")" )
+		{
+			// new S( a ) { member = value } initializes
+			size_t open = openOf[k - 1];
+			return !(open != (size_t)-1 && open >= 2 && tok(open - 1)->kind == TokIdent && isWord(open - 2, "new"));
+		}
+		return prev->text == "{" || prev->text == "}" || prev->text == ";" || prev->text == ":";
+	};
+
 	for ( size_t k = 0; k < code.size(); ++k )
 	{
 		const Token& t = *tok( k );
 		tokScope[k] = scope;
 
+		if ( t.kind == TokOp && (t.text == "(" || t.text == "[") )
+		{
+			parenOpen.push_back( k );
+			continue;
+		}
+
+		if ( t.kind == TokOp && (t.text == ")" || t.text == "]") )
+		{
+			if ( !parenOpen.empty() )
+			{
+				openOf[k] = parenOpen.back();
+				parenOpen.pop_back();
+			}
+			if ( !blocks.empty() && !blocks.back().brace && !blocks.back().body && blocks.back().parens == (int)parenOpen.size() )
+			{
+				blocks.back().body = true; // the header of a for ended
+			}
+			continue;
+		}
+
+		if ( t.kind == TokOp && t.text == ";" )
+		{
+			statementEnded( t.range.end );
+			continue;
+		}
+
+		if ( isWord(k, "for") && is(k + 1, "(") )
+		{
+			Block b;
+			b.brace = false;
+			b.braces = braceStack.size();
+			b.parens = (int)parenOpen.size();
+			b.body = false;
+			blocks.push_back( b );
+			continue;
+		}
+
 		if ( t.kind == TokOp && t.text == "{" )
 		{
+			bool block = isStatementBrace( k );
 			braceStack.push_back( std::make_pair(pendingOwner, t.range.start) );
+			braceIsBlock.push_back( block );
+			if ( block )
+			{
+				Block b;
+				b.brace = true;
+				b.braces = braceStack.size();
+				b.parens = (int)parenOpen.size();
+				b.body = true;
+				blocks.push_back( b );
+			}
 			if ( pendingOwner >= 0 )
 			{
 				scopeStack.push_back( scope );
@@ -680,8 +831,24 @@ void Document::index()
 		{
 			if ( !braceStack.empty() )
 			{
+				// for statements left open inside it (being typed), then the
+				// brace's own block; a for whose body it was ends with it
+				bool wasBlock = braceIsBlock.back();
+				while ( !blocks.empty() && !blocks.back().brace && blocks.back().braces >= braceStack.size() )
+				{
+					closeBlock( t.range.start );
+				}
+				if ( wasBlock && !blocks.empty() && blocks.back().brace )
+				{
+					closeBlock( t.range.start );
+				}
+				braceIsBlock.pop_back();
 				std::pair<int, Position> open = braceStack.back();
 				braceStack.pop_back();
+				if ( wasBlock )
+				{
+					statementEnded( t.range.end );
+				}
 				if ( t.range.end.line > open.second.line )
 				{
 					folds.push_back( std::make_pair(open.second.line, t.range.end.line) );
@@ -808,9 +975,11 @@ void Document::index()
 			{
 				Token decl = *tok( j );
 				SymbolKind kind = SymGlobal;
-				if ( decl.text.compare(0, 2, "::") == 0 )
+				bool explicitGlobal = decl.text.compare( 0, 2, "::" ) == 0;
+				if ( explicitGlobal )
 				{
-					// var ::g declares a global, also inside a function
+					// var ::g declares a global of the whole program, also in a
+					// block or a function
 					decl.text = decl.text.substr( 2 );
 					decl.range.start.character += 2;
 				}
@@ -821,12 +990,30 @@ void Document::index()
 				int s = -1;
 				if ( decl.text.find("::") == std::string::npos )
 				{
-					s = kind == SymGlobal ? findGlobal( decl.text ) : findLocal( scope, decl.text );
+					// the same variable while the earlier one is in view, a new
+					// one after its block ended
+					s = kind == SymGlobal ? findGlobalAt( decl.text, decl.range.start ) : findLocalAt( scope, decl.text, decl.range.start );
+					if ( s < 0 && explicitGlobal )
+					{
+						s = findGlobal( decl.text );
+					}
 					if ( s < 0 )
 					{
 						s = addSymbol( kind, decl, kind == SymGlobal ? -1 : scope, kind == SymMember ? scope : -1 );
 						symbols[s].doc = commentBefore( code[k] );
 						symbols[s].isPrivate = k > 0 && isWord( k - 1, "private" );
+						if ( !explicitGlobal && !blocks.empty() )
+						{
+							blocks.back().names.push_back( s );
+						}
+					}
+					else if ( explicitGlobal )
+					{
+						symbols[s].scoped = false;
+						for ( Block& b : blocks )
+						{
+							b.names.erase( std::remove(b.names.begin(), b.names.end(), s), b.names.end() );
+						}
 					}
 				}
 				// var p = new S gives it a type, var a[], var n = 5 none
@@ -877,7 +1064,6 @@ void Document::index()
 
 	// name lookups for pass 2
 	std::map<std::string, int> visible; // first function, struct, enum or anonymous global enum member
-	std::map<std::string, int> globalVars; // first global variable
 	std::map<std::string, int> qualified; // Enum::MEMBER, the last one wins
 	std::map<std::string, int> enums; // last enum of each name
 	std::map<std::string, int> structs; // first struct of each name
@@ -888,10 +1074,6 @@ void Document::index()
 		if ( sym.kind == SymFunction || sym.kind == SymStruct || sym.kind == SymEnum || (sym.kind == SymEnumMember && sym.parent < 0 && sym.scope == -1) )
 		{
 			visible.insert( std::make_pair(sym.name, (int)s) );
-		}
-		if ( sym.kind == SymGlobal )
-		{
-			globalVars.insert( std::make_pair(sym.name, (int)s) );
 		}
 		if ( sym.kind == SymEnumMember )
 		{
@@ -1017,7 +1199,7 @@ void Document::index()
 		{
 			name = name.substr( 2 );
 			nameRange.start.character += 2;
-			target = findGlobal( name );
+			target = findGlobalAt( name, t.range.start );
 		}
 		else if ( name.find("::") != std::string::npos )
 		{
@@ -1049,22 +1231,32 @@ void Document::index()
 		{
 			int inScope = tokScope[k];
 			auto v = visible.find( name );
-			auto g = globalVars.find( name );
 			int type = v == visible.end() ? -1 : v->second;
-			int global = g == globalVars.end() ? -1 : g->second;
+			// the global declaration in view here (one of a block that ended
+			// is not), else a later one at the top level
+			int global = findGlobalAt( name, t.range.start );
 			if ( inScope < 0 )
 			{
+				if ( global < 0 )
+				{
+					global = findGlobal( name );
+					global = (global >= 0 && before(t.range.start, symbols[global].nameRange.start)) ? global : -1;
+				}
 				target = (type >= 0 && (global < 0 || type < global)) ? type : global;
 			}
 			else
 			{
 				// inside a function the compiler falls back to a global declared
-				// earlier when no local of that name exists yet
-				int local = findLocal( inScope, name );
-				bool earlierGlobal = symbols[inScope].kind == SymFunction && global >= 0
-					&& before( symbols[global].nameRange.start, t.range.start );
-				bool localLater = local >= 0 && symbols[local].kind == SymLocal && before( t.range.start, symbols[local].nameRange.start );
-				if ( local >= 0 && !(localLater && earlierGlobal) )
+				// earlier when no local of that name is in view; a local that
+				// comes later (an error) is still found when no global is
+				int local = findLocalAt( inScope, name, t.range.start );
+				bool earlierGlobal = symbols[inScope].kind == SymFunction && global >= 0;
+				if ( local < 0 && !earlierGlobal )
+				{
+					local = findLocal( inScope, name );
+					local = (local >= 0 && (symbols[local].kind != SymLocal || before(t.range.start, symbols[local].nameRange.start))) ? local : -1;
+				}
+				if ( local >= 0 )
 				{
 					target = local;
 				}
@@ -1231,7 +1423,7 @@ Document* LspServer::doc( const Json& params )
 	}
 	if ( it->second.stale )
 	{
-		it->second.index();
+		it->second.index( !m_nonStrict );
 	}
 	return &it->second;
 }
@@ -1479,7 +1671,7 @@ void LspServer::publishDiagnostics( Document& d )
 {
 	if ( d.stale )
 	{
-		d.index();
+		d.index( !m_nonStrict );
 	}
 	d.dirty = false;
 
@@ -1807,7 +1999,7 @@ void LspServer::readIncludes( Document& d, const WrenchIncludeResolver& includes
 		{
 			included.uri = pathToUri( file );
 			included.text = text;
-			included.index();
+			included.index( !m_nonStrict );
 		}
 		if ( std::find(d.includes.begin(), d.includes.end(), file) == d.includes.end() )
 		{
@@ -1833,7 +2025,7 @@ std::vector<const Document*> LspServer::includedDocs( const Document& d )
 // a name another file can use: declared at the top level, not private
 bool LspServer::sharedTopLevel( const Symbol& s )
 {
-	bool topLevel = s.kind == SymFunction || s.kind == SymStruct || s.kind == SymEnum || s.kind == SymGlobal
+	bool topLevel = s.kind == SymFunction || s.kind == SymStruct || s.kind == SymEnum || (s.kind == SymGlobal && !s.scoped)
 		|| (s.kind == SymEnumMember && s.scope < 0);
 	return topLevel && !s.isPrivate;
 }
@@ -2395,7 +2587,7 @@ void LspServer::onCompletion( const Json& msg )
 	{
 		for ( const Symbol& s : d->symbols )
 		{
-			if ( s.scope == scope && (s.kind == SymLocal || s.kind == SymParam || s.kind == SymMember) )
+			if ( s.scope == scope && (s.kind == SymLocal || s.kind == SymParam || s.kind == SymMember) && inView(s, p) )
 			{
 				add( s.name, 6, s.kind == SymParam ? "parameter" : "local", std::string() );
 			}
@@ -2409,6 +2601,10 @@ void LspServer::onCompletion( const Json& msg )
 	for ( size_t i = 0; i < d->symbols.size(); ++i )
 	{
 		const Symbol& s = d->symbols[i];
+		if ( s.kind == SymGlobal && !inView(s, p) )
+		{
+			continue; // its block ended
+		}
 		if ( s.kind == SymGlobal )
 		{
 			// a function sees a global declared above it by its plain name too
@@ -2846,7 +3042,17 @@ void LspServer::dispatch( const Json& msg )
 		const Json& settings = msg["params"]["settings"]["wrench"];
 		if ( settings.isObject() )
 		{
-			m_nonStrict = settings["nonStrict"].asBool( m_nonStrict );
+			bool nonStrict = settings["nonStrict"].asBool( m_nonStrict );
+			if ( nonStrict != m_nonStrict )
+			{
+				// block scope is strict mode only: index everything again
+				m_nonStrict = nonStrict;
+				m_included.clear();
+				for ( auto& d : m_docs )
+				{
+					d.second.stale = true;
+				}
+			}
 			for ( auto& d : m_docs )
 			{
 				publishDiagnostics( d.second );
