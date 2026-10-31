@@ -1,13 +1,15 @@
 # Wrench review notes (October 2026)
 
 Two reviews of the compiler, VM, libraries, debugger and tools found a number
-of real defects. Most are fixed (see CHANGELIST, section "next"); each fix
+of real defects. Most are fixed (see CHANGELIST, section 8.0.0); each fix
 has a regression check in `tests/029_library_fixes.w`,
 `tests/030_compiler_fixes.w`, `tests/031_vm_fixes.w`,
 `tests/032_audit_fixes.w`, `tests/033_library_audit.w`, the internal tests
 of `wrench t`, the debugger test suite or the tool tests in `tools/test`.
-This page records what was fixed in the second review, what is still open
-and what would be worth improving next.
+This page records what was fixed in the second review and the rounds after
+it. Everything still open, from any round, is in the last section, "Open
+issues"; changes decided on but put off to a later release are in
+`deferred.md`.
 
 ## How the code is tested now
 
@@ -35,9 +37,6 @@ and what would be worth improving next.
   builds, Windows Debug and Release with the node suites, and the single file
   build checked with GCC and MSVC. The single file build is no longer kept
   in git; CI publishes it with every release.
-
-Worth adding: a fuzzer for `wr_compile` and `wr_deserialize` (both take
-untrusted input).
 
 ## Second review: what was fixed
 
@@ -67,8 +66,9 @@ Memory safety:
 
 Compiler:
 
-* `var t = cout + 1;` compiled the unknown name as a hash: in strict mode a
-  bare unknown name used as a value must name a script function now.
+* `var t = cout + 1;` compiled the unknown name as a hash: a bare unknown
+  name used as a value must name a script function now (not in non-strict
+  mode).
 * Binary and octal literals with bit 31 set were clamped, overflowing decimal
   literals are an error.
 * `foreach` past line 16383 with `-debug`, a nested `{ }` ending the enclosing
@@ -117,7 +117,7 @@ Debugger and tools:
 * Examples, protocol documentation, comments and packaging notes; the code
   style of the new work.
 
-## Open issues: language and compiler, done
+## Language and compiler, done
 
 * `&&` and `||` short circuit: the right side is parsed into the operator
   node and compiled behind a branch, so `if ( i < a._count && a[i] == x )`
@@ -160,7 +160,7 @@ Debugger and tools:
   `LLValues` / `LGValues` / `GLValues` / `GGValues` opcodes for one byte;
   they have two operand bytes.
 
-## Open issues: VM, done
+## VM, done
 
 `tests/036_vm_robustness.w` and the internal test
 `[vm: callback errors, bad opcodes, copies, stack, threads]` cover this round.
@@ -215,7 +215,7 @@ Debugger and tools:
   same container once either was written. It is an empty array after
   `var a[] =` and an empty hash table anywhere else (as `{ : }`).
 
-## Open issues: debugger, done
+## Debugger, done
 
 * Watchpoints: a variable, element or member (`x`, `a[2]`, `p.member`,
   `h["key"]`, `s[0]`) is followed again from its root at every line marker
@@ -374,57 +374,6 @@ this.
   latency with slow lines, requests answered inside a polling native, a
   terminated yielded call of a host driven firmware.
 
-## Open issues
-
-Language and compiler:
-
-* A program is limited to 64KB of bytecode (`WR_ERR_code_too_large`): function
-  offsets and other fixups in the image are 16 bit. Lifting it would change
-  the bytecode format; jumps and switches inside that limit are not limited
-  any more.
-* Assigning to a member or element of a variable that holds a string or a
-  number still replaces it with a container (`var n = 5; n.k = 1;`); only
-  reads were changed. A runtime error there was considered and left out.
-* Reading an element past the end of an array grows the array.
-* Namespaces were deferred. A design that fits: `namespace x { ... }` at the
-  top level prefixes the names declared in it (`x::name`), unqualified names
-  inside look in the namespace first; `x::f()` calls compile as library
-  calls today, the linker would retarget them in place (both 5 bytes) and a
-  library call that finds nothing would look in imported modules.
-* A private function cannot be reached through its name as a value (`var f
-  = helper;` holds the shared name's hash); `private struct` is not
-  supported.
-
-VM:
-
-* Calling a function by its name as a value (`var f = name; f();`) is not
-  supported (see 7.0.1 notes).
-* Opcodes are validated only as they execute: a corrupt image whose CRC
-  matches can still read operands out of range before reaching an unknown
-  opcode. A validation pass at load time would make images from untrusted
-  sources safe.
-
-Debugger:
-
-* Stepping granularity is the source line; `stopOnEntry` for an attached
-  host-driven target means "the next line the firmware executes". Left as
-  it is: finer markers would cost code size in every debug build.
-* A module imported for the first time cannot have breakpoints set before
-  its global code runs (its source is only known once it is there); break
-  in the importer and step in, or set them and run again.
-
-Libraries:
-
-* The SPIFFS / LittleFS file backend and the FastLED library were fixed from
-  reading only; they have not been compiled for ESP32 in this round.
-
-Tools:
-
-* The language server's find references and rename stay within one file,
-  and types are only the evident ones (`new S`): a variable given the
-  result of a call, a parameter or a member gets no type.
-
-
 ## Found while writing the book, done
 
 Writing the user documentation (docs/book) turned up the bugs below; each
@@ -469,22 +418,86 @@ and tools/test/extension_test.js). CHANGELIST, 8.0.0, lists them for users.
   Show Disassembly, the disassembler (member tables, GlobalStop, line
   markers, symbols), the stale image in examples/arduino/hello_world.
 
-Still open from that round:
+## Open issues
 
+Everything still open from the second review and the rounds after it,
+including what turned up while writing the book. Changes already decided
+on but put off to a later release (the rename of
+`WR_ERR_var_not_seen_before_label`, the removal of non-strict mode) are in
+`deferred.md`.
+
+Language and compiler:
+
+* A program is limited to 64KB of bytecode (`WR_ERR_code_too_large`): function
+  offsets and other fixups in the image are 16 bit. Lifting it would change
+  the bytecode format; jumps and switches inside that limit are not limited
+  any more.
+* Assigning to a member or element of a variable that holds a string or a
+  number still replaces it with a container (`var n = 5; n.k = 1;`); only
+  reads were changed. A runtime error there was considered and left out.
+* Reading an element past the end of an array grows the array.
+* Member syntax on a key that does not exist yet stores the key's hash, the
+  name itself is not in the bytecode.
 * `._remove()` returns the container, so removals chain; a 1 / 0 result
   would need a new opcode, the compiler builds `{}` with this one.
+* Namespaces were deferred. A design that fits: `namespace x { ... }` at the
+  top level prefixes the names declared in it (`x::name`), unqualified names
+  inside look in the namespace first; `x::f()` calls compile as library
+  calls today, the linker would retarget them in place (both 5 bytes) and a
+  library call that finds nothing would look in imported modules.
+* A private function cannot be reached through its name as a value (`var f
+  = helper;` holds the shared name's hash); `private struct` is not
+  supported.
+
+VM:
+
+* Calling a function by its name as a value (`var f = name; f();`) is not
+  supported (see 7.0.1 notes).
 * A module cannot call functions of its importer
   (WR_ERR_function_not_found): the importer's global code is still running
   when the module's runs. Modules can call each other and the host.
-* Member syntax on a key that does not exist yet stores the key's hash, the
-  name itself is not in the bytecode.
-* A `wrench dbg` without -attach on a target that refuses uploads detaches
-  now, but its Hello has already consumed a `-hold` halt; avoiding that
-  needs a protocol change.
+* Opcodes are validated only as they execute: a corrupt image whose CRC
+  matches can still read operands out of range before reaching an unknown
+  opcode. A validation pass at load time would make images from untrusted
+  sources safe.
+
+Embedding API:
+
 * `WR_ERR_tried_to_load_non_resolvable`, `WR_ERR_array_must_be_indexed`,
   `WR_ERR_scontext_not_found` and `WR_ERR_switch_with_no_cases` are never
   set; `c_errStrings` is not there with WRENCH_WITHOUT_COMPILER.
+
+Debugger:
+
+* Stepping granularity is the source line; `stopOnEntry` for an attached
+  host-driven target means "the next line the firmware executes". Left as
+  it is: finer markers would cost code size in every debug build.
+* A module imported for the first time cannot have breakpoints set before
+  its global code runs (its source is only known once it is there); break
+  in the importer and step in, or set them and run again.
+* A `wrench dbg` without -attach on a target that refuses uploads detaches
+  now, but its Hello has already consumed a `-hold` halt; avoiding that
+  needs a protocol change.
+
+Libraries:
+
+* The SPIFFS / LittleFS file backend and the FastLED library were fixed from
+  reading only; they have not been compiled for ESP32 in this round.
 * glibc 2.41 prints `%#g` wrong when rounding carries into a new digit;
   wrench without WRENCH_FLOAT_SPRINTF prints the C standard result.
+
+Tools:
+
+* The language server's find references and rename stay within one file,
+  and types are only the evident ones (`new S`): a variable given the
+  result of a call, a parameter or a member gets no type.
+
+Testing:
+
+* A fuzzer for `wr_compile` and `wr_deserialize` (both take untrusted
+  input) would be worth adding.
+
+Documentation:
+
 * The website (www/index.html) is behind the code in many places; the book
   is the reference.
