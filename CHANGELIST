@@ -19,6 +19,8 @@
   code runs must be declared blank, a var global without a value is set to 0 now
 - a name error in a block or a return (undeclared or redeclared) was reported on a later
   line
+- debug server: a request that arrived right after an accepted continue or step, in the
+  same read, was answered as if the target were still stopped
 - wrench lsp follows block scope: references, highlights, rename and go to definition tell
   the variables of two blocks apart (two for ( var i ... ) loops), completion offers only
   names in view at the cursor; none of it with wrench.nonStrict

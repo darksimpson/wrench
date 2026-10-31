@@ -1145,6 +1145,13 @@ void WrenchDebugServerImpl::pump( WrenchDebugServerPrivate* I )
 			if ( I->decoder.feed(chunk[i], now) )
 			{
 				process( I, I->decoder.frame() );
+				if ( I->resume && I->state == WRD_StateStopped )
+				{
+					// a continue or step was accepted: requests read after it
+					// (the client sends them as soon as it has the reply) are
+					// answered as running, the stop loop ends when pump returns
+					I->state = WRD_StateRunning;
+				}
 			}
 		}
 	}
