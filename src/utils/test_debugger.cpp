@@ -334,11 +334,20 @@ void testServerDriven()
 	DCHECK( e.reason == WRD_StopStep && e.line == 14 );
 	DCHECK( client.getLocals(0, locals) && locals.size() == 3 && locals[2].i == 1 );
 
-	// step out lands on the next line of the caller
+	// step out stops in the caller where the call returns, in the middle of
+	// line 18 (the assignment to r is still to come): no line marker there,
+	// line 0 sends the client to the top frame's pc
 	DCHECK( client.setBreakpoints({}) );
 	DCHECK( client.stepOut() );
 	DCHECK( waitFor(client, WrenchDebugEvent::Stopped, e, &output) );
-	DCHECK( e.line == 19 );
+	DCHECK( e.reason == WRD_StopStep && e.line == 0 );
+	DCHECK( client.getStack(frames, &program, e.line) && frames.size() == 2 && frames[0].name == "outer" && frames[0].line == 18 );
+	DCHECK( evalText(client, program, "r") == "0" );
+
+	// the rest of line 18 assigns r
+	DCHECK( client.stepOver() );
+	DCHECK( waitFor(client, WrenchDebugEvent::Stopped, e, &output) );
+	DCHECK( e.reason == WRD_StopStep && e.line == 19 );
 	DCHECK( client.getStack(frames, &program, e.line) && frames.size() == 2 && frames[0].name == "outer" );
 	DCHECK( evalText(client, program, "r") == "1" );
 	DCHECK( evalText(client, program, "n + 10") == "10" );
@@ -1467,9 +1476,13 @@ void testImportedModule()
 	DCHECK( evalIn(client, programs, e.line, 0, "x") == "5" );
 	DCHECK( evalIn(client, programs, e.line, 1, "src").find("function triple") != std::string::npos );
 
-	// out of the module, back in the program
+	// out of the module, back in the program where the call returns (the
+	// assignment of line 3 is still to come), then on to line 4
 	DCHECK( client.setBreakpoints({}, 1) );
 	DCHECK( client.stepOut() );
+	DCHECK( waitFor(client, WrenchDebugEvent::Stopped, e, &output) && e.program == 0 && e.line == 0 );
+	DCHECK( client.getStack(frames, programs, e.line) && frames.size() == 1 && frames[0].program == 0 && frames[0].line == 3 );
+	DCHECK( client.stepOver() );
 	DCHECK( waitFor(client, WrenchDebugEvent::Stopped, e, &output) && e.program == 0 && e.line == 4 );
 	DCHECK( client.setBreakpoints({ 4 }, 1) );
 	DCHECK( client.resume() );
@@ -1516,6 +1529,73 @@ void testOneStopPerLine()
 	DCHECK( client.resume() );
 	DCHECK( waitFor(client, WrenchDebugEvent::Ended, e, &output) && e.type == WrenchDebugEvent::Ended );
 	DCHECK( output == "6\n" );
+	target.stop();
+}
+
+// two calls on one line (the inner one runs first): a step that comes back
+// out of the first stops in the line where it returned, so the next step in
+// reaches the second; a step over the line itself does not stop in it
+void testStepsOnOneLine()
+{
+	const char* source =
+		"function one( x )\n" // 1
+		"{\n" // 2
+		"  return x + 1;\n" // 3
+		"}\n" // 4
+		"function two( x )\n" // 5
+		"{\n" // 6
+		"  return x * 2;\n" // 7
+		"}\n" // 8
+		"var r = two( one(1) );\n" // 9
+		"println( r );\n"; // 10
+	std::vector<uint8_t> bytecode;
+	WrenchDebugProgram program;
+	DCHECK( compile(source, bytecode, program) );
+
+	TestTarget target;
+	target.start();
+	WrenchDebugClient client( target.pipe().client() );
+	WrenchDebugTargetInfo info;
+	DCHECK( client.connect(info) );
+	DCHECK( client.upload(bytecode) );
+	DCHECK( client.setBreakpoints({ 9 }) );
+	DCHECK( client.launch(false) );
+
+	WrenchDebugEvent e;
+	std::string output;
+	std::vector<WrenchDebugStackFrame> frames;
+	DCHECK( waitFor(client, WrenchDebugEvent::Stopped, e, &output) && e.line == 9 );
+	DCHECK( client.setBreakpoints({}) );
+
+	// into one(), out of it: back in line 9, two() still to come
+	DCHECK( client.stepIn() );
+	DCHECK( waitFor(client, WrenchDebugEvent::Stopped, e, &output) && e.line == 3 );
+	DCHECK( client.stepOut() );
+	DCHECK( waitFor(client, WrenchDebugEvent::Stopped, e, &output) && e.reason == WRD_StopStep && e.line == 0 );
+	DCHECK( client.getStack(frames, &program, e.line) && frames.size() == 1 && frames[0].function == -1 && frames[0].line == 9 );
+
+	// into two(), a step in on its last line comes back to line 9 too
+	DCHECK( client.stepIn() );
+	DCHECK( waitFor(client, WrenchDebugEvent::Stopped, e, &output) && e.line == 7 );
+	DCHECK( client.getStack(frames, &program, e.line) && frames.size() == 2 && frames[0].name == "two" );
+	DCHECK( client.stepIn() );
+	DCHECK( waitFor(client, WrenchDebugEvent::Stopped, e, &output) && e.line == 0 );
+	DCHECK( client.getStack(frames, &program, e.line) && frames.size() == 1 && frames[0].line == 9 );
+	DCHECK( client.stepOver() );
+	DCHECK( waitFor(client, WrenchDebugEvent::Stopped, e, &output) && e.line == 10 );
+	DCHECK( client.resume() );
+	DCHECK( waitFor(client, WrenchDebugEvent::Ended, e, &output) );
+	DCHECK( output == "4\n" );
+
+	// a step over line 9 runs both calls without stopping in it
+	DCHECK( client.setBreakpoints({ 9 }) );
+	DCHECK( client.launch(false) );
+	DCHECK( waitFor(client, WrenchDebugEvent::Stopped, e, &output) && e.line == 9 );
+	DCHECK( client.setBreakpoints({}) );
+	DCHECK( client.stepOver() );
+	DCHECK( waitFor(client, WrenchDebugEvent::Stopped, e, &output) && e.reason == WRD_StopStep && e.line == 10 );
+	DCHECK( client.resume() );
+	DCHECK( waitFor(client, WrenchDebugEvent::Ended, e, &output) );
 	target.stop();
 }
 
@@ -1653,6 +1733,7 @@ bool testDebugger()
 	testForLoopLines();
 	testIncludedFiles();
 	testOneStopPerLine();
+	testStepsOnOneLine();
 	testAttachedPrograms();
 	testImportedModule();
 	testPauseAndErrors();

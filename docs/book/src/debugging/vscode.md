@@ -102,12 +102,14 @@ When the program stops, the toolbar steps:
 | Command | Key | Goes to |
 |---|---|---|
 | Continue | F5 | the next breakpoint, watchpoint or error |
-| Step Over | F10 | the next line of this function, or of its caller after a return |
+| Step Over | F10 | the next line of this function, or the caller's line where a return lands |
 | Step Into | F11 | the next line that runs, also inside a called function |
-| Step Out | Shift+F11 | the first line after the current function returns |
+| Step Out | Shift+F11 | the caller's line, where the current function returns |
 | Pause | F6 | the line the program is executing |
 
-Stepping works line by line; a line with several statements is one step.
+Stepping works line by line; a line with several statements is one step. A
+step that returns from a call stops back in the line that made it, so the
+next Step Into reaches another call on that line.
 See [Stepping](breakpoints.md#stepping) for steps across calls the
 firmware makes into the script.
 

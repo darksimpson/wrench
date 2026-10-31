@@ -273,7 +273,7 @@ With `WRENCH_INCLUDE_DEBUG_CODE` (and the transport flags), described in
 | `void print( const char* text, const int len =-1 )` | text to the debugger's console |
 | `bool clientAttached() const` | a debugger completed the handshake |
 | `void setAbortOnDisconnect( const bool abort )` | terminate running code when the debugger leaves |
-| `onDebugInfo()`, `onError()`, `onImport()`, `onImportCall()`, `onImportReturn()`, `onGlobalCodeEnd()`, `onContextReset()`, `onContextDestroyed()` | hooks the VM calls; not for the host |
+| `onDebugInfo()`, `onError()`, `onReturn()`, `onImport()`, `onImportCall()`, `onImportReturn()`, `onGlobalCodeEnd()`, `onContextReset()`, `onContextDestroyed()` | hooks the VM calls; not for the host |
 
 ## Version
 

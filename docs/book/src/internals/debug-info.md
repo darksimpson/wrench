@@ -72,6 +72,13 @@ position, the frame and the stack. The server:
   `WRENCH_DEBUG_POLL_LINES` lines (8), so a pause request arrives within a
   few lines.
 
+A call made in the middle of a line returns into it without passing a
+marker. So the VM also calls `onReturn()` when a script function returns
+into script code, and when a function of an imported module returns to its
+importer: a step that has come back out of the frame it started in stops
+there, and the client finds the line from the pc. That is how a step out
+of the first of two calls on one line can still step into the second.
+
 A context with no server attached skips the marker. A VM built without
 `WRENCH_INCLUDE_DEBUG_CODE` skips it always, so a debug image runs there
 too. How the server fits into firmware is in

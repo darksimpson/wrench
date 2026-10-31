@@ -1834,6 +1834,10 @@ public:
 	// called by the VM right before it fails with a runtime error
 	void onError( WRContext* context, const unsigned char* pc, WRValue* frameBase, WRValue* stackTop );
 
+	// called by the VM when a function call returned into script code (pc
+	// and frameBase are the caller's), returns true to abort execution
+	bool onReturn( WRContext* context, const unsigned char* pc, WRValue* frameBase, WRValue* stackTop );
+
 	// called by the VM: 'importer' imported 'import'; a call from a debugged
 	// program into an imported one begins (with where it is made) and ends;
 	// a context's global code finished or failed (ret 0); a context is

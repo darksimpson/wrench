@@ -2537,4 +2537,40 @@ void WrenchDebugServer::onError( WRContext* context, const unsigned char* pc, WR
 	I->w->err = err; // the VM is failing either way
 }
 
+bool WrenchDebugServer::onReturn( WRContext* context, const unsigned char* pc, WRValue* frameBase, WRValue* stackTop )
+{
+	// a call made in the middle of a line returns into it without passing a
+	// line marker: a step that has come back out of the frame it started in
+	// stops right there, or it would run past the rest of the line (the
+	// next call on it included)
+	if ( !I || !I->helloReceived
+		|| (I->stepMode != WRD_StepIn && I->stepMode != WRD_StepOver && I->stepMode != WRD_StepOut)
+		|| context->stack != I->stepStack
+		|| wr_debugDepthKey(context, frameBase) >= I->stepKey )
+	{
+		return false;
+	}
+
+	int program = WrenchDebugServerImpl::programOf( I, context );
+	if ( program < 0 )
+	{
+		return false;
+	}
+
+	// no marker says which line this is: line 0 tells the client to find it
+	// from the top frame's pc, the next marker sets it again
+	I->lastLine = 0;
+	I->interruptedStepMode = WRD_StepNone;
+	I->stopContext = context;
+	I->stopProgram = (uint8_t)program;
+	I->stopPc = pc;
+	I->stopFrameBase = frameBase;
+	I->stopStackTop = stackTop;
+
+	bool abort = WrenchDebugServerImpl::stopLoop( I, WRD_StopStep, 0 );
+
+	I->stopPc = 0;
+	return abort;
+}
+
 #endif

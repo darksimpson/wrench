@@ -173,8 +173,9 @@ without the flag, any step is cancelled.
 executes halts. Already halted: the server sends Stopped again.
 
 **StepIn, StepOver, StepOut.** Error 4 unless halted. The step starts from
-the halted frame's depth and ends on the same stack only; see
-[Stepping](breakpoints.md#stepping).
+the halted frame's depth and ends on the same stack only, at a line marker
+or where a call returns into a frame above the one it started in (a
+Stopped with line 0); see [Stepping](breakpoints.md#stepping).
 
 **Terminate.** Always ok. Cancels a launch the firmware has not carried
 out yet. Script code that runs or is halted ends on its next line marker:
@@ -343,6 +344,9 @@ or length).
 
 * **Stopped.** Reason 0 entry, 1 breakpoint, 2 step, 3 pause, 4 runtime
   error, 5 watch. The line is a virtual line of the program given last.
+  Line 0 is a step that stopped where a call returned in the middle of a
+  line, which has no line marker: the line is the top frame's, found from
+  its pc in the line table.
   The wrench error is set for reason 4; the missing function hash is
   `wr_hashStr()` of the name for `WR_ERR_function_not_found` and
   `WR_ERR_lib_function_not_found`, else 0; the watch id is set for reason

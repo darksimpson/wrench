@@ -129,7 +129,7 @@ considerably; a plain breakpoint costs nothing until it is hit.
 
 Steps work by line and by call depth:
 
-| Step | Ends at the next line marker that is |
+| Step | Ends at the next line marker that is, or where a return lands in |
 |---|---|
 | Step into (`s`, F11) | anywhere: the next line that runs, also inside a called function |
 | Step over (`n`, F10) | in the same function or a caller of it |
@@ -139,11 +139,16 @@ Depth comes from the VM's frames, so steps work the same in code the
 firmware entered through `wr_callFunction()` as in calls inside the script.
 Some consequences:
 
-* A step that returns from a function lands on the next line marker of the
-  caller. If the call was the last thing on its line, that is the next
-  line, not the rest of the calling line: stepping over `return sum;` in
-  the [console session](console.md#a-session) ends on line 32, the `for`
-  condition, not on line 34 that made the call.
+* A step that returns from a function stops in the caller where the call
+  returns, on the line that made the call, with the rest of that line
+  still to run: stepping over `return sum;` in the
+  [console session](console.md#a-session) stops on line 34, before `+=`
+  adds the result to `total`; the next step over goes on to line 32, the
+  `for` increment.
+* Calls on one line run inner ones first: on
+  `println( label("average", statsAverage()) );` step into enters
+  `statsAverage()`, step out comes back to that line, and the next step
+  into enters `label()`. A step over the line runs all of them.
 * A breakpoint or watchpoint inside a function you step over stops there,
   with its own reason.
 * Stepping into a function of an imported module enters the module; the

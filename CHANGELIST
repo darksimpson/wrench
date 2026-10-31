@@ -24,6 +24,11 @@
 - wrench lsp follows block scope: references, highlights, rename and go to definition tell
   the variables of two blocks apart (two for ( var i ... ) loops), completion offers only
   names in view at the cursor; none of it with wrench.nonStrict
+- behaviour change: a step that returns from a function stops in the caller where the call
+  returns, on the line that made it (it used to run on to the caller's next line marker):
+  after a step out of the first of two calls on one line, step into reaches the second.
+  The VM calls the new debug hook onReturn(); Stopped carries line 0 there, the client
+  takes the line from the top frame's pc
 
 Found while writing the book (docs/book, the user documentation, new in this version):
 - behaviour change: parameters are values, changing one (++, +=, assigning another

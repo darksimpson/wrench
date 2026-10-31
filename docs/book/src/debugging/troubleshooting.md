@@ -177,9 +177,10 @@ different wrench version than the firmware's, or the transfer was damaged.
 * **Step Out never ends** in a function the firmware called: there is no
   script caller to return to. Continue or pause; see
   [Steps across calls from the firmware](breakpoints.md#steps-across-calls-from-the-firmware).
-* **Step Over skips the rest of a line** and lands on the next line or the
-  loop condition: a step that returns from a function ends at the caller's
-  next line marker, which comes after the call.
+* **A step out stops on the line it came from**: a step that returns from a
+  function stops in the caller where the call returns, with the rest of
+  that line still to run (an assignment of the result, another call). Step
+  over to go on to the next line.
 * **Conditional breakpoints and logpoints slow the program down**: every
   hit halts the target for a round trip, also when the condition is false.
 

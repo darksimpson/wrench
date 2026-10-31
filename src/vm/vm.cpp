@@ -194,10 +194,11 @@ static void dumpStack( const WRValue* bottom, const WRValue* top )
 #endif
 
 // a debugger walks a stack trace through a call into an imported module (a
-// nested call) by where it was made
+// nested call) by where it was made; back in the importer, a step may end
+// (terminated there, the call fails like one that failed in the module)
 #ifdef WRENCH_INCLUDE_DEBUG_CODE
 #define WR_DEBUG_IMPORT_CALL( IMPORT ) if ( context->debugServer ) { context->debugServer->onImportCall( context, pc, frameBase, (IMPORT) ); }
-#define WR_DEBUG_IMPORT_RETURN if ( context->debugServer ) { context->debugServer->onImportReturn(); }
+#define WR_DEBUG_IMPORT_RETURN if ( context->debugServer ) { context->debugServer->onImportReturn(); if ( register0 && context->debugServer->onReturn(context, pc, frameBase, stackTop) ) { w->err = WR_ERR_debugger_terminated; register0 = 0; } }
 #else
 #define WR_DEBUG_IMPORT_CALL( IMPORT )
 #define WR_DEBUG_IMPORT_RETURN
@@ -1491,6 +1492,18 @@ callFunction:
 
 				stackTop = frameBase;
 				frameBase = register0->frame;
+
+#ifdef WRENCH_INCLUDE_DEBUG_CODE
+				// back in the caller's code (not the host's, which called
+				// through stopLocation): a step may end here
+				if ( context->debugServer
+						&& pc != context->stopLocation
+						&& context->debugServer->onReturn(context, pc, frameBase, stackTop) )
+				{
+					w->err = WR_ERR_debugger_terminated;
+					return 0;
+				}
+#endif
 
 				FASTCONTINUE;
 			}

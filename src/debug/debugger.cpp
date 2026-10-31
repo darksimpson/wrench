@@ -827,9 +827,17 @@ void CliDebugger::onStopped( const WrenchDebugEvent& e )
 	m_running = false;
 	m_stopLine = e.line;
 	m_frame = 0;
+	bool haveStack = refreshStack();
+	if ( m_stopLine <= 0 && haveStack && !m_frames.empty() )
+	{
+		// a step that stopped where a call returned into the middle of a
+		// line: the target has no line marker there, the program's line
+		// table has the line of the top frame's pc
+		m_stopLine = m_frames[0].line;
+	}
 	if ( e.reason == WRD_StopError )
 	{
-		printf( "\n*** runtime error %s at %s\n", wr_debugErrorText(e.error).c_str(), where(e.program, e.line).c_str() );
+		printf( "\n*** runtime error %s at %s\n", wr_debugErrorText(e.error).c_str(), where(e.program, m_stopLine).c_str() );
 		std::string missing = wr_describeMissingFunction( e.error, e.missingFunction, m_source, m_project.loaded() ? &m_project : nullptr );
 		if ( !missing.empty() )
 		{
@@ -838,13 +846,12 @@ void CliDebugger::onStopped( const WrenchDebugEvent& e )
 	}
 	else if ( e.reason == WRD_StopWatch )
 	{
-		printf( "\n[watch %d: %s changed] %s\n", e.watch, watchName(e.watch).c_str(), where(e.program, e.line).c_str() );
+		printf( "\n[watch %d: %s changed] %s\n", e.watch, watchName(e.watch).c_str(), where(e.program, m_stopLine).c_str() );
 	}
 	else
 	{
-		printf( "\n[%s] %s\n", stopReasonText(e.reason), where(e.program, e.line).c_str() );
+		printf( "\n[%s] %s\n", stopReasonText(e.reason), where(e.program, m_stopLine).c_str() );
 	}
-	refreshStack();
 	showLocation();
 	if ( e.reason == WRD_StopWatch && m_watches.count(e.watch) )
 	{

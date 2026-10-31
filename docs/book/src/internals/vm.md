@@ -227,6 +227,7 @@ it at these points, and does nothing more when the pointer is null:
 |---|---|
 | `onDebugInfo()` | a line marker runs (see [Debug information](debug-info.md#what-the-vm-does-with-them)); the server may block there while the program is stopped |
 | `onError()` | a runtime error is about to end the call; the frames are still intact, so the debugger can show where and why |
+| `onReturn()` | a call returned into script code, also from a module to its importer; a step that came back out of its frame may stop there, in the middle of a line |
 | `onImport()`, `onImportCall()`, `onImportReturn()` | a module is imported, called into and returned from, so the debugger can step into modules and walk the stack through them |
 | `onGlobalCodeEnd()` | a context's global code finished or failed (not yielded) |
 | `onContextReset()`, `onContextDestroyed()` | `wr_resetContext()` or `wr_destroyContext()` on a debugged context |
