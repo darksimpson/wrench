@@ -3,8 +3,8 @@
 Changes that were decided on but put off, usually because they break host
 code or older scripts and belong in a major release, and the tasks planned
 next. Each entry says why it was deferred and what it touches. Open defects
-and ideas still under discussion are in `review.md` (section "Open
-issues").
+and ideas still under discussion are in `open.md`, finished work in
+`done.md`.
 
 ## Reorganize the examples
 
@@ -31,7 +31,7 @@ It touches:
 * `GNUmakefile` (sources and object names), `win32/wrench.vcxproj` and
   `wrench.vcxproj.filters`;
 * the book (`internals/building.md`, `internals/bytecode.md`,
-  `internals/tools.md`), `review.md` and this page.
+  `internals/tools.md`), `open.md`, `done.md` and this page.
 
 The single file build (`wrench.h` and `wrench.cpp`) does not change for
 hosts, nor do the names in the code. Check that `make dist`, the Windows

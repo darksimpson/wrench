@@ -271,6 +271,3 @@ framework, use `wr_loadAllArduinoLibs` for pins, I2C and delays, the
 SPIFFS or LittleFS backend for [files](io.md), and natives of your own
 for Wi-Fi and the other peripherals. Firmware built with ESP-IDF (no
 `ARDUINO`) gets none of the libraries on this page.
-
-The FastLED library was last fixed from reading the code; the review in
-`docs/review.md` notes that it has not been compiled for ESP32 since.

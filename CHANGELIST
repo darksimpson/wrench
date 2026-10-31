@@ -4,6 +4,8 @@
   meeting opcodes they do not know. The 8.0 VM still runs 7.x images that lack the new flag,
   with their old behaviour (WRENCH_PREVIOUS_IMAGE_VERSION); images from unreleased pre-8.0
   builds must be compiled again
+
+Language and compiler:
 - behaviour change: block scope. A name declared in a block
   (braces, a loop body, an if branch, the header of a for) is out of view after the block:
   using it is the new compile error WR_ERR_variable_out_of_scope. var x; while an earlier
@@ -19,101 +21,21 @@
   code runs must be declared blank, a var global without a value is set to 0 now
 - a name error in a block or a return (undeclared or redeclared) was reported on a later
   line
-- debug server: a request that arrived right after an accepted continue or step, in the
-  same read, was answered as if the target were still stopped
-- wrench lsp follows block scope: references, highlights, rename and go to definition tell
-  the variables of two blocks apart (two for ( var i ... ) loops), completion offers only
-  names in view at the cursor; none of it with wrench.nonStrict
-- behaviour change: a step that returns from a function stops in the caller where the call
-  returns, on the line that made it (it used to run on to the caller's next line marker):
-  after a step out of the first of two calls on one line, step into reaches the second.
-  The VM calls the new debug hook onReturn(); Stopped carries line 0 there, the client
-  takes the line from the top frame's pc
-- VS Code: embedded sources (a module compiled at run time, a context the firmware
-  attached, a program read from the target) are shown from read-only copies in
-  <temp>/wrench-sources/<program hash>/, beside the program's image. Breakpoints set in
-  them stay across sessions (in a virtual document they belonged to one session, moved to
-  an empty document named "." once verified, and setting one again in the next session
-  made a second one), and the next session gives them to the target before the module is
-  imported, so they hit from its first call
-- debug protocol: SetBreakpoints with program 0xFF and a program hash parks breakpoints for
-  a program that is not there yet, they are set when it is added (capability bit 0x20)
-- examples/debug_demo: wrench.json declares label() of the run-time module in the long form
-
-Found while writing the book (docs/book, the user documentation, new in this version):
 - behaviour change: parameters are values, changing one (++, +=, assigning another
   variable) no longer reaches the caller's variable; arguments are read where the call is
   made (println( i, i++ ) prints the old i). Containers are still shared
-- behaviour change: reading a missing hash key or past the end of an array or string gives
-  0 and creates nothing (images from 8.0 compilers); writes, compound assignments, ++/--
-  and initializers still create
-- behaviour change: strings compare by their bytes with < > <= >=; a number is never == to
-  a string or a container; a float key is a key of its own in a hash table (h[2.5] works),
-  a float index truncates; h.name keeps a string key stored before
-- assigning to a member a struct does not have is WR_ERR_hash_not_found (new images); a
-  full hash table fails assignments and hash::add with WR_ERR_hash_table_size_exceeded
 - new is an expression anywhere (f( new S ), return new S, c ? new S : 0); a struct member
   named like a constructor parameter is a member initialised from it (var v = v;); a struct
   with parameters but no member no longer crashes
 - a return in the middle of the global code let later calls of the host run on into the
   rest of the global code: the compiler puts a Stop after every GlobalStop
-- a module calling a function of its importer crashed, it fails with
-  WR_ERR_function_not_found
 - compile errors instead of wrong code: if (), while (), do .. while () and switch () are
   WR_ERR_empty_parens; enum entries need commas; var and blank need a name (var = 1;);
   'ab' is WR_ERR_bad_character_literal and integer literals past 32 bits are
   WR_ERR_integer_literal_too_large (new codes); errors in literals keep their own code; too
   many arguments in a nested call is WR_ERR_too_many_arguments
 - var a[n]; with a variable size created no array; a nested initializer in a hash table
-  literal had to come last; ~ on a float gave 0; ._exists was always 0 for arrays
-- += with a string on an element of a container (h["k"] += "b", a[0] += "b", p.name += "x"
-  in either order of string and number) left the element unchanged or stored a hash
-- -debug images name included files relative to the main file (lib/stats.w), no build
-  machine paths
-- WRENCH_TRAP_DIVISION_BY_ZERO traps / % /= %= in every build; WRENCH_HANDLE_MALLOC_FAIL no
-  longer fails every call after one failed allocation
-- host API: wr_callFunction( context, 0 ) after the global code ended is an error instead
-  of running it again; wr_getValueFromContainer does not insert; wr_runCommand is false
-  after a runtime error; new wr_keepValue / wr_releaseValue keep host-held strings and
-  containers from the collector; WrenchScheduler task ids are per scheduler
-- sys::isFunction answers 2 for functions of imported modules (it was 0 before their first
-  call and 1 after); str::mid / str::substr of an empty string give ""; str::isalnum
-- behaviour change: str::format / sprintf / printf / debug::print follow C printf for
-  d i u x X o c s f F e E g G: flags - + space 0 #, width, precision and *; without
-  WRENCH_FLOAT_SPRINTF floats are formatted from their exact value (%f has 6 decimals)
-- behaviour change: msg:: stores ints, floats and strings as they are (strings copied,
-  owned by the state), containers are refused (-1); host API wr_msgWrite,
-  wr_msgWriteString, wr_msgPeek, wr_msgRead, wr_msgClear
-- behaviour change: the std::rand seed is per state (std::srand sets it); wr_Seed and
-  wr_randEx( from, to ) are the host's own generator, wr_randEx( w, from, to ) draws from
-  a state's seed
-- time::ms works on Arduino, ESP-IDF and STM32 HAL (monotonic on Linux), std::time on ESP32;
-  tcp:: functions return -1 for missing arguments; io::O_WRONLY in every backend,
-  io::getline strips \r\n and gives -1 at the end of the input, io::deleteFile returns 0 or
-  -1, io::write of anything but a string is -1
-- Arduino loaders are declared only with ARDUINO, wr_loadFastLEDLib only with
-  WRENCH_ARDUINO_FASTLED; the empty wr_loadEsp32Lib is gone; wire::write writes strings;
-  lcd:: drives the display named by WR_ARDUINO_LCD
-- behaviour change: wrench dbgserver -target tcp:<port> listens on 127.0.0.1 only;
-  tcp:0.0.0.0:<port> and tcp:<address>:<port> listen on a network on purpose
-  (WrenchDebugTcpServerTransport::listenOn)
-- the wrench tool: exit codes 0, 1 runtime error, 2 compile error, -1 command line or file
-  errors; only the first argument is the command; user error codes print as such; release
-  creates its folder and fails loudly; the unused ca command is gone
-- wrench dbg detaches on every exit, shows stops while idle at the prompt, r while halted
-  terminates and launches again, p x._count works; dbg and dbgserver reject each other's
-  options
-- VS Code: attach defaults to tcp on 127.0.0.1 and names a missing port; no "loaded a new
-  program" notice for its own upload; stopping code without debug information is quick;
-  the wrench.json schema knows "include"; Show Disassembly respects wrench.nonStrict;
-  bundle-exe keeps the platforms it does not bundle
-- the disassembler shows struct member tables as data, decodes line markers and the
-  symbols section
-- examples/arduino/hello_world carried a stale image and printed nothing
-- tools/bookcheck runs the examples of the book; CI builds the book and attaches it to
-  releases (wrench-book.zip)
-
-Language and compiler:
+  literal had to come last
 - behaviour change: && and || short circuit, the right side runs only when the left side
   does not decide the result (results are still 1 or 0)
 - behaviour change: assigning to a literal, a library constant, a call result, the result
@@ -134,8 +56,6 @@ Language and compiler:
   assignments still create containers (new opcodes O_IndexCreate, O_StackIndexHashCreate;
   images from older compilers keep the old behaviour, told apart by the new image flag
   WR_READS_KEEP_VALUES); a member of a literal is WR_ERR_member_of_literal
-- the disassembler and the debugger's line table took LLValues, LGValues, GLValues and
-  GGValues for one byte instead of three
 - behaviour change: { } is an empty hash table (an empty array after "var a[] ="); it
   was the int 0, so a copy of it was not the same container
 - include "file.w" at the top level compiles that file in place, once per program;
@@ -145,8 +65,62 @@ Language and compiler:
   WR_ERR_include_not_supported, WR_ERR_include_not_at_top_level, WR_ERR_include_too_deep
 - private var / private function at the top level belong to their file, like static in C
 - a block comment ending in **/ did not end
+- peephole optimizer merged instructions across jump targets (ternary true arms,
+  case labels), appendBytecode kept a stale opcode cache, optimizer wrote through a
+  cleared cache in the fused compare-and-branch rules
+- SwapTwoToTop stack bookkeeping did not match the VM (wrong operands in expressions)
+- % and ^ precedence, compound assignments are right associative
+- switch bodies ending in a loop or in "if ( x ) { break; }" fell back into the dispatch,
+  negative case labels produced an empty table, case -1 was rejected
+- an empty statement ";" popped a value it never pushed
+- false "bad goto" after 32KB of code in a unit
+- limits of the bytecode format are errors now instead of silent corruption:
+  WR_ERR_too_many_locals, WR_ERR_too_many_functions, WR_ERR_code_too_large,
+  WR_ERR_string_too_long, WR_ERR_duplicate_parameter; a hang with structs of more
+  than 255 members is gone
+- quoted ",", "{", "}" and ";" were treated as punctuation in some places
+- back to back prefix operators (!!x, - -x, ~-x) were rejected
+- enum constants replaced struct member names after '.' and in member declarations,
+  redeclaring a constant with var is WR_ERR_constant_redefined
+- character literals are unsigned ('\xFF' is 255), \a \b \f \v \xHH escapes,
+  exponent notation (1e3, 2.5e-3) and 09.5 style decimals
+- for( var v : <newline> arr ) failed to compile with debug code
+- compile time was quadratic in the source length
+- wr_compileEx() reports the line and column of an error
+- behaviour change: a bare unknown name used as a value must name a script function
+  (var t = cout + 1; is WR_ERR_var_not_seen_before_label instead of a hash; not in
+  non-strict mode)
+- new errors WR_ERR_yield_in_native_call (script code a native callback called tried to
+  yield), WR_ERR_too_many_arguments (a call with more than 255 arguments) and
+  WR_ERR_nesting_too_deep (limit WRENCH_MAX_PARSE_DEPTH, default 256)
+- continue inside foreach jumped outside the program, functions defined inside
+  a block used freed memory, a nested { } ended the enclosing block, foreach past line
+  16383 with -debug, ternary after a postfix operator, f().x and (s).x, variable keys in
+  hash initializers, case (5):, -(-128) and -(-32768) folding, struct initializers past
+  255 values, overflowing number literals are an error, binary and octal literals keep
+  bit 31, escapes and comments no longer read past the source or recurse, -debug keeps
+  stores the next statement overwrites, line markers per function, link() leaks
 
 VM:
+- behaviour change: reading a missing hash key or past the end of an array or string gives
+  0 and creates nothing (images from 8.0 compilers); writes, compound assignments, ++/--
+  and initializers still create
+- behaviour change: strings compare by their bytes with < > <= >=; a number is never == to
+  a string or a container; a float key is a key of its own in a hash table (h[2.5] works),
+  a float index truncates; h.name keeps a string key stored before
+- assigning to a member a struct does not have is WR_ERR_hash_not_found (new images); a
+  full hash table fails assignments and hash::add with WR_ERR_hash_table_size_exceeded
+- a module calling a function of its importer crashed, it fails with
+  WR_ERR_function_not_found
+- += with a string on an element of a container (h["k"] += "b", a[0] += "b", p.name += "x"
+  in either order of string and number) left the element unchanged or stored a hash
+- ~ on a float gave 0; ._exists was always 0 for arrays
+- WRENCH_TRAP_DIVISION_BY_ZERO traps / % /= %= in every build; WRENCH_HANDLE_MALLOC_FAIL no
+  longer fails every call after one failed allocation
+- host API: wr_callFunction( context, 0 ) after the global code ended is an error instead
+  of running it again; wr_getValueFromContainer does not insert; wr_runCommand is false
+  after a runtime error; new wr_keepValue / wr_releaseValue keep host-held strings and
+  containers from the collector; WrenchScheduler task ids are per scheduler
 - behaviour change: the stack is checked for overflow by default
   (WRENCH_PROTECT_STACK_FROM_OVERFLOW is defined unless WRENCH_UNPROTECTED_STACK is); a
   deep expression or a call with many arguments overran it and corrupted memory
@@ -168,39 +142,86 @@ VM:
   belong to which context
 - writing a character of a string (s[1] = 'z', s[0] += 1, s[1]++) changed a copy and was
   lost; a write past the end grew the string without storing the character
+- not-found handlers (wr_setOnCallbackNotFound / wr_setOnLibCallbackNotFound) can fail
+  the call by setting w->err
+- compound assignment to an array/hash element wrote the result into the right hand
+  variable; comparing an int with a float turned the int variable into a float
+- integer % by zero, INT_MIN / -1 and INT_MIN % -1 crashed; shift counts are taken mod 32;
+  integer operators on floats left stale stack values
+- every hash table leaked its first storage block; a hash table growing while a reference
+  to one of its members was on the stack caused a use after free; removed keys came back
+  with their old values; the GC marked uninitialized stack slots
+- first local of a function was not zeroed
+- contexts and their imports are garbage collected as one group (objects passed between
+  them were freed), an imported function returning a local returned a dangling reference,
+  wr_import into a yielded context or from a native callback overwrote live stack
+- native callbacks may call wr_callFunction on the running context (frames were overwritten)
+- stack overflow checks inside imports, time slices preempting an import call
+- WRENCH_COMPACT: && and || with floats used a stale comparator
+- array sizes are limited to WRENCH_MAX_ARRAY_ELEMENTS instead of overflowing allocations,
+  hash tables stop at the largest table size instead of reading past the prime list
+- wr_destroyContext leaked with a GC hint above 65535, WrenchScheduler leaked tasks that
+  finished without yielding
+- runtime errors go through one exit (WR_VM_FAIL) so the debugger can stop on them
+- the GC recursed forever on a container that holds itself
+- temporaries indexed by member (mk()["k"]) could be collected while referenced,
+  adding two containers left a stale result, calling a library constant as a function,
+  hashing or printing a container that holds itself, hash table counts and growth past
+  the largest prime, float operands in %= |= &= ^= <<= >>=, signed overflow in *= ++ --,
+  _exists on a temporary, wr_callFunction checks the stack, imports keep the caller's
+  time slice, allocation failures no longer leave typed containers without data
 
-Distribution:
-- the single file build (wrench.h + wrench.cpp) is no longer kept in git: the old
-  src/wrench.h|cpp and the copies in examples/arduino are gone. CI
-  (.github/workflows/ci.yml) generates it, checks that it compiles with GCC and MSVC in
-  several configurations, and attaches it to every release; "make dist" (or "wrench
-  release src dist") writes it to dist/
-- discrete_src/ is now src/: the sources live in src/, the generated single file build
-  in dist/
-- tests: the scripts are .w files; the list is tests/test_files.txt (entries relative to
-  it, # comments, numbered from 1 without the old placeholder line); "wrench t
-  [testdir] [number]" runs from any folder and the scripts run inside the test folder, so
-  their scratch files no longer land in the repository root; a listed script that is
-  missing counts as a failure, a missing list is an error instead of a crash; the
-  internal host-seeded-global test read its file inside assert() and did nothing in
-  release builds; unit_test1 (equality of all value kinds) and unit_test2 (string
-  concatenation with globals) were never run and are part of the list now
-- CI builds and tests Linux (default, compact, really compact, sanitizers) and Windows
-  (Debug, Release, debugger / language server / extension tests) on every push
-- removed: the unused serial helpers wr_serialOpen / Send / Receive / Peek / Close
-  (utils/win32_comm.cpp, linux_comm.cpp, arduino_comm.cpp, lib/std_serial.h; the
-  debugger's serial transport stays) and examples/arduino/debug (replaced by
-  examples/debug_targets/arduino_serial)
+Libraries:
+- sys::isFunction answers 2 for functions of imported modules (it was 0 before their first
+  call and 1 after); str::mid / str::substr of an empty string give ""; str::isalnum
+- behaviour change: str::format / sprintf / printf / debug::print follow C printf for
+  d i u x X o c s f F e E g G: flags - + space 0 #, width, precision and *; without
+  WRENCH_FLOAT_SPRINTF floats are formatted from their exact value (%f has 6 decimals)
+- behaviour change: msg:: stores ints, floats and strings as they are (strings copied,
+  owned by the state), containers are refused (-1); host API wr_msgWrite,
+  wr_msgWriteString, wr_msgPeek, wr_msgRead, wr_msgClear
+- behaviour change: the std::rand seed is per state (std::srand sets it); wr_Seed and
+  wr_randEx( from, to ) are the host's own generator, wr_randEx( w, from, to ) draws from
+  a state's seed
+- time::ms works on Arduino, ESP-IDF and STM32 HAL (monotonic on Linux), std::time on ESP32;
+  tcp:: functions return -1 for missing arguments; io::O_WRONLY in every backend,
+  io::getline strips \r\n and gives -1 at the end of the input, io::deleteFile returns 0 or
+  -1, io::write of anything but a string is -1
+- Arduino loaders are declared only with ARDUINO, wr_loadFastLEDLib only with
+  WRENCH_ARDUINO_FASTLED; the empty wr_loadEsp32Lib is gone; wire::write writes strings;
+  lcd:: drives the display named by WR_ARDUINO_LCD
 - WRstr::format() with the string's own text as an argument lost it (C++11 builds)
-- wrench lsp: hover, go to definition, completion and signature help reach what included
-  files declare (private names excepted); a variable only ever given new S has the type
-  S, completion after p. offers S's members and references / rename of p.member follow S
-- the single file build compiles with WRENCH_WIN32_SERIAL and WRENCH_WIN32_TCP together
-  (windows.h clashed with winsock2.h); the old Makefile is removed, GNUmakefile builds
-  everything; examples/multi_context.cpp passed wr_getYieldInfo arguments in the wrong
-  order
+- WRstr::insert grows its buffer by half, building a long text piece by piece (the
+  disassembler on a large program) was quadratic
+- msg:: mailboxes live in their own table (they could overwrite native callbacks)
+- WRValue::asMallocString() reports the length of strings; WRValue::asString() treats
+  maxLen as the buffer size (it wrote one byte past it)
+- hash::exists / hash::remove return 1 or 0
+- math::pow, atan2, fmod and ldexp take their arguments in C order (they were swapped)
+- floats print rounded to at most 6 significant digits (like %g, 16.3818 instead of the
+  truncated 16.38181), with nan / inf / exponent forms; INT_MIN prints correctly
+- str::sprintf / format: %o and %b widths, sign before zero padding and counted in the
+  width, %s of a non-string formats it, l/h/z modifiers skipped, width capped,
+  WRENCH_FLOAT_SPRINTF path no longer overflows; str::printf of unterminated data
+- std::rand over the full int range no longer divides by zero
+- serializer: depth limit (WRENCH_MAX_SERIAL_DEPTH), malformed or truncated input is
+  rejected cleanly, hash tables keep their counts, oversized containers are refused
+  instead of truncated, allocation failures are handled
+- array::clear zero-fills and bounds its count, list/stack/queue push store values (not
+  references to the caller's variables), peek returns a copy, array::truncate checks args
+- io::readFile, io::read, io::write (raw arrays), io::getline fixes; SPIFFS / LittleFS
+  backend compile and memory fixes (untested here)
+- tcp:: library: send used the wrong argument, receive turned errors into huge strings,
+  win32 used file functions on sockets, peek, timeouts, failed host lookups, SIGPIPE
+- WRstr: format reuse of va_list, 80 character boundary, self append, insert, find
+- SimpleLL: removing during iteration skipped elements
+- io:: on Windows no longer reaches the CRT invalid parameter handler,
+  str::tprint and str::sprintf buffers, io::deleteFile, readFile and writeFile, serializer
+  accounting, validation and growth, sys::importByteCode on bad input, sys::isFunction
+  for constants, %f without float support, str::tol, debug::print without debug code,
+  SPIFFS/LittleFS backend and FastLED fixes (not compiled for ESP32 here)
 
-Debugger, rebuilt:
+Debugger:
 - new wire protocol (version 2): framed with sync bytes, length and CRC16 so UART links
   recover from noise, request/reply sequence numbers with retransmission, async events
   (stopped, output, ended, program loaded). Specification in the book (docs/book/src/debugging/protocol.md)
@@ -219,14 +240,6 @@ Debugger, rebuilt:
 - wrench dbgserver: run a debug target on a PC over TCP or serial
 - wrench dap: Debug Adapter Protocol server (conditional/hit-count breakpoints, logpoints,
   watch/hover evaluation, set variable, debug console completion)
-- wrench lsp: Language Server Protocol server (compiler diagnostics, hover, completion,
-  signature help, definition, references, rename, outline, folding)
-- tools/vscode-wrench: VS Code extension (grammar, LSP client, debugger integration); its
-  icon is the website's wrench glyph on a navy tile
-- wrench.json describes the host application (its natives and the standard libraries it
-  loads): the language server completes, documents and checks calls against it, the
-  local debug target and dbgserver imitate that host (stand-ins for declared natives,
-  everything else fails as in the application), launch option "project" / -project
 - WrenchDebugServer::breakOnEntry( waitMs ): the next script code that runs halts on its
   first line, waiting for a debugger to attach first if none is (optionally bounded);
   wrench dbgserver -hold does the same on a PC
@@ -239,8 +252,6 @@ Debugger, rebuilt:
   (launch uploads it unchanged, the embedded source is shown)
 - runtime errors about missing functions name the function: the VM records the name hash
   (wr_getMissingFunctionHash()), Stopped/Ended events carry it, the debugger resolves it
-- not-found handlers (wr_setOnCallbackNotFound / wr_setOnLibCallbackNotFound) can fail
-  the call by setting w->err
 - debug::print / debug::println send to the attached debugger and honour the newline
 - for loops get a line marker on their condition, stepping now visits the loop header
 - line numbers above 16383 are encoded with a prefix codeword instead of wrapping
@@ -292,124 +303,109 @@ Debugger, rebuilt:
   contexts of its own (it stays attached like wrench dbg); expressions take a private
   global by the name the variables view shows (::count@util.w), Add to Watch and Break on
   Value Change on one failed with "unexpected character '@'"
-- WRstr::insert grows its buffer by half, building a long text piece by piece (the
-  disassembler on a large program) was quadratic
-
-Compiler fixes:
-- peephole optimizer merged instructions across jump targets (ternary true arms,
-  case labels), appendBytecode kept a stale opcode cache, optimizer wrote through a
-  cleared cache in the fused compare-and-branch rules
-- SwapTwoToTop stack bookkeeping did not match the VM (wrong operands in expressions)
-- % and ^ precedence, compound assignments are right associative
-- switch bodies ending in a loop or in "if ( x ) { break; }" fell back into the dispatch,
-  negative case labels produced an empty table, case -1 was rejected
-- an empty statement ";" popped a value it never pushed
-- false "bad goto" after 32KB of code in a unit
-- limits of the bytecode format are errors now instead of silent corruption:
-  WR_ERR_too_many_locals, WR_ERR_too_many_functions, WR_ERR_code_too_large,
-  WR_ERR_string_too_long, WR_ERR_duplicate_parameter; a hang with structs of more
-  than 255 members is gone
-- quoted ",", "{", "}" and ";" were treated as punctuation in some places
-- back to back prefix operators (!!x, - -x, ~-x) were rejected
-- enum constants replaced struct member names after '.' and in member declarations,
-  redeclaring a constant with var is WR_ERR_constant_redefined
-- character literals are unsigned ('\xFF' is 255), \a \b \f \v \xHH escapes,
-  exponent notation (1e3, 2.5e-3) and 09.5 style decimals
-- for( var v : <newline> arr ) failed to compile with debug code
-- compile time was quadratic in the source length
-- wr_compileEx() reports the line and column of an error
-
-VM fixes:
-- compound assignment to an array/hash element wrote the result into the right hand
-  variable; comparing an int with a float turned the int variable into a float
-- integer % by zero, INT_MIN / -1 and INT_MIN % -1 crashed; shift counts are taken mod 32;
-  integer operators on floats left stale stack values
-- every hash table leaked its first storage block; a hash table growing while a reference
-  to one of its members was on the stack caused a use after free; removed keys came back
-  with their old values; the GC marked uninitialized stack slots
-- first local of a function was not zeroed
-- contexts and their imports are garbage collected as one group (objects passed between
-  them were freed), an imported function returning a local returned a dangling reference,
-  wr_import into a yielded context or from a native callback overwrote live stack
-- native callbacks may call wr_callFunction on the running context (frames were overwritten)
-- stack overflow checks inside imports, time slices preempting an import call
-- WRENCH_COMPACT: && and || with floats used a stale comparator
-- array sizes are limited to WRENCH_MAX_ARRAY_ELEMENTS instead of overflowing allocations,
-  hash tables stop at the largest table size instead of reading past the prime list
-- wr_destroyContext leaked with a GC hint above 65535, WrenchScheduler leaked tasks that
-  finished without yielding
-- runtime errors go through one exit (WR_VM_FAIL) so the debugger can stop on them
-
-- the GC recursed forever on a container that holds itself
-
-Library / tools:
-- msg:: mailboxes live in their own table (they could overwrite native callbacks)
-- WRValue::asMallocString() reports the length of strings; WRValue::asString() treats
-  maxLen as the buffer size (it wrote one byte past it)
-- hash::exists / hash::remove return 1 or 0
-- math::pow, atan2, fmod and ldexp take their arguments in C order (they were swapped)
-- floats print rounded to at most 6 significant digits (like %g, 16.3818 instead of the
-  truncated 16.38181), with nan / inf / exponent forms; INT_MIN prints correctly
-- str::sprintf / format: %o and %b widths, sign before zero padding and counted in the
-  width, %s of a non-string formats it, l/h/z modifiers skipped, width capped,
-  WRENCH_FLOAT_SPRINTF path no longer overflows; str::printf of unterminated data
-- std::rand over the full int range no longer divides by zero
-- serializer: depth limit (WRENCH_MAX_SERIAL_DEPTH), malformed or truncated input is
-  rejected cleanly, hash tables keep their counts, oversized containers are refused
-  instead of truncated, allocation failures are handled
-- array::clear zero-fills and bounds its count, list/stack/queue push store values (not
-  references to the caller's variables), peek returns a copy, array::truncate checks args
-- io::readFile, io::read, io::write (raw arrays), io::getline fixes; SPIFFS / LittleFS
-  backend compile and memory fixes (untested here)
-- tcp:: library: send used the wrong argument, receive turned errors into huge strings,
-  win32 used file functions on sockets, peek, timeouts, failed host lookups, SIGPIPE
-- WRstr: format reuse of va_list, 80 character boundary, self append, insert, find
-- SimpleLL: removing during iteration skipped elements
-- wrench c/ch/p: globals are named in the bytecode unless -noglobals, -debugsource implies
-  -debug, compile errors exit with a failure status
-- optional wrench_config.h next to wrench.h for project settings
-- the test runner counts output mismatches as failures and runs every test a second time
-  with debug code and an attached debug server; new tests 030/031 and a debugger protocol
-  test suite (tools/test has DAP and LSP end to end tests)
-- GNUmakefile builds the host tools (C++17) alongside the C++98 core
-
-Second review (details and remaining items in docs/review.md):
-- behaviour change: in strict mode a bare unknown name used as a value must name a script
-  function (var t = cout + 1; is WR_ERR_var_not_seen_before_label instead of a hash)
-- new errors WR_ERR_yield_in_native_call (script code a native callback called tried to
-  yield), WR_ERR_too_many_arguments (a call with more than 255 arguments) and
-  WR_ERR_nesting_too_deep (limit WRENCH_MAX_PARSE_DEPTH, default 256)
-- compiler: continue inside foreach jumped outside the program, functions defined inside
-  a block used freed memory, a nested { } ended the enclosing block, foreach past line
-  16383 with -debug, ternary after a postfix operator, f().x and (s).x, variable keys in
-  hash initializers, case (5):, -(-128) and -(-32768) folding, struct initializers past
-  255 values, overflowing number literals are an error, binary and octal literals keep
-  bit 31, escapes and comments no longer read past the source or recurse, -debug keeps
-  stores the next statement overwrites, line markers per function, link() leaks
-- VM: temporaries indexed by member (mk()["k"]) could be collected while referenced,
-  adding two containers left a stale result, calling a library constant as a function,
-  hashing or printing a container that holds itself, hash table counts and growth past
-  the largest prime, float operands in %= |= &= ^= <<= >>=, signed overflow in *= ++ --,
-  _exists on a temporary, wr_callFunction checks the stack, imports keep the caller's
-  time slice, allocation failures no longer leave typed containers without data
-- libraries: io:: on Windows no longer reaches the CRT invalid parameter handler,
-  str::tprint and str::sprintf buffers, io::deleteFile, readFile and writeFile, serializer
-  accounting, validation and growth, sys::importByteCode on bad input, sys::isFunction
-  for constants, %f without float support, str::tol, debug::print without debug code,
-  SPIFFS/LittleFS backend and FastLED fixes (not compiled for ESP32 here)
+- debug server: a request that arrived right after an accepted continue or step, in the
+  same read, was answered as if the target were still stopped
+- behaviour change: a step that returns from a function stops in the caller where the call
+  returns, on the line that made it (it used to run on to the caller's next line marker):
+  after a step out of the first of two calls on one line, step into reaches the second.
+  The VM calls the new debug hook onReturn(); Stopped carries line 0 there, the client
+  takes the line from the top frame's pc
+- VS Code: embedded sources (a module compiled at run time, a context the firmware
+  attached, a program read from the target) are shown from read-only copies in
+  <temp>/wrench-sources/<program hash>/, beside the program's image. Breakpoints set in
+  them stay across sessions (in a virtual document they belonged to one session, moved to
+  an empty document named "." once verified, and setting one again in the next session
+  made a second one), and the next session gives them to the target before the module is
+  imported, so they hit from its first call
+- debug protocol: SetBreakpoints with program 0xFF and a program hash parks breakpoints for
+  a program that is not there yet, they are set when it is added (capability bit 0x20)
+- -debug images name included files relative to the main file (lib/stats.w), no build
+  machine paths
+- behaviour change: wrench dbgserver -target tcp:<port> listens on 127.0.0.1 only;
+  tcp:0.0.0.0:<port> and tcp:<address>:<port> listen on a network on purpose
+  (WrenchDebugTcpServerTransport::listenOn)
+- wrench dbg detaches on every exit, shows stops while idle at the prompt, r while halted
+  terminates and launches again, p x._count works; dbg and dbgserver reject each other's
+  options
 - debugger protocol: retransmissions are matched by type and sequence (a wrapped counter
   dropped commands), a stopped target re-announces the stop on Hello and Pause, Continue
   takes an optional flag to resume a step interrupted by a breakpoint, relaunch rebuilds
   the globals, value handles are reset whenever the program or the run changes
 - WrenchDebugServer::setLinkTimeout( ms ): release a stopped target whose host stopped
   talking (the DAP adapter pings every second while stopped)
-- tools: the DAP adapter survives malformed requests and huge bodies, false breakpoint
+
+Tools:
+- wrench lsp: Language Server Protocol server (compiler diagnostics, hover, completion,
+  signature help, definition, references, rename, outline, folding)
+- tools/vscode-wrench: VS Code extension (grammar, LSP client, debugger integration); its
+  icon is the website's wrench glyph on a navy tile
+- wrench.json describes the host application (its natives and the standard libraries it
+  loads): the language server completes, documents and checks calls against it, the
+  local debug target and dbgserver imitate that host (stand-ins for declared natives,
+  everything else fails as in the application), launch option "project" / -project
+- wrench lsp follows block scope: references, highlights, rename and go to definition tell
+  the variables of two blocks apart (two for ( var i ... ) loops), completion offers only
+  names in view at the cursor; none of it with wrench.nonStrict
+- the wrench tool: exit codes 0, 1 runtime error, 2 compile error, -1 command line or file
+  errors; only the first argument is the command; user error codes print as such; release
+  creates its folder and fails loudly; the unused ca command is gone
+- VS Code: attach defaults to tcp on 127.0.0.1 and names a missing port; no "loaded a new
+  program" notice for its own upload; stopping code without debug information is quick;
+  the wrench.json schema knows "include"; Show Disassembly respects wrench.nonStrict;
+  bundle-exe keeps the platforms it does not bundle
+- the disassembler shows struct member tables as data, decodes line markers and the
+  symbols section
+- the disassembler and the debugger's line table took LLValues, LGValues, GLValues and
+  GGValues for one byte instead of three
+- wrench lsp: hover, go to definition, completion and signature help reach what included
+  files declare (private names excepted); a variable only ever given new S has the type
+  S, completion after p. offers S's members and references / rename of p.member follow S
+- wrench c/ch/p: globals are named in the bytecode unless -noglobals, -debugsource implies
+  -debug, compile errors exit with a failure status
+- the DAP adapter survives malformed requests and huge bodies, false breakpoint
   conditions and logpoints no longer cancel a step, attach recompiles with the target's
   compiler flags, normalized breakpoint paths; wrench dbg no longer hangs on c or kill;
   non-ANSI paths on Windows, serial names and IPv6 hosts with ':', evaluator precedence,
   language server fixes (bare globals in functions, members per struct, unit, nesting,
   incremental indexing, UTF-16 positions, rename checks, UNC paths)
-- the disassembler leaked its context; new tests 032 and 033, a compiler limits test
+- the disassembler leaked its context
+- examples/debug_demo: wrench.json declares label() of the run-time module in the long form
+- examples/arduino/hello_world carried a stale image and printed nothing
+
+Distribution and tests:
+- the single file build (wrench.h + wrench.cpp) is no longer kept in git: the old
+  src/wrench.h|cpp and the copies in examples/arduino are gone. CI
+  (.github/workflows/ci.yml) generates it, checks that it compiles with GCC and MSVC in
+  several configurations, and attaches it to every release; "make dist" (or "wrench
+  release src dist") writes it to dist/
+- discrete_src/ is now src/: the sources live in src/, the generated single file build
+  in dist/
+- tests: the scripts are .w files; the list is tests/test_files.txt (entries relative to
+  it, # comments, numbered from 1 without the old placeholder line); "wrench t
+  [testdir] [number]" runs from any folder and the scripts run inside the test folder, so
+  their scratch files no longer land in the repository root; a listed script that is
+  missing counts as a failure, a missing list is an error instead of a crash; the
+  internal host-seeded-global test read its file inside assert() and did nothing in
+  release builds; unit_test1 (equality of all value kinds) and unit_test2 (string
+  concatenation with globals) were never run and are part of the list now
+- CI builds and tests Linux (default, compact, really compact, sanitizers) and Windows
+  (Debug, Release, debugger / language server / extension tests) on every push
+- removed: the unused serial helpers wr_serialOpen / Send / Receive / Peek / Close
+  (utils/win32_comm.cpp, linux_comm.cpp, arduino_comm.cpp, lib/std_serial.h; the
+  debugger's serial transport stays) and examples/arduino/debug (replaced by
+  examples/debug_targets/arduino_serial)
+- the single file build compiles with WRENCH_WIN32_SERIAL and WRENCH_WIN32_TCP together
+  (windows.h clashed with winsock2.h); the old Makefile is removed, GNUmakefile builds
+  everything; examples/multi_context.cpp passed wr_getYieldInfo arguments in the wrong
+  order
+- optional wrench_config.h next to wrench.h for project settings
+- the test runner counts output mismatches as failures and runs every test a second time
+  with debug code and an attached debug server; new tests 030/031 and a debugger protocol
+  test suite (tools/test has DAP and LSP end to end tests)
+- new tests 032 and 033, a compiler limits test
+- GNUmakefile builds the host tools (C++17) alongside the C++98 core
+- tools/bookcheck runs the examples of the book; CI builds the book and attaches it to
+  releases (wrench-book.zip)
 
 7.2.2 ----------------------------------------------------------------------------------
 - adding ternary expressions

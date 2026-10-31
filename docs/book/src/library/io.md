@@ -354,6 +354,3 @@ these differences:
 * `io::fsync` calls `flush()` on the file.
 * `io::getline` returns -1, the end of the input.
 * `io::readFile` of a directory returns 0.
-
-This backend was fixed from reading the code and has not been compiled
-for ESP32 in the latest review (see `docs/review.md`).

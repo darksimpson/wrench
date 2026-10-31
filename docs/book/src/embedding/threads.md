@@ -214,8 +214,7 @@ choice: they share the registered natives and cost only their own memory
 All allocations go through the global allocator (`wr_setGlobalAllocator()`,
 `malloc()` by default), from whichever thread runs the state. On an ESP32
 with PSRAM, an allocator that takes memory from PSRAM keeps large scripts
-and their data out of the internal RAM (ESP-IDF code, not compiled for this
-book):
+and their data out of the internal RAM (ESP-IDF code):
 
 ```cpp
 #include "esp_heap_caps.h"

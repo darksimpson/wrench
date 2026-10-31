@@ -23,7 +23,7 @@ own program you only need the two files of the single file build (see
 | `examples` | `basic.cpp` and `multi_context.cpp` (host programs), `arduino/hello_world`, `debug_targets` (firmware with the debugger for Arduino, ESP32, ESP-IDF and STM32), `debug_demo` (a VS Code tour) |
 | `win32` | the Visual Studio solution and project |
 | `www` | the old project website and its performance comparisons with other interpreters |
-| `docs` | this book (`docs/book`), the review notes `review.md` and the deferred changes and next tasks, `deferred.md` |
+| `docs` | this book (`docs/book`) and the project's working notes |
 | `.github/workflows` | continuous integration, see [The test suite](testing.md#continuous-integration) |
 
 The library proper (compiler, VM, libraries and the debug server) is the

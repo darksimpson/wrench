@@ -68,9 +68,9 @@ has the details.
 | Scripts | Cover |
 |---|---|
 | `001` to `028` | the language: operators, parsing, control flow, functions, arrays, structs, hash tables, enums, files, `switch`, `yield`, strings, serialization, number corners |
-| `029` to `033` | regressions of the review rounds (library, compiler, VM fixes) |
+| `029` to `033` | regressions of library, compiler and VM fixes |
 | `034` to `038` | short circuit operators, member reads, VM robustness, strings and empty tables, `include` and `private` |
-| `039` to `041` | regressions of the bugs found while writing this book: the compiler (`new` as an expression, struct members named like parameters, `var a[n]`, nested initializers, enum commas), the VM (parameters as values, reads that do not create, float keys, string order) and the library (`sys::isFunction`, `str::format`, `msg::`, `io::`, `tcp::`) |
+| `039` to `041` | regressions of the compiler (`new` as an expression, struct members named like parameters, `var a[n]`, nested initializers, enum commas), the VM (parameters as values, reads that do not create, float keys, string order) and the library (`sys::isFunction`, `str::format`, `msg::`, `io::`, `tcp::`) |
 | `unit_test1.w`, `unit_test2.w` | equality of all value kinds through an imported assertion library (`unit_test_lib.w`), string concatenation with globals |
 
 ### Internal tests
