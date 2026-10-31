@@ -29,6 +29,15 @@
   after a step out of the first of two calls on one line, step into reaches the second.
   The VM calls the new debug hook onReturn(); Stopped carries line 0 there, the client
   takes the line from the top frame's pc
+- VS Code: embedded sources (a module compiled at run time, a context the firmware
+  attached, a program read from the target) are shown from read-only copies in
+  <temp>/wrench-sources/<program hash>/, beside the program's image. Breakpoints set in
+  them stay across sessions (in a virtual document they belonged to one session, moved to
+  an empty document named "." once verified, and setting one again in the next session
+  made a second one), and the next session gives them to the target before the module is
+  imported, so they hit from its first call
+- debug protocol: SetBreakpoints with program 0xFF and a program hash parks breakpoints for
+  a program that is not there yet, they are set when it is added (capability bit 0x20)
 
 Found while writing the book (docs/book, the user documentation, new in this version):
 - behaviour change: parameters are values, changing one (++, +=, assigning another

@@ -191,6 +191,7 @@ enum WrenchDebugFlags
 	WRD_CapSetValue = 1 << 2,
 	WRD_CapHostDriven = 1 << 3, // host firmware calls into the script itself
 	WRD_CapWatch = 1 << 4, // watchpoints, the hello reply ends with u8 max watches, u8 max programs
+	WRD_CapParkedBreakpoints = 1 << 5, // SetBreakpoints for program WRD_NoProgram and a program hash: set when that program comes
 };
 
 enum WrenchDebugFrameKind

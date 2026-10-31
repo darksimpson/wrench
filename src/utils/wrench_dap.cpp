@@ -39,6 +39,7 @@ SOFTWARE.
 #include <string>
 #include <vector>
 #include <map>
+#include <set>
 #include <deque>
 #include <mutex>
 #include <condition_variable>
@@ -48,6 +49,7 @@ SOFTWARE.
 #include <chrono>
 #include <exception>
 #include <filesystem>
+#include <fstream>
 #include <algorithm>
 #include <algorithm>
 
@@ -75,6 +77,8 @@ struct Breakpoint
 	Json source; // as the client named it
 	int requestedLine = 0; // a line of that file
 	std::vector<Binding> bound;
+	uint32_t parkedHash = 0; // in a copy of a program not on the target now: set there by its hash
+	int parkedLine = 0; // the virtual line in that program
 	bool verified = false;
 	std::string message; // why it is not verified
 	std::string condition;
@@ -289,6 +293,8 @@ private:
 	bool hasSource( int program, int file );
 	Json sourceJson( int program, int file );
 	int embeddedReference( int program, int file );
+	std::string embeddedFile( int program, int file );
+	const WrenchDebugProgram* copiedProgram( uint32_t hash );
 	std::vector<std::pair<int, int> > filesForSource( const Json& source, bool* known = nullptr );
 	void endSession( int exitCode );
 
@@ -331,6 +337,9 @@ private:
 	};
 	static const int FirstEmbedded = 1000;
 	std::vector<EmbeddedSource> m_embedded;
+	std::map<std::pair<uint32_t, int>, std::string> m_embeddedFiles; // (program hash, file) written this session
+	std::map<uint32_t, std::unique_ptr<WrenchDebugProgram> > m_copiedPrograms; // read back from a copy's folder, null when none
+	std::set<uint32_t> m_parkedSent; // program hashes the target holds parked breakpoints for
 
 	std::vector<Breakpoint> m_breakpoints;
 	std::vector<DataBreakpoint> m_dataBreakpoints;
@@ -504,6 +513,201 @@ static bool wr_localFile( const WrenchDebugProgram::SourceFile& f )
 	}
 }
 
+// Embedded sources (a module compiled at run time, a program read from the
+// target) are written to <temp>/wrench-sources/<program hash>/ as read-only
+// files, so the client treats them as files. A breakpoint set in a virtual
+// document (sourceReference) belongs to its session: the next session opens
+// another document, the breakpoint no longer shows there and setting it
+// again makes a second one. A file stays: the same text compiles to the same
+// hash, so a module finds its file again, and its breakpoints with it
+static const char* c_embeddedFolder = "wrench-sources";
+
+static std::string wr_hashFolder( uint32_t hash )
+{
+	char text[16];
+	snprintf( text, sizeof(text), "%08x", (unsigned)hash );
+	return text;
+}
+
+// the name of each file of a program in its folder: its own, or one for a
+// file without a usable name (a module compiled from a string has none); a
+// second file of a name gets its index in front
+static std::vector<std::string> wr_embeddedNames( const std::vector<WrenchDebugProgram::SourceFile>& files )
+{
+	std::vector<std::string> names;
+	for ( size_t f = 0; f < files.size(); ++f )
+	{
+		std::string name = wr_baseName( files[f].name );
+		if ( name.empty() || name == "." || name == ".." )
+		{
+			name = f > 0 ? "file" + std::to_string( f ) + ".w" : std::string( "module.w" );
+		}
+		if ( std::find(names.begin(), names.end(), name) != names.end() )
+		{
+			name = std::to_string( f ) + "-" + name;
+		}
+		names.push_back( name );
+	}
+	return names;
+}
+
+// which file of a program a copy's file name is, -1 for none
+static int wr_embeddedFileIndex( const std::vector<WrenchDebugProgram::SourceFile>& files, const std::string& name )
+{
+	std::vector<std::string> names = wr_embeddedNames( files );
+	for ( size_t f = 0; f < names.size(); ++f )
+	{
+		if ( wr_samePath(names[f], name) )
+		{
+			return (int)f;
+		}
+	}
+	return -1;
+}
+
+// the image of a program, kept beside the copies of its files: a later
+// session reads it to place breakpoints in a copy before the program is on
+// the target again
+static const char* c_embeddedImage = "image.bin";
+
+// a read-only file with this content; one there already is written again
+// only when it differs (the hash in the folder name names the content, a
+// difference means it was changed by hand)
+static bool wr_writeReadOnly( const std::filesystem::path& p, const std::string& data )
+{
+	std::error_code ec;
+	std::string existing;
+	std::ifstream in( p, std::ios::binary );
+	if ( in )
+	{
+		existing.assign( std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>() );
+	}
+	in.close();
+	if ( existing == data && std::filesystem::exists(p, ec) )
+	{
+		return true;
+	}
+	std::filesystem::permissions( p, std::filesystem::perms::owner_write, std::filesystem::perm_options::add, ec );
+	std::ofstream out( p, std::ios::binary | std::ios::trunc );
+	out.write( data.data(), (std::streamsize)data.size() );
+	out.close();
+	bool ok = !out.fail();
+	std::filesystem::permissions( p, std::filesystem::perms::owner_write | std::filesystem::perms::group_write | std::filesystem::perms::others_write,
+		std::filesystem::perm_options::remove, ec );
+	return ok;
+}
+
+static std::filesystem::path wr_embeddedFolder( uint32_t hash, std::error_code& ec )
+{
+	std::filesystem::path temp = std::filesystem::temp_directory_path( ec );
+	return ec ? std::filesystem::path() : temp / c_embeddedFolder / wr_hashFolder( hash );
+}
+
+// a path in the folder of embedded sources: the program's hash and the file
+// name. Only the last two folders count (the temp folder may be named in
+// another form, a short 8.3 name on Windows)
+static bool wr_embeddedPathParts( const std::string& path, uint32_t& hash, std::string& name )
+{
+	if ( path.empty() )
+	{
+		return false;
+	}
+	try
+	{
+		std::filesystem::path p = std::filesystem::u8path( path );
+		std::string folder = p.parent_path().filename().u8string();
+		if ( p.parent_path().parent_path().filename().u8string() != c_embeddedFolder || folder.size() != 8
+			|| folder.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos )
+		{
+			return false;
+		}
+		hash = (uint32_t)strtoul( folder.c_str(), nullptr, 16 );
+		name = p.filename().u8string();
+		return true;
+	}
+	catch ( const std::exception& )
+	{
+		return false;
+	}
+}
+
+// the file an embedded source is shown from, written when this session first
+// needs it; empty when it cannot be, the source then goes by sourceReference
+std::string DapServer::embeddedFile( int program, int file )
+{
+	const WrenchDebugProgram& s = symbols( program );
+	const std::vector<WrenchDebugProgram::SourceFile>& files = s.files();
+	if ( !s.valid() || file < 0 || file >= (int)files.size() || !files[file].hasText )
+	{
+		return std::string();
+	}
+	std::pair<uint32_t, int> key( s.hash(), file );
+	auto known = m_embeddedFiles.find( key );
+	if ( known != m_embeddedFiles.end() )
+	{
+		return known->second;
+	}
+
+	std::string result;
+	try
+	{
+		std::error_code ec;
+		std::filesystem::path folder = wr_embeddedFolder( s.hash(), ec );
+		if ( !ec )
+		{
+			std::filesystem::create_directories( folder, ec );
+			std::filesystem::path p = folder / std::filesystem::u8path( wr_embeddedNames(files)[file] );
+			const std::vector<uint8_t>& image = s.bytecode();
+			if ( wr_writeReadOnly(p, files[file].text) )
+			{
+				wr_writeReadOnly( folder / c_embeddedImage, std::string(image.begin(), image.end()) );
+				std::filesystem::path full = std::filesystem::canonical( p, ec );
+				result = (ec ? std::filesystem::absolute(p) : full).lexically_normal().u8string();
+			}
+		}
+	}
+	catch ( const std::exception& )
+	{
+		result.clear();
+	}
+	m_embeddedFiles[key] = result;
+	return result;
+}
+
+// a program not on the target now, read back from the image beside the
+// copies of its files (an earlier session wrote them); null when there is none
+const WrenchDebugProgram* DapServer::copiedProgram( uint32_t hash )
+{
+	auto known = m_copiedPrograms.find( hash );
+	if ( known != m_copiedPrograms.end() )
+	{
+		return known->second.get();
+	}
+	std::unique_ptr<WrenchDebugProgram> program;
+	try
+	{
+		std::error_code ec;
+		std::filesystem::path p = wr_embeddedFolder( hash, ec ) / c_embeddedImage;
+		std::ifstream in( p, std::ios::binary );
+		if ( !ec && in )
+		{
+			std::vector<uint8_t> image( (std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>() );
+			program.reset( new WrenchDebugProgram );
+			if ( !program->parse(image.data(), (uint32_t)image.size()) || program->hash() != hash )
+			{
+				program.reset();
+			}
+		}
+	}
+	catch ( const std::exception& )
+	{
+		program.reset();
+	}
+	const WrenchDebugProgram* result = program.get();
+	m_copiedPrograms[hash] = std::move( program );
+	return result;
+}
+
 // a stack frame in this file can show its source
 bool DapServer::hasSource( int program, int file )
 {
@@ -552,7 +756,15 @@ Json DapServer::sourceJson( int program, int file )
 			name = wr_baseName( f.name ) + " of " + name;
 		}
 		s.set( "name", name + " (embedded source)" );
-		s.set( "sourceReference", embeddedReference(program, file) );
+		std::string copy = embeddedFile( program, file );
+		if ( !copy.empty() )
+		{
+			s.set( "path", copy );
+		}
+		else
+		{
+			s.set( "sourceReference", embeddedReference(program, file) );
+		}
 		return s;
 	}
 
@@ -561,7 +773,15 @@ Json DapServer::sourceJson( int program, int file )
 	if ( m_sourceFromTarget )
 	{
 		s.set( "name", file == 0 ? m_sourceName : wr_baseName(included) + " (embedded source)" );
-		s.set( "sourceReference", file + 1 );
+		std::string copy = embeddedFile( 0, file );
+		if ( !copy.empty() )
+		{
+			s.set( "path", copy );
+		}
+		else
+		{
+			s.set( "sourceReference", file + 1 );
+		}
 	}
 	else if ( file == 0 )
 	{
@@ -617,8 +837,30 @@ std::vector<std::pair<int, int> > DapServer::filesForSource( const Json& source,
 		return found;
 	}
 
-	const std::vector<WrenchDebugProgram::SourceFile>& files = m_program.files();
+	// a copy of an embedded source: the files of the programs with its hash
+	// (none while that module is not loaded, it binds when it is)
 	std::string path = source["path"].asString( "" );
+	uint32_t copyHash = 0;
+	std::string copyName;
+	if ( wr_embeddedPathParts(path, copyHash, copyName) )
+	{
+		for ( int p : m_programs.ids() )
+		{
+			const WrenchDebugProgram& s = symbols( p );
+			int f = (s.valid() && s.hash() == copyHash) ? wr_embeddedFileIndex( s.files(), copyName ) : -1;
+			if ( f >= 0 )
+			{
+				found.push_back( std::make_pair(p, f) );
+			}
+		}
+		if ( known )
+		{
+			*known = true;
+		}
+		return found;
+	}
+
+	const std::vector<WrenchDebugProgram::SourceFile>& files = m_program.files();
 	if ( m_sourceFromTarget )
 	{
 		if ( ref >= 1 && ref <= (int)files.size() )
@@ -974,6 +1216,13 @@ bool DapServer::sendBreakpoints()
 	{
 		lines[p];
 	}
+	// and those parked for programs not on the target now, by their hash (the
+	// ones sent before and not wanted any more go)
+	std::map<uint32_t, std::vector<int> > parked;
+	for ( uint32_t hash : m_parkedSent )
+	{
+		parked[hash];
+	}
 	int total = 0;
 	for ( Breakpoint& bp : m_breakpoints )
 	{
@@ -993,11 +1242,35 @@ bool DapServer::sendBreakpoints()
 			those.push_back( bp.bound[b].line );
 			++total;
 		}
+		if ( bp.verified && !m_noDebug && bp.bound.empty() && bp.parkedHash )
+		{
+			std::vector<int>& those = parked[bp.parkedHash];
+			if ( std::find(those.begin(), those.end(), bp.parkedLine) == those.end() )
+			{
+				if ( total >= m_info.maxBreakpoints )
+				{
+					bp.verified = false;
+					bp.message = "the target has no room for more breakpoints";
+					continue;
+				}
+				those.push_back( bp.parkedLine );
+				++total;
+			}
+		}
 	}
 	bool ok = true;
 	for ( const auto& p : lines )
 	{
 		ok = m_client->setBreakpoints( p.second, p.first ) && ok;
+	}
+	m_parkedSent.clear();
+	for ( const auto& p : parked )
+	{
+		ok = m_client->setParkedBreakpoints( p.second, p.first ) && ok;
+		if ( !p.second.empty() )
+		{
+			m_parkedSent.insert( p.first );
+		}
 	}
 	return ok;
 }
@@ -1022,6 +1295,29 @@ void DapServer::bindBreakpoint( Breakpoint& bp )
 	}
 	bp.verified = !bp.bound.empty();
 	bp.message.clear();
+	bp.parkedHash = 0;
+	bp.parkedLine = 0;
+
+	// in a copy of a program not on the target now (a module from an earlier
+	// session): the image kept beside the copy says which line of that
+	// program it is, the target sets it by the program's hash when the
+	// program comes, before any of its code runs
+	uint32_t hash = 0;
+	std::string name;
+	if ( !bp.verified && files.empty() && (m_info.caps & WRD_CapParkedBreakpoints)
+		&& wr_embeddedPathParts(bp.source["path"].asString(""), hash, name) )
+	{
+		const WrenchDebugProgram* copied = copiedProgram( hash );
+		int file = copied ? wr_embeddedFileIndex( copied->files(), name ) : -1;
+		int line = file >= 0 ? copied->breakableLine( file, bp.requestedLine ) : -1;
+		if ( line > 0 )
+		{
+			bp.parkedHash = hash;
+			bp.parkedLine = line;
+			bp.verified = true;
+		}
+	}
+
 	if ( !bp.verified )
 	{
 		bp.message = !files.empty() ? "no code at or after this line"
@@ -1043,8 +1339,20 @@ Json DapServer::breakpointJson( const Breakpoint& bp, bool sent )
 		symbols( bp.bound[0].program ).locate( bp.bound[0].line, file, line );
 		source = sourceJson( bp.bound[0].program, file );
 	}
+	else if ( bp.parkedHash && copiedProgram(bp.parkedHash) )
+	{
+		int file = 0;
+		copiedProgram( bp.parkedHash )->locate( bp.parkedLine, file, line );
+	}
 	b.set( "line", line - (m_linesStartAt1 ? 0 : 1) );
-	b.set( "source", source );
+	// VS Code places a verified breakpoint by the path of the source given
+	// here: an embedded source has none, the breakpoint would move to an
+	// empty document named "."; without it the client keeps the document
+	// the breakpoint was set in
+	if ( source["sourceReference"].asInt(0) <= 0 )
+	{
+		b.set( "source", source );
+	}
 	if ( !bp.verified )
 	{
 		b.set( "message", bp.message );

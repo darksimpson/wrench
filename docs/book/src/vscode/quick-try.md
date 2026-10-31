@@ -120,8 +120,9 @@ The program runs in a VM inside the debug adapter. Things to look at:
 * In `lib/stats.w` the Globals scope shows the private variables as
   `count@stats.w` and `sum@stats.w`. Right-click one and choose
   **Break on Value Change** to stop wherever it changes.
-* Step into `label()`: it opens as a read-only document "import 1
-  (embedded source)", the module the program compiled while running.
+* Step into `label()`: it opens from a read-only copy, `module.w`, of the
+  module the program compiled while running ("import 1 (embedded source)"
+  in the call stack). A breakpoint set there stays for the next sessions.
 * The Debug Console shows what the program prints: `total = 68 cm2` and
   `average = 22`.
 

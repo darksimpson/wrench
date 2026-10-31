@@ -328,6 +328,11 @@ public:
 	// replaces one program's breakpoints (virtual lines)
 	bool setBreakpoints( const std::vector<int>& lines, int program = 0 );
 
+	// replaces the breakpoints parked for a program that is not on the target
+	// now (by its hash): they are set when it comes, before any of its code
+	// runs (needs WRD_CapParkedBreakpoints)
+	bool setParkedBreakpoints( const std::vector<int>& lines, uint32_t programHash );
+
 	// watchpoints: the target stops (WRD_StopWatch) on the line after one
 	// that changed the value. A local can only be named while stopped, and
 	// goes away (a WatchRemoved event) when its call returns

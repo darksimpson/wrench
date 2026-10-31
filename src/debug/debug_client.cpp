@@ -1283,6 +1283,19 @@ bool WrenchDebugClient::setBreakpoints( const std::vector<int>& lines, int progr
 	return request( WRD_MsgSetBreakpoints, payload, 0 );
 }
 
+bool WrenchDebugClient::setParkedBreakpoints( const std::vector<int>& lines, uint32_t programHash )
+{
+	std::vector<uint8_t> payload;
+	payload.push_back( (uint8_t)WRD_NoProgram );
+	wr_put32( payload, programHash );
+	wr_put16( payload, (uint16_t)lines.size() );
+	for ( int line : lines )
+	{
+		wr_put32( payload, (uint32_t)line );
+	}
+	return request( WRD_MsgSetBreakpoints, payload, 0 );
+}
+
 bool WrenchDebugClient::addWatch( const WrenchDebugWatchPath& path, int& id )
 {
 	id = 0;

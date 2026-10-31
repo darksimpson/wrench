@@ -326,8 +326,9 @@ side by side and modules a script imports at run time. In VS Code:
 * The Modules view (in the `...` menu of Run and Debug) lists every
   program.
 * Breakpoints work in every program's files. A module compiled from a
-  string opens as a read-only document "import 1 (embedded source)", which
-  takes breakpoints too.
+  string opens from a read-only copy (`module.w` under `wrench-sources` in
+  the temp folder, "import 1 (embedded source)" in the call stack), which
+  takes breakpoints too; they stay for the next sessions.
 
 [Several files, programs and modules](programs.md) has the details and a
 walkthrough of `examples/debug_demo`.

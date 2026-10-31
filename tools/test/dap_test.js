@@ -379,13 +379,16 @@ async function testImportedModule() {
 	assert.strictEqual(inModule.name, 'triple');
 	assert.strictEqual(inModule.line, 3);
 	assert.strictEqual(inModule.moduleId, 1);
-	assert(inModule.source.sourceReference >= 1, JSON.stringify(inModule.source));
+	// the module's source is shown from a read-only copy named by its hash,
+	// the same file in every session
+	const modulePath = inModule.source.path;
+	assert(/wrench-sources[\\/][0-9a-f]{8}[\\/]module\.w$/.test(modulePath || ''), JSON.stringify(inModule.source));
+	assert(!inModule.source.sourceReference, JSON.stringify(inModule.source));
 	assert(/import 1/.test(inModule.source.name), inModule.source.name);
 	assert.strictEqual(st.stackFrames[1].line, 3);
 	assert(path.resolve(st.stackFrames[1].source.path).toLowerCase() === path.resolve(program).toLowerCase());
-
-	const text = await dap.ok('source', { source: inModule.source, sourceReference: inModule.source.sourceReference });
-	assert(/var t = x \* 3;/.test(text.content), text.content);
+	assert(/var t = x \* 3;/.test(fs.readFileSync(modulePath, 'utf8')));
+	assert.strictEqual(fs.statSync(modulePath).mode & 0o222, 0, 'the copy is read-only');
 
 	const scopes = await dap.ok('scopes', { frameId: 1 });
 	assert.deepStrictEqual(scopes.scopes.map((s) => s.name), ['Locals', 'Globals of import 1']);
@@ -400,6 +403,8 @@ async function testImportedModule() {
 	const bps = await dap.ok('setBreakpoints', { source: inModule.source, breakpoints: [{ line: 4 }] });
 	assert(bps.breakpoints[0].verified, JSON.stringify(bps));
 	assert.strictEqual(bps.breakpoints[0].line, 4);
+	// VS Code places a verified breakpoint by the path in the reply
+	assert.strictEqual(bps.breakpoints[0].source.path, modulePath, JSON.stringify(bps));
 	await dap.ok('continue', { threadId: 1 });
 	const hit = await dap.waitEvent('stopped');
 	assert.strictEqual(hit.reason, 'breakpoint');
@@ -413,6 +418,28 @@ async function testImportedModule() {
 	assert(/15/.test(dap.output()), dap.output());
 	await dap.ok('disconnect', { terminateDebuggee: true });
 	dap.close();
+
+	// the next session: VS Code sends the breakpoint kept in the copy before
+	// the module exists. The image beside the copy places it, the target
+	// holds it by the module's hash and sets it when the module is imported:
+	// the call right after the import stops
+	const next = new DapClient();
+	await next.ok('initialize', { adapterID: 'wrench' });
+	await next.ok('launch', { program });
+	await next.waitEvent('initialized');
+	const kept = await next.ok('setBreakpoints', { source: { name: 'module.w', path: modulePath }, breakpoints: [{ line: 4 }] });
+	assert(kept.breakpoints[0].verified && kept.breakpoints[0].line === 4, JSON.stringify(kept));
+	await next.ok('configurationDone');
+	const bound = await next.waitEvent('breakpoint', (b) => b.breakpoint.id === kept.breakpoints[0].id && b.breakpoint.verified);
+	assert.strictEqual(bound.breakpoint.source.path, modulePath, JSON.stringify(bound));
+	const again = await next.waitEvent('stopped');
+	assert.strictEqual(again.reason, 'breakpoint');
+	const st3 = await next.ok('stackTrace', { threadId: 1 });
+	assert.strictEqual(st3.stackFrames[0].name, 'triple');
+	assert.strictEqual(st3.stackFrames[0].line, 4);
+	assert.strictEqual(st3.stackFrames[0].source.path, modulePath);
+	await next.ok('disconnect', { terminateDebuggee: true });
+	next.close();
 }
 
 async function testRuntimeError() {
@@ -505,8 +532,11 @@ async function testBinaryProgram() {
 		let stopped = await dap.waitEvent('stopped');
 		assert.strictEqual(stopped.reason, 'entry');
 		let st = await dap.ok('stackTrace', { threadId: 1 });
-		assert.strictEqual(st.stackFrames[0].source.sourceReference, 1);
+		// shown from a copy named by the program's hash; reference 1 still
+		// names the main file (the breakpoint above, the source request)
+		assert(/wrench-sources[\\/][0-9a-f]{8}[\\/]sample\.w$/.test(st.stackFrames[0].source.path || ''), JSON.stringify(st.stackFrames[0].source));
 		assert(/embedded source/.test(st.stackFrames[0].source.name), st.stackFrames[0].source.name);
+		assert(/function outer/.test(fs.readFileSync(st.stackFrames[0].source.path, 'utf8')));
 		const src = await dap.ok('source', { sourceReference: 1 });
 		assert(/function outer/.test(src.content));
 

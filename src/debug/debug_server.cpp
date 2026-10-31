@@ -168,6 +168,13 @@ static uint32_t wr_debugDepthKey( WRContext* context, const WRValue* frameBase )
 	return frameBase ? (uint32_t)(frameBase - context->stack) + 1 : 0;
 }
 
+// a breakpoint is one of a program's, or for WRD_NoProgram one parked for
+// the program with this hash
+static bool wr_breakpointOf( const WrenchDebugBreakpoint& bp, uint8_t program, uint32_t hash )
+{
+	return program == WRD_NoProgram ? (bp.program == WRD_NoProgram && bp.parkedHash == hash) : bp.program == program;
+}
+
 class WrenchDebugServerImpl
 {
 public:
@@ -1306,7 +1313,7 @@ void WrenchDebugServerImpl::process( WrenchDebugServerPrivate* I, const WrenchDe
 			I->lastRequestType = 0;
 			I->tickFlags |= WRD_TickClientAttached;
 
-			uint8_t caps = WRD_CapSetValue | WRD_CapWatch;
+			uint8_t caps = WRD_CapSetValue | WRD_CapWatch | WRD_CapParkedBreakpoints;
 			if ( I->launchable )
 			{
 				caps |= WRD_CapLaunch;
@@ -1571,15 +1578,22 @@ void WrenchDebugServerImpl::process( WrenchDebugServerPrivate* I, const WrenchDe
 		case WRD_MsgSetBreakpoints:
 		{
 			// replaces one program's breakpoints, the others' stay (parked
-			// ones make room when there is none)
+			// ones make room when there is none). Program WRD_NoProgram and
+			// a program hash: the parked ones of a program not here, set
+			// when it comes (a module the client knows from an earlier run,
+			// its breakpoints are in place before any of its code runs)
 			uint8_t program = in.u8();
+			uint32_t hash = (program == WRD_NoProgram) ? in.u32() : 0;
 			uint16_t count = in.u16();
 			uint16_t others = 0;
 			uint16_t parked = 0;
 			for ( uint16_t b = 0; b < I->breakpointCount; ++b )
 			{
-				parked += (I->breakpoints[b].program == WRD_NoProgram) ? 1 : 0;
-				others += (I->breakpoints[b].program != program) ? 1 : 0;
+				if ( !wr_breakpointOf(I->breakpoints[b], program, hash) )
+				{
+					++others;
+					parked += (I->breakpoints[b].program == WRD_NoProgram) ? 1 : 0;
+				}
 			}
 			if ( count > WRENCH_DEBUG_MAX_BREAKPOINTS - (others - parked) )
 			{
@@ -1592,7 +1606,7 @@ void WrenchDebugServerImpl::process( WrenchDebugServerPrivate* I, const WrenchDe
 			{
 				lines[i] = in.i32();
 			}
-			if ( in.bad() || program >= WRENCH_DEBUG_MAX_PROGRAMS )
+			if ( in.bad() || (program >= WRENCH_DEBUG_MAX_PROGRAMS && (program != WRD_NoProgram || !hash)) )
 			{
 				replyError( I, seq, WRD_ErrBadRequest );
 				return;
@@ -1603,11 +1617,15 @@ void WrenchDebugServerImpl::process( WrenchDebugServerPrivate* I, const WrenchDe
 			for ( uint16_t b = 0; b < I->breakpointCount; ++b )
 			{
 				const WrenchDebugBreakpoint& bp = I->breakpoints[b];
+				if ( wr_breakpointOf(bp, program, hash) )
+				{
+					continue;
+				}
 				if ( bp.program == WRD_NoProgram && drop > 0 )
 				{
 					--drop;
 				}
-				else if ( bp.program != program )
+				else
 				{
 					I->breakpoints[kept++] = bp;
 				}
@@ -1615,7 +1633,7 @@ void WrenchDebugServerImpl::process( WrenchDebugServerPrivate* I, const WrenchDe
 			for ( uint16_t i = 0; i < count; ++i )
 			{
 				I->breakpoints[kept].program = program;
-				I->breakpoints[kept].parkedHash = 0;
+				I->breakpoints[kept].parkedHash = hash;
 				I->breakpoints[kept++].line = lines[i];
 			}
 			I->breakpointCount = kept;

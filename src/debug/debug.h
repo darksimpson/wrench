@@ -117,7 +117,7 @@ struct WrenchDebugImportCall
 
 struct WrenchDebugBreakpoint
 {
-	uint8_t program; // WRD_NoProgram: parked, its program is gone
+	uint8_t program; // WRD_NoProgram: parked, its program is gone or not here yet
 	int32_t line;
 	uint32_t parkedHash; // of the program a parked breakpoint was in, it is set again when that comes back
 };

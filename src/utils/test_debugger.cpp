@@ -1499,6 +1499,23 @@ void testImportedModule()
 	DCHECK( client.resume() );
 	DCHECK( waitFor(client, WrenchDebugEvent::Ended, e, &output) );
 	DCHECK( output == "15\n" );
+
+	// a client that knows the module from an earlier session sets its
+	// breakpoints by its hash before it is imported: parked, set when it
+	// comes, so the call right after the import stops on them
+	DCHECK( info.caps & WRD_CapParkedBreakpoints );
+	DCHECK( programs.sync(client) && programs.get(1) );
+	uint32_t moduleHash = programs.get( 1 ) ? programs.get( 1 )->hash() : 0;
+	DCHECK( client.setBreakpoints({}, 1) );
+	DCHECK( client.setParkedBreakpoints({ 3 }, moduleHash) );
+	output.clear();
+	DCHECK( client.launch(false) );
+	DCHECK( waitFor(client, WrenchDebugEvent::Stopped, e, &output) && e.program == 1 && e.line == 3 );
+	DCHECK( client.setParkedBreakpoints({}, moduleHash) );
+	DCHECK( client.setBreakpoints({}, 1) );
+	DCHECK( client.resume() );
+	DCHECK( waitFor(client, WrenchDebugEvent::Ended, e, &output) );
+	DCHECK( output == "15\n" );
 	target.stop();
 }
 

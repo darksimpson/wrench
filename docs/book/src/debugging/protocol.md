@@ -84,7 +84,7 @@ firmware called `setAbortOnDisconnect( true )`.
 | 0x04 | LoadData | u32 offset, bytes | |
 | 0x05 | LoadEnd | | u32 program hash |
 | 0x06 | ReadProgram | u8 program, u8 section (0 bytecode, 1 symbols, 2 source), u32 offset, u16 max | u32 total, u16 n, n bytes |
-| 0x07 | SetBreakpoints | u8 program, u16 count, count x i32 line | |
+| 0x07 | SetBreakpoints | u8 program, u16 count, count x i32 line; or 0xFF, u32 program hash, u16 count, count x i32 line | |
 | 0x08 | Launch | u8 flags (1 stop on entry) | |
 | 0x09 | Continue | optional u8 flags (1 carry on with the step a breakpoint interrupted) | |
 | 0x0A | Pause | | |
@@ -153,6 +153,14 @@ the context the firmware makes of it. Error 10 when the lines do not fit
 into `WRENCH_DEBUG_MAX_BREAKPOINTS` beside the other programs'
 (parked breakpoints of modules give way), 2 for a program number out of
 range. Lines are [virtual lines](#programs-made-of-several-files).
+
+Program 0xFF followed by a program hash replaces the breakpoints parked
+for the program with that hash (capability bit 5): they are set when a
+program with that hash is added, before any of its code runs. A client
+that knows a module from an earlier session (the VS Code adapter keeps
+its image) sends its breakpoints this way, so they hit even when the
+program calls into the module right after importing it. Hash 0 is error
+2.
 
 **Launch.** Asks the firmware to run program 0's global code from the
 start. The server replies at once; the run follows when the firmware next
@@ -278,6 +286,7 @@ The capabilities byte in the Hello reply:
 | 2 | 0x04 | set value: accepts SetLocal, SetGlobal, SetChild (always set) |
 | 3 | 0x08 | host driven: the firmware calls into the script itself (`setHostDriven( true )`), so the session goes on after the global code ends |
 | 4 | 0x10 | watch: AddWatch and RemoveWatch; the Hello reply's "max watches" is meaningful (always set) |
+| 5 | 0x20 | parked breakpoints: SetBreakpoints takes program 0xFF and a program hash (always set) |
 
 The Hello reply always ends with "max watches" and "max programs"; a
 client reads "max watches" only when bit 4 is set.
@@ -392,8 +401,10 @@ answers one record per program:
 | u8 n, n bytes | the name the firmware gave `attach()`, may be empty |
 
 When a module goes away its breakpoints are kept by the module's bytecode
-hash and set again when a module with the same hash is added; a
-SetBreakpoints that needs their room drops them. Other programs'
+hash and set again when a module with the same hash is added; a client can
+park breakpoints for a hash the same way before the module was ever there
+(SetBreakpoints with program 0xFF). A SetBreakpoints that needs their room
+drops them. Other programs'
 breakpoints go with them.
 
 ## Watch paths

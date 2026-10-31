@@ -105,9 +105,11 @@ debug code, the source and global names (as `wrench c -debugsource`), with
 
 A `.bin` is recognized by its checksum and used as it is: it must have
 been compiled with `-debugsource` to show its source, and with `-debug` at
-least to stop at breakpoints. The source shown is the one embedded, in a
-read-only document `<name>.bin (embedded source)`. The adapter says so
-when the image lacks either.
+least to stop at breakpoints. The source shown is the one embedded, from a
+read-only copy under `wrench-sources` in the temp folder (in a folder
+named by the program's hash, so breakpoints set there stay for the next
+sessions of the same build). The adapter says so when the image lacks
+either.
 
 For an attach, `program` is optional:
 

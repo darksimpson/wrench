@@ -151,9 +151,16 @@ until the importer is reset or destroyed:
 * A module given to `sys::importByteCode()` is debuggable when it was
   compiled with `-debug`, and shows its source when compiled with
   `-debugsource`.
-* A module compiled from a string has no file. VS Code shows it as a
-  read-only document "import 1 (embedded source)", which takes breakpoints
-  like a file; `wrench dbg` calls it "import 1".
+* A module compiled from a string has no file. VS Code shows its source
+  from a read-only copy, `module.w` in a folder named by the module's
+  bytecode hash under `wrench-sources` in the temp folder; the call stack
+  calls it "import 1 (embedded source)". Breakpoints set in the copy stay
+  across sessions: the next session gives them to the target before the
+  module is imported, so they hit from its first call. A changed module
+  text is a new hash and a new copy. `wrench dbg` calls it "import 1".
+  Other sources the adapter only has from the target (a context the
+  firmware attached, a program read back for an attach) get copies the
+  same way.
 * A call from a program into a function of a module it imported shows both
   in the call stack, and stepping goes in and out of the module. The stack
   goes through up to `WRENCH_DEBUG_MAX_IMPORT_CALLS` (8) nested calls
@@ -201,9 +208,10 @@ In Run and Debug pick **Demo 1: main.w in a local VM** and press F5.
 4. Right-click `sum@stats.w`, **Break on Value Change**, remove the line
    breakpoints and continue: it stops wherever `sum` changes.
 5. Remove that one too (Breakpoints view), set a breakpoint on line 23 of
-   `main.w`, continue and Step Into. `label()` opens as the read-only
-   document "import 1 (embedded source)", which takes breakpoints like a
-   file. The Modules view lists `main.w` and `import 1`.
+   `main.w`, continue and Step Into. `label()` opens from the read-only
+   copy `module.w` ("import 1 (embedded source)" in the call stack), which
+   takes breakpoints like a file, also for the next sessions. The Modules
+   view lists `main.w` and `import 1`.
 6. Continue: the Debug Console shows `total = 68 cm2` and `average = 22`.
 
 The same in the console, `wrench dbg main.w` in that folder:
