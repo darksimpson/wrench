@@ -130,7 +130,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: wrench-book
-          path: docs/book/book
+          path: docs/book/out
 
   release:
     name: Publish release

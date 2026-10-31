@@ -80,7 +80,7 @@ lists what changed between versions.
 To read the book offline, download `wrench-book.zip` from a GitHub
 release, or build it with
 [mdBook](https://rust-lang.github.io/mdBook/) and open
-`docs/book/book/index.html`:
+`docs/book/out/index.html`:
 
 ```bash
 mdbook build docs/book

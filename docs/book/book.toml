@@ -5,7 +5,7 @@ description = "The wrench scripting language: the language, embedding it in your
 language = "en"
 
 [build]
-build-dir = "book"
+build-dir = "out"
 
 [output.html]
 default-theme = "light"

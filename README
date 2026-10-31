@@ -140,7 +140,7 @@ The Wrench Book (docs/book) covers the language, the standard library,
 embedding wrench in an application or firmware, debugging, the VS Code
 extension and the internals. Read it in the repository starting at
 docs/book/src/introduction.md, or build it with mdBook
-(https://rust-lang.github.io/mdBook/) and open docs/book/book/index.html,
+(https://rust-lang.github.io/mdBook/) and open docs/book/out/index.html,
 which works offline:
 
 	mdbook build docs/book

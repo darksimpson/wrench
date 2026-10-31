@@ -3,7 +3,7 @@
 The book is built with [mdBook](https://rust-lang.github.io/mdBook/) 0.5:
 
 ```
-mdbook build docs/book      # writes docs/book/book, open index.html from disk
+mdbook build docs/book      # writes docs/book/out, open index.html from disk
 mdbook serve docs/book      # live preview on http://localhost:3000
 ```
 
