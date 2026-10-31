@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="560" viewBox="0 0 800 560" font-family="Helvetica, Arial, sans-serif" font-size="13">
+	<defs>
+		<marker id="arrow" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+			<path d="M0,0 L10,4 L0,8 z" fill="#444444"/>
+		</marker>
+	</defs>
+
+	<rect x="0" y="0" width="800" height="560" fill="#ffffff"/>
+
+	<text x="20" y="28" font-weight="bold" font-size="15">A wrench bytecode image, from offset 0 to the end</text>
+	<text x="20" y="48" font-size="12" fill="#555555">All numbers little endian. Grey sections are present only when the flag next to them is set.</text>
+
+	<!-- header -->
+	<rect x="150" y="64" width="400" height="50" rx="4" fill="#e3effa" stroke="#4a78a8"/>
+	<text x="162" y="84" font-weight="bold">Header, 3 bytes</text>
+	<text x="162" y="102" font-size="12">u8 globals, u8 functions, u8 compiler flags</text>
+
+	<!-- function table -->
+	<rect x="150" y="122" width="400" height="50" rx="4" fill="#e3effa" stroke="#4a78a8"/>
+	<text x="162" y="142" font-weight="bold">Function table, 11 bytes per function</text>
+	<text x="162" y="160" font-size="12">u16 member table, u16 code offset, u32 name hash, u8 x 3</text>
+
+	<!-- globals table -->
+	<rect x="150" y="180" width="400" height="50" rx="4" fill="#eeeeee" stroke="#888888"/>
+	<text x="162" y="200" font-weight="bold">Globals table, 4 bytes per global</text>
+	<text x="162" y="218" font-size="12">u32 hash of "::name" for each global</text>
+	<text x="562" y="210" font-size="12" fill="#555555">WR_INCLUDE_GLOBALS (0x01)</text>
+
+	<!-- symbols -->
+	<rect x="150" y="238" width="400" height="50" rx="4" fill="#eeeeee" stroke="#888888"/>
+	<text x="162" y="258" font-weight="bold">Debug symbols</text>
+	<text x="162" y="276" font-size="12">u32 source hash, u16 size, symbols (names, file table)</text>
+	<text x="562" y="260" font-size="12" fill="#555555">WR_EMBED_DEBUG_CODE (0x02)</text>
+	<text x="562" y="276" font-size="12" fill="#555555">or WR_EMBED_SOURCE_CODE (0x04)</text>
+
+	<!-- source -->
+	<rect x="150" y="296" width="400" height="50" rx="4" fill="#eeeeee" stroke="#888888"/>
+	<text x="162" y="316" font-weight="bold">Embedded source</text>
+	<text x="162" y="334" font-size="12">u32 total length, the text of every file in turn</text>
+	<text x="562" y="326" font-size="12" fill="#555555">WR_EMBED_SOURCE_CODE (0x04)</text>
+
+	<!-- code -->
+	<rect x="150" y="354" width="400" height="140" rx="4" fill="#fdf3e1" stroke="#c08a2b"/>
+	<text x="162" y="374" font-weight="bold">Code</text>
+	<rect x="166" y="384" width="368" height="28" rx="3" fill="#ffffff" stroke="#c08a2b"/>
+	<text x="176" y="403" font-size="12">global code (unit 0), ends with GlobalStop, Stop</text>
+	<rect x="166" y="418" width="368" height="28" rx="3" fill="#ffffff" stroke="#c08a2b" stroke-dasharray="4,3"/>
+	<text x="176" y="437" font-size="12">member table of a struct (only before its code)</text>
+	<rect x="166" y="452" width="368" height="28" rx="3" fill="#ffffff" stroke="#c08a2b"/>
+	<text x="176" y="471" font-size="12">function 0, function 1, ...</text>
+
+	<!-- checksum -->
+	<rect x="150" y="502" width="400" height="44" rx="4" fill="#e6f4ea" stroke="#3c8a55"/>
+	<text x="162" y="521" font-weight="bold">Checksum, 4 bytes</text>
+	<text x="162" y="538" font-size="12">wr_hash( everything before ) + WRENCH_VERSION_MAJOR</text>
+
+	<!-- offsets from the function table into the code -->
+	<path d="M150,154 C 40,154 40,466 164,466" fill="none" stroke="#444444" marker-end="url(#arrow)"/>
+	<text x="16" y="330" font-size="12">code offset</text>
+	<path d="M150,140 C 90,140 90,432 164,432" fill="none" stroke="#444444" stroke-dasharray="4,3" marker-end="url(#arrow)"/>
+	<text x="16" y="230" font-size="12">member</text>
+	<text x="16" y="246" font-size="12">table offset</text>
+</svg>

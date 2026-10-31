@@ -1,0 +1,23 @@
+[book]
+title = "The Wrench Book"
+authors = ["Curt Hartung and the wrench contributors"]
+description = "The wrench scripting language: the language, embedding it in your application or firmware, debugging, the VS Code extension and the internals."
+language = "en"
+
+[build]
+build-dir = "book"
+
+[output.html]
+default-theme = "light"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/darksimpson/wrench"
+edit-url-template = "https://github.com/darksimpson/wrench/edit/main/docs/book/{path}"
+additional-css = ["theme/wrench.css"]
+additional-js = ["theme/wrench-highlight.js"]
+
+[output.html.fold]
+enable = true
+level = 0
+
+[output.html.search]
+enable = true

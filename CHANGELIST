@@ -95,6 +95,8 @@ Found while writing the book (docs/book, the user documentation, new in this ver
 - the disassembler shows struct member tables as data, decodes line markers and the
   symbols section
 - examples/arduino/hello_world carried a stale image and printed nothing
+- tools/bookcheck runs the examples of the book; CI builds the book and attaches it to
+  releases (wrench-book.zip)
 
 Language and compiler:
 - behaviour change: && and || short circuit, the right side runs only when the left side

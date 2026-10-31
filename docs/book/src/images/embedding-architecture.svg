@@ -1,0 +1,105 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="540" viewBox="0 0 760 540" font-family="Helvetica, Arial, sans-serif" font-size="13">
+	<defs>
+		<marker id="arrow" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+			<path d="M0,0 L10,4 L0,8 z" fill="#444444"/>
+		</marker>
+		<marker id="arrowStart" markerWidth="10" markerHeight="8" refX="1" refY="4" orient="auto">
+			<path d="M10,0 L0,4 L10,8 z" fill="#444444"/>
+		</marker>
+	</defs>
+
+	<rect x="0" y="0" width="760" height="540" fill="#ffffff"/>
+
+	<!-- the PC side -->
+	<rect x="10" y="10" width="270" height="520" rx="8" fill="#f3f6fa" stroke="#9fb3c8"/>
+	<text x="145" y="32" text-anchor="middle" font-weight="bold" font-size="14">On the PC</text>
+
+	<rect x="30" y="50" width="230" height="44" rx="5" fill="#ffffff" stroke="#6b7c93"/>
+	<text x="145" y="69" text-anchor="middle">main.w and the files</text>
+	<text x="145" y="86" text-anchor="middle">it includes</text>
+
+	<line x1="145" y1="94" x2="145" y2="122" stroke="#444444" marker-end="url(#arrow)"/>
+
+	<rect x="30" y="124" width="230" height="62" rx="5" fill="#e3effa" stroke="#4a78a8"/>
+	<text x="145" y="143" text-anchor="middle" font-weight="bold">Compiler</text>
+	<text x="145" y="160" text-anchor="middle" font-size="12">wr_compile..., wrench c / ch</text>
+	<text x="145" y="176" text-anchor="middle" font-size="12">flags, include callback</text>
+
+	<line x1="145" y1="186" x2="145" y2="214" stroke="#444444" marker-end="url(#arrow)"/>
+
+	<rect x="30" y="216" width="230" height="62" rx="5" fill="#fff4dc" stroke="#c49a3a"/>
+	<text x="145" y="235" text-anchor="middle" font-weight="bold">Bytecode image</text>
+	<text x="145" y="252" text-anchor="middle" font-size="12">.bin file or C header (.h)</text>
+	<text x="145" y="268" text-anchor="middle" font-size="12">endian neutral, CRC checked</text>
+
+	<rect x="30" y="330" width="230" height="140" rx="5" fill="#eaf5ea" stroke="#5a9a5a"/>
+	<text x="145" y="350" text-anchor="middle" font-weight="bold">Debug and editor tools</text>
+	<text x="45" y="374" font-size="12">wrench dbg: console debugger</text>
+	<text x="45" y="396" font-size="12">wrench dap: VS Code debugger</text>
+	<text x="45" y="418" font-size="12">wrench lsp: VS Code editing</text>
+	<text x="45" y="446" font-size="11" fill="#555555">dbg and dap compile, upload,</text>
+	<text x="45" y="460" font-size="11" fill="#555555">attach and debug over the link</text>
+
+	<!-- the target side -->
+	<rect x="300" y="10" width="450" height="520" rx="8" fill="#f7f7f7" stroke="#a0a0a0"/>
+	<text x="525" y="32" text-anchor="middle" font-weight="bold" font-size="14">In your application or firmware</text>
+
+	<rect x="320" y="50" width="410" height="50" rx="5" fill="#ffffff" stroke="#6b7c93"/>
+	<text x="525" y="70" text-anchor="middle" font-weight="bold">Host loop (your code)</text>
+	<text x="525" y="88" text-anchor="middle" font-size="12">wr_run, wr_callFunction, wr_continue, debugger tick()</text>
+
+	<line x1="525" y1="100" x2="525" y2="126" stroke="#444444" marker-end="url(#arrow)"/>
+
+	<rect x="320" y="128" width="410" height="208" rx="6" fill="#e3effa" stroke="#4a78a8"/>
+	<text x="335" y="148" font-weight="bold">WRState</text>
+	<text x="400" y="148" font-size="12">(one per thread or task)</text>
+
+	<rect x="335" y="160" width="185" height="58" rx="4" fill="#ffffff" stroke="#4a78a8"/>
+	<text x="427" y="180" text-anchor="middle" font-size="12">natives and libraries</text>
+	<text x="427" y="196" text-anchor="middle" font-size="12">print(), math::, str::</text>
+	<text x="427" y="211" text-anchor="middle" font-size="11" fill="#555555">shared by all contexts</text>
+
+	<rect x="532" y="160" width="185" height="58" rx="4" fill="#ffffff" stroke="#4a78a8"/>
+	<text x="624" y="180" text-anchor="middle" font-size="12">msg:: mailbox</text>
+	<text x="624" y="196" text-anchor="middle" font-size="12">state and context</text>
+	<text x="624" y="211" text-anchor="middle" font-size="12">user pointers</text>
+
+	<rect x="335" y="230" width="185" height="94" rx="4" fill="#ffffff" stroke="#4a78a8"/>
+	<text x="427" y="250" text-anchor="middle" font-weight="bold" font-size="12">WRContext (a program)</text>
+	<text x="345" y="270" font-size="12">globals, value stack</text>
+	<text x="345" y="288" font-size="12">strings, arrays, hashes</text>
+	<text x="345" y="306" font-size="12">(garbage collected)</text>
+
+	<rect x="532" y="230" width="185" height="94" rx="4" fill="#ffffff" stroke="#4a78a8" stroke-dasharray="5,3"/>
+	<text x="624" y="250" text-anchor="middle" font-weight="bold" font-size="12">more contexts</text>
+	<text x="542" y="270" font-size="12">each with its own globals</text>
+	<text x="542" y="288" font-size="12">and stack; imported</text>
+	<text x="542" y="306" font-size="12">modules share their parent's</text>
+
+	<rect x="320" y="352" width="200" height="66" rx="5" fill="#fff4dc" stroke="#c49a3a"/>
+	<text x="420" y="372" text-anchor="middle" font-weight="bold" font-size="12">Bytecode</text>
+	<text x="420" y="389" text-anchor="middle" font-size="12">in flash, ROM or RAM,</text>
+	<text x="420" y="405" text-anchor="middle" font-size="12">read in place by the VM</text>
+
+	<rect x="530" y="352" width="200" height="66" rx="5" fill="#ffffff" stroke="#6b7c93"/>
+	<text x="630" y="372" text-anchor="middle" font-weight="bold" font-size="12">VM</text>
+	<text x="630" y="389" text-anchor="middle" font-size="12">runs a context's code,</text>
+	<text x="630" y="405" text-anchor="middle" font-size="12">calls natives</text>
+
+	<line x1="427" y1="324" x2="427" y2="350" stroke="#444444" marker-end="url(#arrow)"/>
+
+	<rect x="320" y="440" width="410" height="74" rx="5" fill="#eaf5ea" stroke="#5a9a5a"/>
+	<text x="525" y="460" text-anchor="middle" font-weight="bold">WrenchDebugServer (optional)</text>
+	<text x="525" y="478" text-anchor="middle" font-size="12">WRENCH_INCLUDE_DEBUG_CODE: breakpoints, stepping,</text>
+	<text x="525" y="495" text-anchor="middle" font-size="12">variables for the contexts you attach()</text>
+	<text x="525" y="508" text-anchor="middle" font-size="11" fill="#555555">a WrenchDebugTransport moves the bytes</text>
+
+	<!-- bytecode to the target -->
+	<line x1="260" y1="247" x2="318" y2="385" stroke="#444444" marker-end="url(#arrow)"/>
+	<text x="214" y="306" font-size="11" fill="#333333">flash, file</text>
+	<text x="214" y="319" font-size="11" fill="#333333">or upload</text>
+
+	<!-- the debug link -->
+	<line x1="262" y1="440" x2="318" y2="476" stroke="#444444" marker-start="url(#arrowStart)" marker-end="url(#arrow)"/>
+	<text x="30" y="496" font-size="11" fill="#333333">debug link: UART, USB serial, TCP</text>
+</svg>

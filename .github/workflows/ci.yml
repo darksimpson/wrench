@@ -1,7 +1,9 @@
 # Builds and tests wrench on Linux and Windows, generates the single file
 # build (wrench.h + wrench.cpp) and checks that it compiles on its own.
-# Every run keeps the single file build as the artifact "wrench-single-file";
-# a pushed tag vX.Y.Z publishes it as the assets of the GitHub release X.Y.Z.
+# Every run keeps the single file build as the artifact "wrench-single-file"
+# and the built book (docs/book) as "wrench-book"; a pushed tag vX.Y.Z
+# publishes both as the assets of the GitHub release X.Y.Z (the book as
+# wrench-book.zip, to read offline).
 
 name: CI
 
@@ -80,6 +82,11 @@ jobs:
         run: win32/Release/wrench.exe t
       - name: Test Debug
         run: win32/Debug/wrench.exe t
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Examples of the book
+        run: dotnet run --project tools/bookcheck -- win32/Release/wrench.exe "$RUNNER_TEMP/bookcheck" docs/book/src
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -106,10 +113,29 @@ jobs:
           cl -nologo -W3 -WX -c -Idist -DWRENCH_INCLUDE_DEBUG_CODE -DWRENCH_WIN32_TCP -DWRENCH_WIN32_SERIAL -DWRENCH_WIN32_FILE_IO dist/wrench.cpp -Fodist/check.obj
           cl -nologo -W3 -WX -c -Idist -DWRENCH_COMPACT -DWRENCH_REALLY_COMPACT dist/wrench.cpp -Fodist/check.obj
 
+  book:
+    name: The Wrench Book
+    runs-on: ubuntu-latest
+    env:
+      MDBOOK_VERSION: v0.5.4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install mdBook
+        run: |
+          mkdir -p "$HOME/mdbook"
+          curl -sSL "https://github.com/rust-lang/mdBook/releases/download/${MDBOOK_VERSION}/mdbook-${MDBOOK_VERSION}-x86_64-unknown-linux-musl.tar.gz" | tar -xz -C "$HOME/mdbook"
+          echo "$HOME/mdbook" >> "$GITHUB_PATH"
+      - name: Build the book
+        run: mdbook build docs/book
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wrench-book
+          path: docs/book/book
+
   release:
     name: Publish release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [ linux, single-file, windows ]
+    needs: [ linux, single-file, windows, book ]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -118,13 +144,18 @@ jobs:
         with:
           name: wrench-single-file
           path: dist
-      - name: Attach the single file build to the release
+      - uses: actions/download-artifact@v4
+        with:
+          name: wrench-book
+          path: wrench-book
+      - name: Attach the single file build and the book to the release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
+          zip -qr dist/wrench-book.zip wrench-book
           if gh release view "${GITHUB_REF_NAME}" > /dev/null 2>&1; then
-            gh release upload "${GITHUB_REF_NAME}" dist/wrench.h dist/wrench.cpp --clobber
+            gh release upload "${GITHUB_REF_NAME}" dist/wrench.h dist/wrench.cpp dist/wrench-book.zip --clobber
           else
-            gh release create "${GITHUB_REF_NAME}" dist/wrench.h dist/wrench.cpp --title "${GITHUB_REF_NAME#v}" --generate-notes --verify-tag
+            gh release create "${GITHUB_REF_NAME}" dist/wrench.h dist/wrench.cpp dist/wrench-book.zip --title "${GITHUB_REF_NAME#v}" --generate-notes --verify-tag
           fi

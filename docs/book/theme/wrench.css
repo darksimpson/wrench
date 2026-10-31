@@ -1,0 +1,29 @@
+/* additions to mdBook's theme for the wrench book */
+
+/* code in this project is indented with tabs */
+pre, code {
+	tab-size: 4;
+	-moz-tab-size: 4;
+}
+
+/* tables of functions and options: keep the first column readable */
+table td:first-child code {
+	white-space: nowrap;
+}
+
+/* the "Output" captions under examples */
+p.output-caption {
+	margin-bottom: 0.2em;
+	font-size: 0.9em;
+	opacity: 0.75;
+}
+
+/* diagrams: light background in every theme, they are drawn for it */
+img.diagram {
+	display: block;
+	max-width: 100%;
+	margin: 1em auto;
+	background: #ffffff;
+	border-radius: 6px;
+	padding: 8px;
+}
