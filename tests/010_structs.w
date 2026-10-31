@@ -314,7 +314,7 @@ if ( t4.a != 101 ) println("t4 1");
 if ( t4.b != 201 ) println("t4 2");
 if ( t4.c != 16 ) println("t4 3");
 
-var t4 = new T1(a) { c = 601, b = 501, a = 401  };
+t4 = new T1(a) { c = 601, b = 501, a = 401  };
 if ( t4.a != 401 ) println("t4 1b");
 if ( t4.b != 501 ) println("t4 2b");
 if ( t4.c != 601 ) println("t4 3b");

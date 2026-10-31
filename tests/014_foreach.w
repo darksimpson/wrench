@@ -54,9 +54,9 @@ if ( on2 != 3 ) println( "wrong on2" );
 
 for( var value2 : something )
 {
-	for( var value2 : something )
+	for( value2 : something )
 	{
-		for( var value2 : something )
+		for( value2 : something )
 		{
 			if ( value2 != 1 )
 			{

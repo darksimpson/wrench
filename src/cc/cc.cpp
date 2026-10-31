@@ -98,6 +98,11 @@ WRError WRCompilationContext::compile( const char* source,
 	m_privateNext = false;
 	m_privateArmed = false;
 	m_memberShadows.clear();
+	m_declaredNames.clear();
+	m_openBlocks.clear();
+	m_openBlocks.append() = 0;
+	m_nextBlock = 1;
+	m_nameErrorPos = -1;
 
 	m_loadedValue.p2 = INIT_AS_REF;
 
@@ -120,7 +125,7 @@ WRError WRCompilationContext::compile( const char* source,
 		m_loadedValue = value;
 		m_loadedQuoted = m_quoted;
 		
-		parseStatement( 0, ';', O_GlobalStop );
+		parseStatement( 0, ';', O_GlobalStop, false ); // top level statements share the outermost block
 
 	} while ( !m_EOF && (m_err == WR_ERR_None) );
 
@@ -138,6 +143,10 @@ WRError WRCompilationContext::compile( const char* source,
 
 	if ( m_err != WR_ERR_None )
 	{
+		if ( m_nameErrorPos >= 0 )
+		{
+			m_pos = m_nameErrorPos; // where the name was resolved, parsing may have gone on
+		}
 		int onChar;
 		int onLine;
 		WRstr line;
@@ -1322,6 +1331,10 @@ int WRCompilationContext::addLocalSpaceLoad( WRBytecode& bytecode, WRstr& token,
 				int priv = findPrivate( m_privateGlobals, ghash, currentFile() );
 				if ( priv >= 0 )
 				{
+					if ( !nameInView(0, m_units[0].bytecode.localSpace[priv].hash) )
+					{
+						return 0;
+					}
 					pushOpcode( bytecode, O_LoadFromGlobal );
 					unsigned char c = (unsigned char)priv;
 					pushData( bytecode, &c, 1 );
@@ -1332,6 +1345,10 @@ int WRCompilationContext::addLocalSpaceLoad( WRBytecode& bytecode, WRstr& token,
 				{
 					if (m_units[0].bytecode.localSpace[j].hash == ghash)
 					{
+						if ( !nameInView(0, ghash) )
+						{
+							return 0;
+						}
 						pushOpcode(bytecode, O_LoadFromGlobal);
 						unsigned char c = j;
 						pushData(bytecode, &c, 1);
@@ -1354,9 +1371,15 @@ int WRCompilationContext::addLocalSpaceLoad( WRBytecode& bytecode, WRstr& token,
 					named.pos = m_pos;
 					return 0;
 				}
-				m_err = WR_ERR_var_not_seen_before_label;
+				nameError( WR_ERR_var_not_seen_before_label );
 				return 0;
 			}
+	}
+
+	if ( !addOnly
+		 && (varSeen ? !declareName(m_unitTop, hash) : !nameInView(m_unitTop, hash)) )
+	{
+		return 0;
 	}
 
 	bytecode.localSpace[i].hash = hash;
@@ -1433,7 +1456,27 @@ int WRCompilationContext::addGlobalSpaceLoad( WRBytecode& bytecode, WRstr& token
 			named.pos = m_pos;
 			return 0;
 		}
-		m_err = WR_ERR_var_not_seen_before_label;
+		nameError( WR_ERR_var_not_seen_before_label );
+		return 0;
+	}
+
+	if ( !addOnly && varSeen && token[0] == ':' && token[1] == ':' )
+	{
+		// "var ::g" (in a block or a function) is a global of the whole
+		// program, in view everywhere after it; it may be declared so more
+		// than once, it names the global explicitly
+		WRDeclaredName* name = findDeclaredName( 0, hash );
+		if ( !name )
+		{
+			name = &m_declaredNames.append();
+			name->unit = 0;
+			name->hash = hash;
+		}
+		name->block = 0;
+	}
+	else if ( !addOnly
+			  && (varSeen ? !declareName(0, hash) : !nameInView(0, hash)) )
+	{
 		return 0;
 	}
 
@@ -2673,15 +2716,91 @@ char WRCompilationContext::parseExpression( WRExpression& expression )
 	return ret;
 }
 
-bool WRCompilationContext::parseStatement( int unitIndex, char end, WROpcode opcodeToReturn )
+bool WRCompilationContext::parseStatement( int unitIndex, char end, WROpcode opcodeToReturn, bool newBlock )
 {
 	if ( !enterNesting() )
 	{
 		return false;
 	}
+	if ( newBlock )
+	{
+		m_openBlocks.append() = m_nextBlock++;
+	}
 	bool ret = parseStatementBody( unitIndex, end, opcodeToReturn );
+	if ( newBlock )
+	{
+		m_openBlocks.pop();
+	}
 	--m_parseDepth;
 	return ret;
+}
+
+//------------------------------------------------------------------------------
+WRCompilationContext::WRDeclaredName* WRCompilationContext::findDeclaredName( int unit, uint32_t hash )
+{
+	for( unsigned int n=0; n<m_declaredNames.count(); ++n )
+	{
+		if ( m_declaredNames[n].unit == unit && m_declaredNames[n].hash == hash )
+		{
+			return &m_declaredNames[n];
+		}
+	}
+	return 0;
+}
+
+//------------------------------------------------------------------------------
+bool WRCompilationContext::isBlockOpen( int block )
+{
+	for( unsigned int b=0; b<m_openBlocks.count(); ++b )
+	{
+		if ( m_openBlocks[b] == block )
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+//------------------------------------------------------------------------------
+bool WRCompilationContext::declareName( int unit, uint32_t hash )
+{
+	WRDeclaredName* name = findDeclaredName( unit, hash );
+	if ( !name )
+	{
+		name = &m_declaredNames.append();
+		name->unit = unit;
+		name->hash = hash;
+	}
+	else if ( m_needVar && isBlockOpen(name->block) )
+	{
+		nameError( WR_ERR_variable_redeclared );
+		return false;
+	}
+
+	name->block = *m_openBlocks.tail();
+	return true;
+}
+
+//------------------------------------------------------------------------------
+bool WRCompilationContext::nameInView( int unit, uint32_t hash )
+{
+	WRDeclaredName* name = m_needVar ? findDeclaredName( unit, hash ) : 0;
+	if ( name && !isBlockOpen(name->block) )
+	{
+		nameError( WR_ERR_variable_out_of_scope );
+		return false;
+	}
+	return true;
+}
+
+//------------------------------------------------------------------------------
+void WRCompilationContext::nameError( WRError error )
+{
+	if ( m_err == WR_ERR_None )
+	{
+		m_err = error;
+		m_nameErrorPos = m_pos;
+	}
 }
 
 //------------------------------------------------------------------------------
@@ -2932,6 +3051,7 @@ bool WRCompilationContext::parseUnit( bool isStruct, int parentUnitIndex )
 {
 	int previousIndex = m_unitTop;
 	m_unitTop = m_units.count();
+	WRBlock unitBlock( *this ); // the parameters, the body is a block in it
 
 	if ( parentUnitIndex && isStruct )
 	{
@@ -3036,6 +3156,7 @@ bool WRCompilationContext::parseUnit( bool isStruct, int parentUnitIndex )
 							   token,
 							   true,
 							   true );
+			declareName( m_unitTop, argumentHash );
 
 			if ( !getToken(ex) )
 			{
@@ -3312,6 +3433,10 @@ A:
 		m_loadedQuoted = m_quoted;
 
 		char end = parseExpression( nex );
+		if ( m_err )
+		{
+			return false;
+		}
 
 		if ( foreachPossible )
 		{
@@ -4065,7 +4190,8 @@ bool WRCompilationContext::parseSwitch( WROpcode opcodeToReturn )
 			m_loadedValue = value;
 			m_loadedQuoted = m_quoted;
 
-			if ( !parseStatement(m_unitTop, ';', opcodeToReturn) )
+			// the cases share the block of the switch
+			if ( !parseStatement(m_unitTop, ';', opcodeToReturn, false) )
 			{
 				return false;
 			}
@@ -4566,6 +4692,7 @@ bool WRCompilationContext::parseStatementBody( int unitIndex, char end, WROpcode
 		else if ( !m_quoted && token == "for" )
 		{
 			m_units[unitIndex].lastStatementOverwriteStore.valid = false;
+			WRBlock forBlock( *this ); // a var in the header belongs to the loop
 			if ( !parseForLoop(opcodeToReturn) )
 			{
 				return false;
@@ -4591,6 +4718,7 @@ bool WRCompilationContext::parseStatementBody( int unitIndex, char end, WROpcode
 		else if ( !m_quoted && token == "switch" )
 		{
 			m_units[unitIndex].lastStatementOverwriteStore.valid = false;
+			WRBlock switchBlock( *this );
 			if ( !parseSwitch(opcodeToReturn) )
 			{
 				return false;
@@ -4677,6 +4805,10 @@ bool WRCompilationContext::parseStatementBody( int unitIndex, char end, WROpcode
 				{
 					m_err = WR_ERR_unexpected_token;
 				}
+				return false;
+			}
+			if ( m_err ) // a name error, reported on its own line, not after the next token
+			{
 				return false;
 			}
 

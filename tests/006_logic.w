@@ -148,22 +148,22 @@ if ( f != 3.5 ) println("35.2");
 if ( i != 3 ) println("35.3");
 
 // int <- int
-var i = 10;
+i = 10;
 var j = 3;
 println( i += j ); // 13
 println( i );
 println( j );
 
 // int <- float
-var i = 10;
-var f = .5;
+i = 10;
+f = .5;
 println( i += f ); // 10.5
 println( i );
 println( f );
 
 // float <- float
 var g = 10.2;
-var f = .5;
+f = .5;
 println( g += f ); // 10.7
 println( g );
 println( f );
@@ -173,7 +173,7 @@ if ( !1 )
 	println("1");
 }
 
-var a = 1;
+a = 1;
 if ( a )
 {
 	println("T");

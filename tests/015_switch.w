@@ -373,6 +373,7 @@ function InAFunc()
 	if ( f1 != 25000 ) println("d5000");
 
 	var v = 1;
+	var d;
 	switch( v )
 	{
 		case 1:
@@ -380,7 +381,7 @@ function InAFunc()
 			switch( g )
 			{
 				case 2:
-					var d = 20;
+					d = 20;
 					break;
 			}
 			break;

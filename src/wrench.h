@@ -349,6 +349,8 @@ enum WRError
 	WR_ERR_include_too_deep, // includes nested deeper than WRENCH_MAX_INCLUDE_DEPTH
 	WR_ERR_bad_character_literal, // 'ab': a character literal holds one character
 	WR_ERR_integer_literal_too_large, // an integer literal that does not fit in 32 bits
+	WR_ERR_variable_redeclared, // var x; while an earlier var x is still in view (strict mode)
+	WR_ERR_variable_out_of_scope, // x used after the block that declared it ended (strict mode)
 
 	WR_warning_enums_follow,
 

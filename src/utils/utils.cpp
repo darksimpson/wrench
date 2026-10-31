@@ -1976,6 +1976,8 @@ const char* c_errStrings[]=
 	"WR_ERR_include_too_deep",
 	"WR_ERR_bad_character_literal",
 	"WR_ERR_integer_literal_too_large",
+	"WR_ERR_variable_redeclared",
+	"WR_ERR_variable_out_of_scope",
 };
 
 #endif

@@ -6,7 +6,7 @@ if ( hashTest._exists(3) != 0 ) println("x2");
 if ( hashTest._exists("three") != 1 ) println("x3");
 var somethingH._remove( 1 );
 if ( somethingH._exists(1) != 0 ) println("x4");
-var somethingH._remove( "three" );
+somethingH._remove( "three" );
 if ( somethingH._exists("three") != 0 ) println("x4");
 
 var blue   = { 10:"one", 20:"two", "three":30 };
@@ -96,7 +96,7 @@ var aa = {:};
 
 var a = { "a" : 2 }; // creating a blank hash table
 
-var a = "hello";
+a = "hello";
 var b = "hello";
 if ( a != "hello" ) println("string bad 1");
 if ( "hello" != a ) println("string bad 2");

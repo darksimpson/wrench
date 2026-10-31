@@ -580,6 +580,34 @@ private:
 	bool shadowParameter( WRExpression& expression, WRstr& label );
 	void applyMemberShadows( WRBytecode& bytecode );
 
+	// strict mode scopes names by block at compile time: a name is in view
+	// in the block that declared it and the blocks in it. A var for a name
+	// in view is an error, after its block closed (an earlier loop, the
+	// other if branch) it declares the name again, in the same slot; using
+	// a name out of view is an error
+	struct WRDeclaredName
+	{
+		int unit; // 0 for globals
+		uint32_t hash; // as kept in the unit's local space
+		int block; // where it was declared last
+	};
+	WRarray<WRDeclaredName> m_declaredNames;
+	WRarray<int> m_openBlocks; // the outermost is the top level
+	int m_nextBlock;
+	WRDeclaredName* findDeclaredName( int unit, uint32_t hash );
+	bool isBlockOpen( int block );
+	bool declareName( int unit, uint32_t hash );
+	bool nameInView( int unit, uint32_t hash );
+	void nameError( WRError error );
+	int m_nameErrorPos; // m_pos of a name error, -1 for none
+	struct WRBlock
+	{
+		WRCompilationContext& c;
+		WRBlock( WRCompilationContext& context ) : c(context) { c.m_openBlocks.append() = c.m_nextBlock++; }
+		~WRBlock() { c.m_openBlocks.pop(); }
+	};
+	friend struct WRBlock;
+
 public:
 
 	// relative jumps are 16 bit; one that turns out farther is recorded and
@@ -671,7 +699,7 @@ private:
 	uint32_t getSingleValueHash( const char* end );
 	bool parseSwitch( WROpcode opcodeToReturn );
 	bool parseIf( WROpcode opcodeToReturn );
-	bool parseStatement( int unitIndex, char end, WROpcode opcodeToReturn );
+	bool parseStatement( int unitIndex, char end, WROpcode opcodeToReturn, bool newBlock =true );
 	bool parseStatementBody( int unitIndex, char end, WROpcode opcodeToReturn );
 
 	// nesting of statements, expressions and initializers, bounded so deep

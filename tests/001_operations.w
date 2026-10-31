@@ -73,7 +73,7 @@ if( dzf /= zero ) {}
 
 
 var y = "BB";
-var z = "CC";
+z = "CC";
 var y1 = y + z;
 y = y + z;
 if ( y1 != "BBCC" ) print("fail bin1");
@@ -154,10 +154,10 @@ ii = iiCast;
 if ( ii != 67 ) { println("ii 4"); }
 
 
-var a[10] = { 10 };
-if ( a[0] / 1000 != 0 ) { println("ii 4"); }
-if ( (float)a[0] / 1000 != .01 ) { println("ii 5"); }
-if ( a[0] / (float)1000 != .01 ) { println("ii 5"); }
+var a10[10] = { 10 };
+if ( a10[0] / 1000 != 0 ) { println("ii 4"); }
+if ( (float)a10[0] / 1000 != .01 ) { println("ii 5"); }
+if ( a10[0] / (float)1000 != .01 ) { println("ii 5"); }
 
 
 var not = 1;

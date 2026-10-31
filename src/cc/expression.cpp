@@ -802,6 +802,24 @@ char WRCompilationContext::parseExpressionBody( WRExpression& expression )
 	// trim to the number of committed expression nodes, which also allows ternary to consume the outer delimiter cleanly.
 	expression.context.setCount( depth );
 
+	// "var x;" is "var x = 0;": it sets 0 each time it runs (a loop body, a
+	// block declaring the name again), "blank x;" sets nothing
+	if ( depth == 1
+		 && end == ';'
+		 && expression.context[0].type == EXTYPE_LABEL
+		 && expression.context[0].varSeen
+		 && !expression.context[0].blankSeen )
+	{
+		expression.context[1].reset();
+		expression.context[1].setLocalSpace( expression.bytecode.localSpace, expression.bytecode.isStructSpace );
+		operatorFound( WRstr("="), expression.context, 1 );
+		expression.context[2].reset();
+		expression.context[2].setLocalSpace( expression.bytecode.localSpace, expression.bytecode.isStructSpace );
+		expression.context[2].type = EXTYPE_LITERAL;
+		expression.context[2].temporary = true;
+		depth = 3;
+	}
+
 	if ( depth == 2
 		 && expression.lValue
 		 && expression.context[0].type == EXTYPE_LABEL

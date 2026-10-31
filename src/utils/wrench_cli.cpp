@@ -2394,6 +2394,116 @@ bool testIncludes()
 	return ok;
 }
 
+// there is no block scope: in strict mode a var for a name whose earlier var
+// is still in view is an error, one from a block that closed is allowed
+bool testRedeclaration()
+{
+	printf( "test [-][block scope of names in strict mode]: " );
+	bool ok = true;
+
+	const char* errors[] =
+	{
+		"var x = 1; var x = 2;",
+		"var x; { var x = 1; }",
+		"function f() { var a = 1; if ( a ) { var a = 2; } }",
+		"function f( a ) { var a = 2; }",
+		"function f() { var i = 0; for ( var i = 0; i < 2; ++i ) { } }",
+		"for ( var i = 0; i < 2; ++i ) { for ( var i = 0; i < 2; ++i ) { } }",
+		"var h = { 1: 2 }; var v; for ( var k, var v : h ) { }",
+		"var h = { 1: 2 }; for ( var v : h ) { for ( var v : h ) { } }",
+		"struct S( p ) { var p = p; var p = 1; }",
+		"struct S { var m; var m; }",
+		"private var x = 1; private var x = 2;",
+		"switch ( 1 ) { case 1: var r = 1; break; case 2: var r = 2; break; }",
+		"var b; blank b;",
+		0
+	};
+	for( int i=0; errors[i]; ++i )
+	{
+		ok = ok && compileOnly( errors[i] ) == WR_ERR_variable_redeclared;
+		ok = ok && compileOnly( errors[i], WR_INCLUDE_GLOBALS | WR_NON_STRICT_VAR ) == WR_ERR_None;
+	}
+
+	const char* allowed[] =
+	{
+		"for ( var i = 0; i < 2; ++i ) { } for ( var i = 0; i < 2; ++i ) { }",
+		"function f( a ) { if ( a ) { var r = 1; } else { var r = 2; } }",
+		"function f( a ) { if ( a ) var r = 1; else var r = 2; }",
+		"var h = { 1: 2 }; for ( var k, var v : h ) { } for ( var k, var v : h ) { }",
+		"switch ( 1 ) { case 1: { var r = 1; break; } case 2: { var r = 2; break; } }",
+		"switch ( 1 ) { case 1: var r = 1; break; } switch ( 2 ) { case 2: var r = 2; break; }",
+		"function f() { var x = 1; } function g() { var x = 2; }",
+		"var x = 1; function f() { var x = 2; }",
+		"struct S( p ) { var p = p; } struct T( p ) { var p; }",
+		"var x = 1; x = 2; private var y = 1;",
+		0
+	};
+	for( int i=0; allowed[i]; ++i )
+	{
+		ok = ok && compileOnly( allowed[i] ) == WR_ERR_None;
+	}
+
+	// a name is out of view once its block ended
+	const char* outOfScope[] =
+	{
+		"if ( 1 ) { var x = 2; } var y = x;",
+		"if ( 1 ) { var x = 2; } x = 3;",
+		"for ( var i = 0; i < 2; ++i ) { } var y = i;",
+		"function f( a ) { if ( a ) { var r = 1; } return r; }",
+		"function f( a ) { if ( a ) var r = 1; else r = 2; }",
+		"var h = { 1: 2 }; for ( var k, var v : h ) { } var y = k;",
+		"if ( 1 ) { var g = 1; } function f() { return g; }",
+		"switch ( 1 ) { case 1: { var r = 1; break; } } var y = r;",
+		0
+	};
+	for( int i=0; outOfScope[i]; ++i )
+	{
+		ok = ok && compileOnly( outOfScope[i] ) == WR_ERR_variable_out_of_scope;
+		ok = ok && compileOnly( outOfScope[i], WR_INCLUDE_GLOBALS | WR_NON_STRICT_VAR ) == WR_ERR_None;
+	}
+	ok = ok && compileOnly( "switch ( 1 ) { case 1: var r = 1; break; case 2: r = 2; break; }" ) == WR_ERR_None;
+	ok = ok && compileOnly( "function init() { if ( 1 ) { var ::g = 1; } } function again() { var ::g = 2; } function use() { return ::g; }" ) == WR_ERR_None;
+	ok = ok && compileOnly( "if ( 1 ) { var ::y = 2; println( y ); } println( y ); function f() { return y + ::y; }" ) == WR_ERR_None;
+	ok = ok && compileOnly( "if ( 1 ) { var y = 1; } var ::y = 2; y = 3; var ::y = 4;" ) == WR_ERR_None;
+	ok = ok && compileOnly( "if ( 1 ) { var y = 2; } println( y );" ) == WR_ERR_variable_out_of_scope;
+	const char* noFiles[] = { 0 };
+	ok = ok && runWithTable( "if ( 1 ) { var ::y = 2; }\nvar r = y + 1;", noFiles, "r" ) == 3;
+	ok = ok && compileOnly( "var x = 1; { x = 2; { x = 3; } } function f( a ) { { a = 1; } return a; }" ) == WR_ERR_None;
+
+	// the variable of an earlier loop is the same one, the loop sets it again
+	const char* files[] =
+	{
+		"one.w", "var count = 1;\nprivate var mine = 1;\n",
+		"two.w", "var other = 2;\nvar count = 2;\nprivate var mine = 2;\n",
+		0
+	};
+	ok = ok && runWithTable( "var r = 0;\nfor ( var i = 0; i < 3; ++i ) { r += i; }\nfor ( var i = 10; i < 12; ++i ) { r += i; }", files, "r" ) == 24;
+
+	// var x; sets 0 each time it runs, also in a loop and declared again
+	ok = ok && runWithTable( "var r = 0;\nfor ( var i = 0; i < 3; ++i ) { var c; c++; r += c; }", files, "r" ) == 3;
+	ok = ok && runWithTable( "function f() { var r = 0; for ( var i = 0; i < 3; ++i ) { var c; c += 2; r += c; } return r; }\nvar r = f();", files, "r" ) == 6;
+	ok = ok && runWithTable( "var r = 0;\nif ( 1 ) { var x = 5; }\nif ( 1 ) { var x; r = x + 1; }", files, "r" ) == 1;
+
+	// two included files with one global, named where the second one is
+	int line = 0;
+	WRstr file;
+	ok = ok && compileWithTable( "include \"one.w\";\ninclude \"two.w\";\n", files, &line, &file ) == WR_ERR_variable_redeclared;
+	ok = ok && file == "two.w" && line == 2;
+
+	// a name error in a block is reported on its line, not the next one
+	ok = ok && compileWithTable( "function f()\n{\n\tvar a = 1;\n\t{\n\t\tvar a = 2;\n\t}\n}\n", files, &line ) == WR_ERR_variable_redeclared;
+	ok = ok && line == 5;
+	ok = ok && compileWithTable( "function f()\n{\n\tvar a = 1;\n\t{\n\t\tb = 2;\n\t}\n}\n", files, &line ) == WR_ERR_var_not_seen_before_label;
+	ok = ok && line == 5;
+	ok = ok && compileWithTable( "function f()\n{\n\tfor ( var i = 0; i < 2; ++i ) { }\n\treturn i;\n}\n", files, &line ) == WR_ERR_variable_out_of_scope;
+	ok = ok && line == 4;
+	ok = ok && compileWithTable( "function f( a )\n{\n\tif ( a ) { var r = 1; }\n\tif ( r )\n\t{\n\t\treturn 1;\n\t}\n}\n", files, &line ) == WR_ERR_variable_out_of_scope;
+	ok = ok && line == 4;
+
+	printf( ok ? "PASS\n" : "FAIL\n" );
+	return ok;
+}
+
 // formatting reads its arguments before the string changes: one of them may
 // be the string itself, short or long
 bool testStrFormat()
@@ -4250,6 +4360,10 @@ int runTests( const char* testDir, int number )
 	{
 		++failures;
 	}
+	if ( !testRedeclaration() )
+	{
+		++failures;
+	}
 	if ( !testLibFormat() )
 	{
 		++failures;
@@ -4895,7 +5009,7 @@ const char* baseMe = "yield();\n"
 					 "println(s0.a);\n"
 					 "println(s0.b);\n"
 					 "println(s0.c);\n"
-					 "var s0 = new S0;\n"
+					 "s0 = new S0;\n"
 					 ;
 
 //------------------------------------------------------------------------------

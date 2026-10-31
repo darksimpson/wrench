@@ -42,7 +42,7 @@ function retCheck()
 	return a;
 }
 
-var b = retCheck();
+b = retCheck();
 if ( b[0] != 1 ) println( "rc 3");
 if ( b[1] != 2 ) println( "rc 4");
 if ( retCheck()[0] != 1 ) println("rc 0");
@@ -270,18 +270,18 @@ function leakCheck( value )
 }
 
 
-var a = {10};
-if ( a[0] != 10 ) println("err 0");
+var ia = {10};
+if ( ia[0] != 10 ) println("err 0");
 
-var b[] = {11};
-if ( b[0] != 11 ) println("err 1");
+var ib[] = {11};
+if ( ib[0] != 11 ) println("err 1");
 
-var c[100] = {12};
-if ( c[0] != 12 ) println("err 2");
+var ic[100] = {12};
+if ( ic[0] != 12 ) println("err 2");
 
-var d = {13,14};
-if ( d[0] != 13 ) println("err 3");
-if ( d[1] != 14 ) println("err 4");
+var id = {13,14};
+if ( id[0] != 13 ) println("err 3");
+if ( id[1] != 14 ) println("err 4");
 
 var e[] = {13,14};
 if ( e[0] != 13 ) println("err 5");
