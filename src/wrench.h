@@ -30,9 +30,15 @@ SOFTWARE.
 #include <math.h>
 #include <assert.h>
 
-#define WRENCH_VERSION_MAJOR 7
-#define WRENCH_VERSION_MINOR 2
-#define WRENCH_VERSION_BUILD 2
+#define WRENCH_VERSION_MAJOR 8
+#define WRENCH_VERSION_MINOR 0
+#define WRENCH_VERSION_BUILD 0
+
+// the CRC of an image is salted with the major version of the compiler that
+// made it, so an older VM rejects a newer image. This VM also runs the images
+// of the version before (they lack the image flag WR_READS_KEEP_VALUES and
+// keep their old behaviour, see WRC_IndexConverts)
+#define WRENCH_PREVIOUS_IMAGE_VERSION 7
 
 /************************************************************************
 Optional project configuration: a "wrench_config.h" next to this file (or
@@ -122,7 +128,8 @@ calls and locals, NOT structs/arrays/hashes which are malloc'ed. Unless your
 applications uses lots of recursion+local variables, a modest size should
 be more than enough.
 To really reduce RAM footprint this can be lowered considerably
-depending on usage. (consumes 8 bytes per stack entry)
+depending on usage. (consumes 8 bytes per stack entry on a 32-bit target,
+16 on a 64-bit one)
 */
 #ifndef WRENCH_DEFAULT_STACK_SIZE
 #define WRENCH_DEFAULT_STACK_SIZE 64
@@ -166,39 +173,37 @@ depending on usage. (consumes 8 bytes per stack entry)
 
 
 /************************************************************************
-With this defined the VM will enforce a maximum number of instructions
-before a yield is forced, to prevent infinite loops, this adds a small check to each
-instruction!
+With this defined the VM forces a yield after a number of jumps and
+branches, so an endless loop cannot keep a call in the VM forever; this
+adds a small check to every jump and branch
 */
 //#define WRENCH_TIME_SLICES
 
 #ifdef WRENCH_TIME_SLICES
-// how many instructions each call to the VM executes before yielding,
+// how many jumps and branches each call to the VM executes before yielding,
 // set to '0' for unlimited (default)
 void wr_setInstructionsPerSlice( WRState* w, const int instructions );
 void wr_forceYield( WRState* w );  // for the VM to yield right NOW
-int wr_slicesUsedLastCall( WRState* w );  // how many time slices did the last call to the VM use?
+int wr_slicesUsedLastCall( WRState* w );  // how many jumps and branches the last call to the VM counted
 #endif
 
 /************************************************************************
-if you WANT full sprintf support for floats (%f/%g) this adds it at
-the cost of using the standard c library for it (stdlib.h), which can incur a
-decent code-size penalty. Without this %f/%g is ignored.
+str::format / sprintf / printf format floats (%f %e %g) like C printf
+either way. Without this wrench does it itself, from the exact value of the
+float; with it the standard c library's snprintf does (a decent code-size
+penalty where nothing else uses it, precision is capped at 80).
 */
 //#define WRENCH_FLOAT_SPRINTF
 
 
 /************************************************************************
-File operations: define ONE of these. If you use "Custom" then you
-need to link in a source file with the functions defined in:
-
-  /src/lib/std_io_defs.h
-
-examples are in
+File operations: define ONE of these for io::, or none to leave the
+library empty. The backends are
 
   /src/lib/std_io.cpp (Windows and Linux)
   /src/lib/std_io_little_spiffs.cpp (SPIFFS and LittleFS)
 
+with the shared declarations in /src/lib/std_io_defs.h
 */
 //#define WRENCH_WIN32_FILE_IO
 //#define WRENCH_LINUX_FILE_IO
@@ -217,9 +222,11 @@ compiling for here, then see wr_loadTCPLib(...)
 /************************************************************************
 Wrench protects itself against divide-by-zero, but allows the result to
 be '0'. Trapping the error requires a tiny bit of overhead(ie- every
-result has to be checked to see if it was a divide by zero) so by
-default wrench does not bother in favor of speed.
+divisor has to be checked) so by default wrench does not bother in favor
+of speed.
 Define this to received the fatal error:  WR_ERR_division_by_zero
+for /, %, /= and %= by zero (a % by a float that truncates to 0
+counts), in every interpreter including WRENCH_COMPACT
 */
 //#define WRENCH_TRAP_DIVISION_BY_ZERO
 
@@ -340,6 +347,8 @@ enum WRError
 	WR_ERR_include_not_supported, // include "file" compiled without an include callback
 	WR_ERR_include_not_at_top_level, // include "file" inside a function or block
 	WR_ERR_include_too_deep, // includes nested deeper than WRENCH_MAX_INCLUDE_DEPTH
+	WR_ERR_bad_character_literal, // 'ab': a character literal holds one character
+	WR_ERR_integer_literal_too_large, // an integer literal that does not fit in 32 bits
 
 	WR_warning_enums_follow,
 
@@ -385,7 +394,7 @@ inline void* wr_getLocalContext( WRContext* c );
 // optionally an "errMsg" buffer can be passed which will output a
 //     human-readable string of what went wrong and where. The compiler
 //     prints nothing itself, it stops at the first error.
-// compilerOptionFlags : OR'ed mask of of WrenchCompilerOptionFlags:
+// compilerOptionFlags : OR'ed mask of WrenchCompilerFlags:
 enum WrenchCompilerFlags
 {
 	WR_INCLUDE_GLOBALS   = 1<<0, // include all globals NOTE: wr_getGlobalRef(...)
@@ -396,11 +405,12 @@ enum WrenchCompilerFlags
 	
 	WR_EMBED_SOURCE_CODE = 1<<2, // include a copy of the source code
 	
-	WR_NON_STRICT_VAR    = 1<<3, // require 'var' to declare a variable (disabled by default)
+	WR_NON_STRICT_VAR    = 1<<3, // allow assignments without 'var' to declare a variable (off by default: 'var' is required)
 
 	// set by the compiler in every image: reading an element or member of a
-	// value that is not a container gives 0 and leaves the value alone, only
-	// assignments turn it into a container (images without it convert on reads too)
+	// value that is not a container, a key a hash table does not have or an
+	// index past the end of an array or a string gives 0 and changes nothing,
+	// only assignments create (images without it create on reads too)
 	WR_READS_KEEP_VALUES = 1<<4,
 };
 
@@ -481,7 +491,8 @@ WRContext* wr_run( WRState* w,
 // macro for automatically freeing the WRContext
 #define wr_runOnce( w, block, blockSize ) wr_destroyContext( wr_run((w),(block),(blockSize)) )
 
-// Run the source code as an atomic operation
+// Run the source code as an atomic operation; false when it does not
+// compile or fails while running (wr_getLastError() says why)
 bool wr_runCommand( WRState* w, const char* sourceCode, const int size =-1 );
 
 // Add more code to the context, the new code cannot access the
@@ -501,6 +512,13 @@ WRValue* wr_returnValueFromLastCall( WRContext* context );
 //                will be freed with  wr_free(), also when the call fails
 WRContext* wr_newContext( WRState* w, const unsigned char* block, const int blockSize, bool takeOwnership =false );
 WRValue* wr_executeContext( WRContext* context );
+
+// make a context as it was after wr_newContext(): its globals start over
+// (what they held is freed) and the modules it imported are destroyed, so
+// wr_executeContext() runs its global code again. The pointer stays valid.
+// Fails (false) for an imported context and while a native callback of the
+// context is running
+bool wr_resetContext( WRContext* context );
 
 // after wr_run() this allows any function in the script to be
 // called with the given arguments, returning a single value
@@ -574,7 +592,9 @@ void wr_destroyContext( WRContext* context );
 // how many bytes of memory must be allocated before the gc will run, default
 // set here, can be adjusted at runtime with the
 // wr_setAllocatedMemoryGCHint()
+#ifndef WRENCH_DEFAULT_ALLOCATED_MEMORY_GC_HINT
 #define WRENCH_DEFAULT_ALLOCATED_MEMORY_GC_HINT 4000
+#endif
 void wr_setAllocatedMemoryGCHint( WRState* w, const uint32_t bytes );
 
 /***************************************************************/
@@ -630,7 +650,8 @@ inline void wr_setOnCallbackNotFound( WRState* w, WR_C_CALLBACK_NOT_FOUND onCall
 void wr_registerFunction( WRState* w, const char* name, WR_C_CALLBACK function, void* usr =0 );
 
 // serialize WRValues to and from binary
-// NOTE: on success, wr_serialize returns a malloc()'d buffer that must be freed!
+// NOTE: on success, wr_serialize returns a buffer from wr_malloc() that must be
+// freed with wr_free()!
 bool wr_serialize( char** buf, int* len, const WRValue& value );
 bool wr_deserialize( WRContext* context, WRValue& value, const char* buf, const int len );
 
@@ -701,21 +722,35 @@ void wr_loadDebugLib( WRState* w ); // debugger interaction functions
 void wr_loadTCPLib( WRState* w ); // TCP/IP functions
 void wr_loadContainerLib( WRState* w ); // array/hash/queue/stack/list
 
-// arduino-specific functions, be sure to add arduino_lib.cpp to your
-// sketch. much thanks to Koepel for contributing
-void wr_loadAllArduinoLibs( WRState* w );
+// arduino-specific functions (src/lib/arduino_lib.cpp, part of the single
+// file build), much thanks to Koepel for contributing. They exist when
+// ARDUINO is defined (any board with the Arduino framework)
+#ifdef ARDUINO
+void wr_loadAllArduinoLibs( WRState* w ); // all four below
+void wr_loadArduinoLib( WRState* w ); // the old name of wr_loadAllArduinoLibs
+void wr_loadArduinoSTDLib( WRState* w ); // std::delay
+void wr_loadArduinoIOLib( WRState* w ); // io::pinMode / digitalWrite / analogRead
+void wr_loadArduinoWireLib( WRState* w ); // wire:: (the Arduino Wire library)
 
-// embedded-specific libs
-// FastLED needs the data pin at compile time; define WR_FASTLED_DATA_PIN
-// (in wrench_config.h, for example) to use another one than 6
+// lcd:: needs a display: define WR_ARDUINO_LCD as the name of a display
+// object with the LiquidCrystal interface (begin, setCursor, print), for
+// example in wrench_config.h:
+//   #include <LiquidCrystal.h>
+//   extern LiquidCrystal lcd;
+//   #define WR_ARDUINO_LCD lcd
+// without it this registers nothing
+void wr_loadArduinoLCDLib( WRState* w );
+#endif
+
+// FastLED: compiled when WRENCH_ARDUINO_FASTLED is defined. FastLED needs
+// the data pin at compile time; define WR_FASTLED_DATA_PIN (in
+// wrench_config.h, for example) to use another one than 6
+#ifdef WRENCH_ARDUINO_FASTLED
 #ifndef WR_FASTLED_DATA_PIN
 #define WR_FASTLED_DATA_PIN 6
 #endif
 void wr_loadFastLEDLib( WRState* w );
-
-void wr_loadArduinoSTDLib( WRState* w ); 
-void wr_loadArduinoIOLib( WRState* w ); 
-void wr_loadArduinoLCDLib( WRState* w ); 
+#endif
 
 /***************************************************************/
 /***************************************************************/
@@ -732,6 +767,19 @@ void wr_loadArduinoLCDLib( WRState* w );
 WRValue& wr_makeString( WRContext* context, WRValue* val, const char* data, const int len =0 );
 inline WRValue& wr_makeInt( WRValue* val, int i );
 inline WRValue& wr_makeFloat( WRValue* val, float f );
+
+// A string, array, hash table or struct instance belongs to a context, whose
+// garbage collector frees it once no script value refers to it: one the host
+// made (wr_makeString, WrenchValue) or got back from a script and keeps only
+// in its own variables is freed at the context's next collection. Keep it
+// alive with wr_keepValue() and let it go with wr_releaseValue() (not counted:
+// one release undoes any number of keeps). Destroying or resetting the context
+// frees it regardless. Ints, floats, raw arrays and containers made with
+// wr_makeContainer() need neither (a string kept in such a container does).
+// False when the value (or the variable or element it refers to) is none of
+// the kept kinds
+bool wr_keepValue( const WRValue& value );
+bool wr_releaseValue( const WRValue& value );
 
 // turning a value into a container,
 // NOTE!! Allocates a hash table which must be released with destroy!!
@@ -753,14 +801,45 @@ void wr_addArrayToContainer( WRValue* container, const char* name, char* array, 
 void wr_addFloatToContainer( WRValue* container, const char* name, const float f );
 void wr_addIntToContainer( WRValue* container, const char* name, const int i );
 
-// read back the value (if found) from a user-created container
+// read back the value from a user-created container, null when the name is
+// not in it (looking does not add it)
 WRValue* wr_getValueFromContainer( WRValue const& container, const char* name );
 
 /******************************************************************/
 //                    "standard" functions
 
+// std::rand draws from a seed kept in each state (std::srand sets it), so
+// states on different threads do not share one. wr_loadStdLib() starts it
+// at wr_Seed. wr_randEx( w, ... ) draws from the seed of state 'w', a
+// number from 'from' to 'to', both included
+int32_t wr_randEx( WRState* w, const int32_t from, const int32_t to );
+
+// a generator of its own for the host, not used by any state: wr_Seed is
+// its seed and the initial seed of states, wr_randEx( from, to ) draws from
+// it and is not thread safe
 extern int32_t wr_Seed;
-extern const int32_t wr_randEx( const int32_t from, const int32_t to );
+int32_t wr_randEx( const int32_t from, const int32_t to );
+
+// the msg:: mailbox of a state, from the host. 'key' is a string, the same
+// key a script uses (msg::write( "mode", 3 ) is read with "mode"). The
+// mailbox holds ints, floats and strings; a string is copied and belongs
+// to the state until it is overwritten, cleared or the state destroyed.
+// None of this is thread safe.
+// wr_msgWrite: stores an int, float or string value; false for anything
+//   else (containers, structs) or when out of memory, the mailbox is
+//   unchanged then
+// wr_msgWriteString: stores 'len' bytes of 'data' (-1: up to its null)
+// wr_msgPeek: the stored value or null. A string reads with .array( &len ),
+//   null terminated; the pointer is valid until the mailbox changes
+// wr_msgRead: the value as written, a string as a new string of 'context'
+//   (like wr_makeString); false when there is none (value is an int 0) or
+//   out of memory. 'clear' removes the message
+// wr_msgClear: removes the message, false when there was none
+bool wr_msgWrite( WRState* w, const char* key, const WRValue& value );
+bool wr_msgWriteString( WRState* w, const char* key, const char* data, const int len =-1 );
+const WRValue* wr_msgPeek( WRState* w, const char* key );
+bool wr_msgRead( WRContext* context, const char* key, WRValue& value, const bool clear =false );
+bool wr_msgClear( WRState* w, const char* key );
 
 
 // inside-baseball time. This has to be here so stuff that includes
@@ -1261,6 +1340,7 @@ private:
 	WrenchScheduledTask* m_tasks;
 	int m_lastErr;
 	int m_lastErrId;
+	int m_lastTaskId; // ids count per scheduler, from 1
 };
 #endif
 
@@ -1372,6 +1452,7 @@ struct WRState
 
 	WRGCObject globalRegistry;
 	WRGCObject mailbox; // msg:: library values, kept apart from the callbacks in globalRegistry
+	int32_t randSeed; // std::rand / std::srand of this state, 0 is the default seed
 
 	void* ctx; // state-wide context pointer, opaque to wrench
 
@@ -1455,6 +1536,10 @@ public:
 
 	// start listening, returns false if the port cannot be bound
 	bool listen( int port, bool loopbackOnly = false );
+
+	// the same on one IPv4 address of this machine (or a name for one),
+	// "0.0.0.0" listens on every interface
+	bool listenOn( const char* address, int port );
 
 	// wait up to timeoutMs for a client, 0 polls once
 	bool waitForClient( int timeoutMs );
@@ -1611,37 +1696,62 @@ private:
 #define WRENCH_DEBUG_MAX_IMPORT_CALLS 8
 #endif
 
-// while running, the link is polled (for pause requests and breakpoint
-// changes) once every this many source lines
-#ifndef WRENCH_DEBUG_POLL_INTERVAL
-#define WRENCH_DEBUG_POLL_INTERVAL 64
+// while script code runs, the link is polled (for pause requests and
+// breakpoint changes) once this many milliseconds have passed; the clock is
+// read every WRENCH_DEBUG_POLL_LINES source lines
+#ifndef WRENCH_DEBUG_POLL_MS
+#define WRENCH_DEBUG_POLL_MS 20
+#endif
+#ifndef WRENCH_DEBUG_POLL_LINES
+#define WRENCH_DEBUG_POLL_LINES 8
 #endif
 
 struct WrenchDebugServerPrivate;
 
-// flags returned by WrenchDebugServer::tick()
+// flags returned by WrenchDebugServer::tick(), for a launchable target (see
+// setLaunchable()); handle WRD_TickProgramUploaded first, both may come at
+// once
 enum WrenchDebugTickFlags
 {
-	WRD_TickProgramLoaded = 1<<0, // a new program was uploaded or a launch rebuilt the context, fetch context() again
-	WRD_TickProgramRan = 1<<1, // the client launched the program and it finished
-	WRD_TickClientAttached = 1<<2, // a client said hello
+	WRD_TickClientAttached = 1<<0, // a client said hello
+	WRD_TickProgramUploaded = 1<<1, // the client sent a new program 0: takeUpload() it, destroy the old context, attach() a new one made of it
+	WRD_TickRunRequested = 1<<2, // the client launches program 0: wr_resetContext() it if its global code ran, then wr_executeContext() it
 };
 
-// Runs on the target next to the VM. Code must be compiled with
-// WR_EMBED_DEBUG_CODE (and ideally WR_INCLUDE_GLOBALS) to be debuggable.
+// Runs on the target next to the VM and debugs the contexts your firmware
+// hands it with attach(). Code must be compiled with WR_EMBED_DEBUG_CODE
+// (and ideally WR_INCLUDE_GLOBALS) to be debuggable.
 //
-// Two ways to use it:
+// The server never runs script code itself: your firmware creates, runs
+// and destroys its contexts as usual and calls tick() whenever no script
+// is executing. Breakpoints, stepping and pause work inside any call into
+// a debugged context. The first context attached is program 0:
 //
-// 1) the server runs the program: call tick() in your main loop, the
-// client uploads code (or uses the image given to loadBytes()) and
-// launches it; tick() executes it to completion.
+//   WRContext* context = wr_newContext( w, bytecode, size );
+//   debugger->attach( context, "main.w" );
+//   wr_executeContext( context );
 //
-// 2) your firmware runs the program: loadBytes() or attach() a context,
-// then keep calling wr_run/wr_callFunction yourself as usual and call
-// tick() whenever no script is executing. Breakpoints, stepping and pause
-// work inside any call into the debugged context. Always fetch the
-// context with context() since an upload replaces it (tick() reports
-// WRD_TickProgramLoaded when that happens).
+// A debugger can then attach to what the firmware runs. To let it launch,
+// restart and upload program 0 as well, call setLaunchable( true ) and
+// carry out what tick() asks for:
+//
+//   int events = debugger->tick();
+//   if ( events & WRD_TickProgramUploaded )
+//   {
+//     uint8_t* bytes;
+//     int size;
+//     if ( debugger->takeUpload(bytes, size) )
+//     {
+//       wr_destroyContext( context );
+//       context = wr_newContext( w, bytes, size, true );
+//       debugger->attach( context, "main.w" );
+//     }
+//   }
+//   if ( (events & WRD_TickRunRequested) && context )
+//   {
+//     wr_resetContext( context );
+//     wr_executeContext( context );
+//   }
 class WrenchDebugServer
 {
 public:
@@ -1652,26 +1762,32 @@ public:
 	// inside a script callback
 	int tick();
 
-	// create a debuggable context from bytecode, program 0. The bytes are
-	// not copied unless takeOwnership is set (then they must come from
-	// wr_malloc and are freed by the server). Replaces the previous program
-	// 0, which is also the one a debugger uploads and launches.
-	WRContext* loadBytes( const uint8_t* bytes, const int len, const bool takeOwnership =false );
+	// for a native function that blocks: service the link while it waits,
+	// as the VM does between script lines, so the debugger is answered. A
+	// pause or terminate takes effect on the script's next line, after the
+	// native returns. Only from inside a native the script called
+	void poll();
 
-	// debug a context you created yourself as one more program (the server
-	// does not own it), named for the debugger. Returns its program number,
-	// -1 when WRENCH_DEBUG_MAX_PROGRAMS are taken. Modules a debugged program
-	// imports become programs of their own; a context that is destroyed
-	// stops being debugged
+	// debug a context you created yourself (the server does not own it),
+	// named for the debugger. The first one is program 0 (again after an
+	// upload took its place), the others are numbered on from 1. Returns
+	// the program number, -1 when WRENCH_DEBUG_MAX_PROGRAMS are taken.
+	// Modules a debugged program imports become programs of their own; a
+	// context that is destroyed stops being debugged
 	int attach( WRContext* context, const char* name =0 );
 	void detach( WRContext* context ); // that one
 	void detach(); // all of them
 
-	WRContext* context( const int program =0 ) const;
+	// true: your firmware carries out WRD_TickRunRequested (and, unless
+	// setAllowUpload(false), WRD_TickProgramUploaded), so a debugger may
+	// launch, restart and upload program 0. False, the default: a debugger
+	// can only attach to what the firmware runs
+	void setLaunchable( const bool launchable );
 
-	// true when context() exists and its global code has run, so its
-	// functions can be called (false while the debugger is launching it)
-	bool ready() const;
+	// after WRD_TickProgramUploaded: the bytecode the debugger sent, from
+	// wr_malloc and now yours (give it to wr_newContext() with
+	// takeOwnership, or wr_free() it). False when there is none
+	bool takeUpload( uint8_t*& bytes, int& size );
 
 	// set when your firmware keeps calling script functions after the global
 	// code finishes, so the client does not end the session
@@ -1689,14 +1805,14 @@ public:
 	// many ms, as if it had disconnected (0, the default, waits forever).
 	// For links that cannot report loss, like a UART: a crashed host or a
 	// pulled cable then no longer leaves the device halted. The client must
-	// keep the link alive while halted; VS Code pings every second, the
-	// console debugger does not (use a generous value or none with it)
+	// keep the link alive while halted; VS Code and the console debugger
+	// ping every second
 	void setLinkTimeout( const uint32_t ms );
 
 	// false refuses programs sent by a debugger (WRD_ErrUploadDisabled), for
 	// field builds: the program your firmware loads is the only one that
 	// runs, a debugger can still attach, inspect and step it (and restart it
-	// when it came from loadBytes). Allowed by default
+	// when the target is launchable). Allowed by default
 	void setAllowUpload( const bool allow );
 
 	// send text to the debugger console (for print()/println() style output)
@@ -1718,10 +1834,13 @@ public:
 
 	// called by the VM: 'importer' imported 'import'; a call from a debugged
 	// program into an imported one begins (with where it is made) and ends;
-	// a context is destroyed
+	// a context's global code finished or failed (ret 0); a context is
+	// reset or destroyed
 	void onImport( WRContext* importer, WRContext* import );
 	void onImportCall( WRContext* caller, const unsigned char* pc, WRValue* frameBase, WRContext* callee );
 	void onImportReturn();
+	void onGlobalCodeEnd( WRContext* context, WRValue* ret );
+	void onContextReset( WRContext* context );
 	void onContextDestroyed( WRContext* context );
 
 	WrenchDebugServerPrivate* I;

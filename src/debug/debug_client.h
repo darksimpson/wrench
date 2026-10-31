@@ -251,6 +251,7 @@ struct WrenchDebugEvent
 	uint32_t missingFunction = 0; // name hash for *_function_not_found errors
 	int watch = 0; // WRD_StopWatch and WatchRemoved: which watch
 	int program = 0; // Stopped: where; ProgramAdded / ProgramRemoved: which
+	uint32_t programHash = 0; // Loaded: the bytecode hash of the new program
 	std::string text;
 	WrenchDebugValue value;
 };

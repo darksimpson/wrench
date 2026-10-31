@@ -250,15 +250,16 @@ int wr_ftoa( float f, char* string, size_t len )
 }
 
 //------------------------------------------------------------------------------
-const int32_t wr_randEx( const int32_t from, const int32_t to )
+// one step of the generator on 'seed', then a number from 'from' to 'to'
+static int32_t wr_randNext( int32_t& seed, const int32_t from, const int32_t to )
 {
-	if ( wr_Seed == 0 )
+	if ( seed == 0 )
 	{
-		wr_Seed = 0xA5EED; // zero is a fixed point of the generator
+		seed = 0xA5EED; // zero is a fixed point of the generator
 	}
 
-	const int32_t k = wr_Seed / 127773;
-	wr_Seed = 16807 * (wr_Seed - k * 127773) - 2836 * k;
+	const int32_t k = seed / 127773;
+	seed = 16807 * (seed - k * 127773) - 2836 * k;
 
 	if ( from >= to )
 	{
@@ -268,17 +269,29 @@ const int32_t wr_randEx( const int32_t from, const int32_t to )
 	// unsigned math: the span of a full 32-bit range does not fit an int
 	// and wraps to 0, which must not be used as a divisor
 	const uint32_t range = (uint32_t)to - (uint32_t)from + 1u;
-	uint32_t r = (uint32_t)wr_Seed;
+	uint32_t r = (uint32_t)seed;
 	if ( range == 0 )
 	{
 		// the generator only yields 31 bits, mix in a second draw
-		const int32_t k2 = wr_Seed / 127773;
-		wr_Seed = 16807 * (wr_Seed - k2 * 127773) - 2836 * k2;
-		r ^= ((uint32_t)wr_Seed) << 16;
+		const int32_t k2 = seed / 127773;
+		seed = 16807 * (seed - k2 * 127773) - 2836 * k2;
+		r ^= ((uint32_t)seed) << 16;
 		return (int32_t)(r + (uint32_t)from);
 	}
 
 	return (int32_t)((r % range) + (uint32_t)from);
+}
+
+//------------------------------------------------------------------------------
+int32_t wr_randEx( const int32_t from, const int32_t to )
+{
+	return wr_randNext( wr_Seed, from, to );
+}
+
+//------------------------------------------------------------------------------
+int32_t wr_randEx( WRState* w, const int32_t from, const int32_t to )
+{
+	return wr_randNext( w->randSeed, from, to );
 }
 
 //------------------------------------------------------------------------------
@@ -289,8 +302,8 @@ void wr_std_rand( WRValue* stackTop, const int argn, WRContext* c )
 		WRValue* args = stackTop - argn;
 
 		stackTop->i = argn > 1 ?
-					  wr_randEx(args[0].asInt(), args[1].asInt())
-							   : wr_randEx( 0, args[0].asInt() );
+					  wr_randEx(c->w, args[0].asInt(), args[1].asInt())
+							   : wr_randEx( c->w, 0, args[0].asInt() );
 	}
 }
 
@@ -299,11 +312,17 @@ void wr_std_srand( WRValue* stackTop, const int argn, WRContext* c )
 {
 	if ( argn == 1 )
 	{
-		wr_Seed = (uint32_t)((stackTop - 1)->asInt());
+		c->w->randSeed = (stackTop - 1)->asInt();
 	}
 }
 
-#if defined(__arm__) || defined(_WIN32) || defined(__linux__) || defined(__MINGW32__) || defined(__APPLE__) || defined(__MINGW64__) || defined(__clang__)
+//------------------------------------------------------------------------------
+// std::time: seconds. Where the C library has a clock (desktops, ARM
+// boards, ESP32 under ESP-IDF or Arduino) it is time(), the Unix time once
+// the clock was set (on a board by SNTP or an RTC), before that the seconds
+// since the start. Other Arduino boards (AVR) have no clock in their C
+// library: there it is the seconds since the board started, from millis()
+#if defined(__arm__) || defined(_WIN32) || defined(__linux__) || defined(__MINGW32__) || defined(__APPLE__) || defined(__MINGW64__) || defined(__clang__) || defined(ESP_PLATFORM)
 #include <time.h>
 //------------------------------------------------------------------------------
 void wr_std_time( WRValue* stackTop, const int argn, WRContext* c )
@@ -311,33 +330,60 @@ void wr_std_time( WRValue* stackTop, const int argn, WRContext* c )
 	stackTop->p2 = INIT_AS_INT;
 	stackTop->i = (int32_t)time(0);
 }
+#elif defined(ARDUINO)
+//------------------------------------------------------------------------------
+void wr_std_time( WRValue* stackTop, const int argn, WRContext* c )
+{
+	stackTop->p2 = INIT_AS_INT;
+	stackTop->i = (int32_t)(millis() / 1000);
+}
 #else
 //------------------------------------------------------------------------------
 void wr_std_time( WRValue* stackTop, const int argn, WRContext* c )
 {
+	stackTop->init();
 }
 #endif
 
-#ifdef __linux__
-#include <unistd.h>
-#include <sys/time.h>
-#endif
-#ifdef _WIN32
+// time::ms: a 32 bit millisecond counter that wraps around
+//   Arduino (any board, ESP32 with the Arduino core too): millis(), since
+//     the board started
+//   ESP-IDF without Arduino: esp_timer_get_time() / 1000, since the start
+//   STM32 HAL (USE_HAL_DRIVER): HAL_GetTick(), since HAL_Init()
+//   Windows: GetTickCount(), since the system started
+//   Linux and macOS: the monotonic clock, setting the time does not move it
+//   anything else: 0
+#if defined(ARDUINO)
+// millis() comes with Arduino.h (wrench.h)
+#elif defined(ESP_PLATFORM)
+#include "esp_timer.h"
+#elif defined(USE_HAL_DRIVER)
+extern "C" uint32_t HAL_GetTick( void );
+#elif defined(_WIN32)
 #include <Windows.h>
+#elif defined(__linux__) || defined(__APPLE__)
+#include <time.h>
 #endif
 
 //------------------------------------------------------------------------------
 void wr_milliseconds(WRValue* stackTop, const int argn, WRContext* c )
 {
-	stackTop->p2 = INIT_AS_INT;
+	stackTop->init();
 
-#ifdef _WIN32
+#if defined(ARDUINO)
+	stackTop->ui = (uint32_t)millis();
+#elif defined(ESP_PLATFORM)
+	stackTop->ui = (uint32_t)(esp_timer_get_time() / 1000);
+#elif defined(USE_HAL_DRIVER)
+	stackTop->ui = (uint32_t)HAL_GetTick();
+#elif defined(_WIN32)
 	stackTop->ui = (uint32_t)GetTickCount();
-#endif
-#ifdef __linux__
-	struct timeval tv;
-	gettimeofday( &tv, NULL );
-	stackTop->ui = (uint32_t)((tv.tv_usec/1000) + (tv.tv_sec * 1000));
+#elif defined(__linux__) || defined(__APPLE__)
+	struct timespec now;
+	if ( clock_gettime(CLOCK_MONOTONIC, &now) == 0 )
+	{
+		stackTop->ui = (uint32_t)now.tv_sec * 1000u + (uint32_t)(now.tv_nsec / 1000000);
+	}
 #endif
 }
 
@@ -345,6 +391,9 @@ void wr_milliseconds(WRValue* stackTop, const int argn, WRContext* c )
 //------------------------------------------------------------------------------
 void wr_loadStdLib( WRState* w )
 {
+	// the scripts of this state start from the host's seed
+	w->randSeed = wr_Seed;
+
 	wr_registerLibraryFunction( w, "std::rand", wr_std_rand );
 	wr_registerLibraryFunction( w, "std::srand", wr_std_srand );
 	wr_registerLibraryFunction( w, "std::time", wr_std_time );

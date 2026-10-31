@@ -30,6 +30,7 @@ SOFTWARE.
 
 #include <ctype.h>
 #include <math.h>
+#include <string.h>
 
 namespace
 {
@@ -52,7 +53,30 @@ struct Token
 	float f = 0;
 };
 
-bool tokenize( const std::string& s, std::vector<Token>& out, std::string& error )
+// where the name of a private global as the variables view shows it,
+// "count@stats.w", ends when one starts at 'start'; a file name has dots
+// like a member access, so only names the program has are taken, the
+// longest one first ("count@stats.w#2")
+size_t privateNameEnd( const std::string& s, size_t start, const WrenchDebugProgram& symbols )
+{
+	size_t end = std::string::npos;
+	if ( symbols.functions().empty() )
+	{
+		return end;
+	}
+	for ( const std::string& label : symbols.functions()[0].locals )
+	{
+		std::string name = WrenchDebugProgram::displayName( label );
+		if ( name.find('@') != std::string::npos && s.compare(start, name.size(), name) == 0
+			 && (end == std::string::npos || start + name.size() > end) )
+		{
+			end = start + name.size();
+		}
+	}
+	return end;
+}
+
+bool tokenize( const std::string& s, std::vector<Token>& out, std::string& error, const WrenchDebugProgram& symbols )
 {
 	size_t p = 0;
 	while ( p < s.size() )
@@ -75,6 +99,22 @@ bool tokenize( const std::string& s, std::vector<Token>& out, std::string& error
 			while ( p < s.size() && (isalnum((unsigned char)s[p]) || s[p] == '_' || (s[p] == ':' && p + 1 < s.size() && s[p + 1] == ':')) )
 			{
 				p += (s[p] == ':') ? 2 : 1;
+			}
+			if ( p < s.size() && s[p] == '@' )
+			{
+				size_t nameStart = start + (c == ':' ? 2 : 0);
+				size_t end = privateNameEnd( s, nameStart, symbols );
+				if ( end == std::string::npos )
+				{
+					size_t q = p + 1;
+					while ( q < s.size() && (isalnum((unsigned char)s[q]) || s[q] == '_' || s[q] == '.' || s[q] == '#' || s[q] == '-') )
+					{
+						++q;
+					}
+					error = "no variable named '" + s.substr( nameStart, q - nameStart ) + "'";
+					return false;
+				}
+				p = end;
 			}
 			t.kind = TokName;
 			t.text = s.substr( start, p - start );
@@ -649,9 +689,28 @@ struct WrenchDebugEvaluator::Parser
 					error = "expected a member name after '.'";
 					return false;
 				}
-				WrenchDebugValue key = WrenchDebugValue::makeString( peek().text );
+				std::string name = peek().text;
+				WrenchDebugValue key = WrenchDebugValue::makeString( name );
 				++pos;
 				WrenchDebugValue next;
+				if ( name == "_count" || name == "_hash" )
+				{
+					// the language's read-only intrinsics: a value, not a
+					// place to watch or assign
+					if ( record )
+					{
+						error = "." + name + " is computed, watch the value it is taken of";
+						return false;
+					}
+					if ( !ev.intrinsic(out, name, next, error) )
+					{
+						return false;
+					}
+					out = next;
+					path = false;
+					where = WrenchDebugLocation();
+					continue;
+				}
 				if ( !ev.child(out, key, true, next, where, error) )
 				{
 					return false;
@@ -909,10 +968,54 @@ bool WrenchDebugEvaluator::child( const WrenchDebugValue& parent, const WrenchDe
 	return false;
 }
 
+// value._count and value._hash as the VM computes them
+bool WrenchDebugEvaluator::intrinsic( const WrenchDebugValue& value, const std::string& name, WrenchDebugValue& result, std::string& error )
+{
+	if ( name == "_count" )
+	{
+		// elements, entries, characters, members; 0 for a number
+		bool counted = value.tag == WRD_ValArray || value.tag == WRD_ValRaw || value.tag == WRD_ValString
+			|| value.tag == WRD_ValHash || value.tag == WRD_ValStruct;
+		result = WrenchDebugValue::makeInt( counted ? (int32_t)value.count : 0 );
+		return true;
+	}
+
+	// _hash: a number is its own bits, a string the hash of its text
+	if ( value.tag == WRD_ValInt )
+	{
+		result = WrenchDebugValue::makeInt( value.i );
+		return true;
+	}
+	if ( value.tag == WRD_ValFloat )
+	{
+		int32_t bits = 0;
+		memcpy( &bits, &value.f, sizeof(bits) );
+		result = WrenchDebugValue::makeInt( bits );
+		return true;
+	}
+	if ( value.isString() )
+	{
+		std::string text;
+		if ( !value.handle )
+		{
+			text = value.text;
+		}
+		else if ( !m_client.getString(value, text) )
+		{
+			error = m_client.lastError();
+			return false;
+		}
+		result = WrenchDebugValue::makeInt( (int32_t)wr_hash(text.data(), (int)text.size()) );
+		return true;
+	}
+	error = "._hash of a " + value.typeName() + " is not available in the debugger";
+	return false;
+}
+
 bool WrenchDebugEvaluator::evaluate( const std::string& expression, WrenchDebugValue& result, std::string& error )
 {
 	Parser p( *this );
-	if ( !tokenize(expression, p.toks, error) )
+	if ( !tokenize(expression, p.toks, error, m_program) )
 	{
 		return false;
 	}
@@ -932,7 +1035,7 @@ bool WrenchDebugEvaluator::evaluate( const std::string& expression, WrenchDebugV
 bool WrenchDebugEvaluator::resolve( const std::string& path, WrenchDebugValue& result, WrenchDebugLocation& where, std::string& error )
 {
 	Parser p( *this );
-	if ( !tokenize(path, p.toks, error) )
+	if ( !tokenize(path, p.toks, error, m_program) )
 	{
 		return false;
 	}
@@ -954,7 +1057,7 @@ bool WrenchDebugEvaluator::watchPath( const std::string& path, WrenchDebugWatchP
 {
 	Parser p( *this );
 	p.record = &out;
-	if ( !tokenize(path, p.toks, error) )
+	if ( !tokenize(path, p.toks, error, m_program) )
 	{
 		return false;
 	}

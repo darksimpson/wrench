@@ -163,7 +163,17 @@ private:
 static StmUartDebugTransport debugLink;
 static WRState* w = 0;
 static WrenchDebugServer* debugger = 0;
+static WRContext* script = 0;
+static bool scriptReady = false; // its global code ran to the end, loop() may be called
 static uint32_t nextCall = 0;
+
+// the script's global code; it stops on its first line when the debugger
+// launched it that way (or breakOnEntry() is armed)
+static void runScript()
+{
+	scriptReady = script && wr_executeContext( script );
+	nextCall = HAL_GetTick();
+}
 
 static void print( WRContext* c, const WRValue* argv, const int argn, WRValue& retVal, void* usr )
 {
@@ -212,25 +222,45 @@ extern "C" void wrench_target_init( UART_HandleTypeDef* huart )
 	} serverStorage;
 	debugger = new ( serverStorage.bytes ) WrenchDebugServer( w, &debugLink );
 	debugger->setHostDriven( true );
+	// a debugger may restart the script and upload new ones,
+	// wrench_target_poll() carries that out
+	debugger->setLaunchable( true );
 
-	WRContext* context = debugger->loadBytes( blink_bytecode, blink_bytecodeSize );
+	script = wr_newContext( w, blink_bytecode, blink_bytecodeSize );
+	debugger->attach( script, "blink.w" );
 
 	// uncomment to halt the script on its first line until a debugger
 	// attaches (a timeout in ms lets it run on without one)
 	// debugger->breakOnEntry();
 
-	if ( context )
-	{
-		wr_executeContext( context );
-	}
+	runScript();
 }
 
 extern "C" void wrench_target_poll( void )
 {
-	debugger->tick();
-	if ( debugger->ready() && (int32_t)(HAL_GetTick() - nextCall) >= 0 )
+	int events = debugger->tick();
+	if ( events & WRD_TickProgramUploaded )
 	{
-		WRValue* ret = wr_callFunction( debugger->context(), "loop" );
+		uint8_t* bytes;
+		int size;
+		if ( debugger->takeUpload(bytes, size) )
+		{
+			wr_destroyContext( script );
+			script = wr_newContext( w, bytes, size, true );
+			debugger->attach( script, "blink.w" );
+			scriptReady = false;
+		}
+	}
+	if ( events & WRD_TickRunRequested )
+	{
+		// from the start, with fresh globals
+		wr_resetContext( script );
+		runScript();
+	}
+
+	if ( scriptReady && (int32_t)(HAL_GetTick() - nextCall) >= 0 )
+	{
+		WRValue* ret = wr_callFunction( script, "loop" );
 		int delayMs = ret ? ret->asInt() : 1000;
 		nextCall = HAL_GetTick() + (delayMs > 0 ? delayMs : 1);
 	}

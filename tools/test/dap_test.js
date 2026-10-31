@@ -1,5 +1,5 @@
 // End to end test of "wrench dap": drives the adapter the way VS Code does.
-// usage: node dap_test.js [path to wrench executable]
+// usage: node dap_test.js [path to wrench executable] [test name]
 'use strict';
 
 const { spawn, execFileSync } = require('child_process');
@@ -308,9 +308,33 @@ async function testIncludedFiles() {
 	assert.strictEqual(st.stackFrames[1].line, 6);
 	assert(path.resolve(st.stackFrames[1].source.path).toLowerCase() === path.resolve(program).toLowerCase(), st.stackFrames[1].source.path);
 
+	// a private global is "calls@util.w" in the Globals of any frame, and
+	// that name works in expressions and watchpoints; plain "calls" only
+	// means it in util.w
+	const mainScopes = (await dap.ok('scopes', { frameId: st.stackFrames[1].id })).scopes;
+	const mainGlobalsRef = mainScopes.find((s) => s.name === 'Globals').variablesReference;
+	const mainGlobals = await variablesByName(dap, mainGlobalsRef);
+	assert.strictEqual(mainGlobals['calls@util.w'].evaluateName, '::calls@util.w');
+	const inMain = (expression) => dap.request('evaluate', { expression, frameId: st.stackFrames[1].id, context: 'watch' });
+	assert.strictEqual((await inMain('::calls@util.w + 1')).body.result, '1');
+	assert(/no variable named 'calls'/.test((await inMain('calls')).message));
+	assert(/no variable named 'calls@nowhere\.w'/.test((await inMain('::calls@nowhere.w')).message));
+	const inUtil = await dap.ok('evaluate', { expression: 'calls', frameId: st.stackFrames[0].id, context: 'watch' });
+	assert.strictEqual(inUtil.result, '0');
+	const calls = await dap.ok('dataBreakpointInfo', { variablesReference: mainGlobalsRef, name: 'calls@util.w' });
+	assert(calls.dataId, calls.description);
+	assert.strictEqual(calls.description, '::calls@util.w');
+	const watch = await dap.ok('setDataBreakpoints', { breakpoints: [{ dataId: calls.dataId }] });
+	assert(watch.breakpoints[0].verified, JSON.stringify(watch));
+
 	// the main file's breakpoints stay apart from the included file's
 	await dap.ok('setBreakpoints', { source: { path: program }, breakpoints: [{ line: 8 }] });
 	await dap.ok('setBreakpoints', { source: { path: util }, breakpoints: [] });
+	await dap.ok('continue', { threadId: 1 });
+	const changed = await dap.waitEvent('stopped');
+	assert.strictEqual(changed.reason, 'data breakpoint');
+	assert.strictEqual(changed.description, '::calls@util.w changed');
+	await dap.ok('setDataBreakpoints', { breakpoints: [] });
 	await dap.ok('continue', { threadId: 1 });
 	const second = await dap.waitEvent('stopped');
 	assert.strictEqual(second.reason, 'breakpoint');
@@ -725,10 +749,117 @@ async function testAttachedContext() {
 	}
 }
 
+// the uploaded program ending does not end the session while the target
+// runs a context of its own
+async function testProgramEndsBesideContext() {
+	const port = 17000 + Math.floor(Math.random() * 2000);
+	const program = path.join(fixtures, 'sample.w');
+	const ticker = path.join(fixtures, 'ticker.w');
+	const server = spawn(exe, ['dbgserver', '-target', `tcp:${port}`, '-context', ticker, program], { stdio: ['ignore', 'pipe', 'pipe'] });
+	await new Promise((resolve) => setTimeout(resolve, 500));
+
+	try {
+		const dap = new DapClient();
+		await dap.ok('initialize', { adapterID: 'wrench' });
+		await dap.ok('launch', { program, transport: 'tcp', host: '127.0.0.1', port });
+		await dap.waitEvent('initialized');
+		await dap.ok('configurationDone');
+		await dap.waitEvent('output', (b) => /keeps running its other programs/.test(b.output));
+
+		await dap.ok('setBreakpoints', { source: { path: ticker }, breakpoints: [{ line: 6 }] });
+		const stopped = await dap.waitEvent('stopped');
+		assert.strictEqual(stopped.threadId, 2);
+		assert(!dap.events.some((e) => e.event === 'terminated'), dap.output());
+		assert(/total=/.test(dap.output()), dap.output());
+
+		await dap.ok('setBreakpoints', { source: { path: ticker }, breakpoints: [] });
+		await dap.ok('continue', { threadId: 2 });
+		await dap.ok('disconnect', { terminateDebuggee: false });
+		dap.close();
+	} finally {
+		server.kill();
+	}
+}
+
+// attach goes over tcp unless told otherwise, and names the attribute
+// that is missing
+async function testAttachDefaults() {
+	const dap = new DapClient();
+	await dap.ok('initialize', { adapterID: 'wrench' });
+	const r = await dap.request('attach', {});
+	assert(!r.success && /needs the "port" attribute/.test(r.message), r.message);
+	const r2 = await dap.request('attach', { transport: 'serial' });
+	assert(!r2.success && /needs the "serialPort" attribute/.test(r2.message), r2.message);
+	dap.close();
+
+	const port = 37000 + Math.floor(Math.random() * 2000);
+	const program = path.join(fixtures, 'sample.w');
+	const server = spawn(exe, ['dbgserver', '-target', `tcp:${port}`, program], { stdio: ['ignore', 'pipe', 'pipe'] });
+	await new Promise((resolve) => setTimeout(resolve, 500));
+	try {
+		const dap2 = new DapClient();
+		await dap2.ok('initialize', { adapterID: 'wrench' });
+		await dap2.ok('attach', { program, port });
+		await dap2.waitEvent('initialized');
+		await dap2.ok('configurationDone');
+		assert(new RegExp(`Connected to tcp 127\\.0\\.0\\.1:${port}`).test(dap2.output()), dap2.output());
+		await dap2.ok('disconnect', {});
+		dap2.close();
+	} finally {
+		server.kill();
+	}
+}
+
+// a local launch uploads the program itself: that is no news to report
+async function testNoLoadedNoticeForOwnUpload() {
+	const dap = new DapClient();
+	await dap.ok('initialize', { adapterID: 'wrench' });
+	await dap.ok('launch', { program: path.join(fixtures, 'sample.w') });
+	await dap.waitEvent('initialized');
+	await dap.ok('configurationDone');
+	await dap.waitEvent('exited');
+	assert(/total=\d+/.test(dap.output()), dap.output());
+	assert(!/loaded a new program/.test(dap.output()), dap.output());
+	await dap.ok('disconnect', {});
+	dap.close();
+}
+
+// stopping a local session that runs code without debug information (it
+// cannot answer requests) is quick
+async function testQuickStopWithoutDebugCode() {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wrench_dap_loop_'));
+	const source = path.join(dir, 'loop.w');
+	const bin = path.join(dir, 'loop.bin');
+	fs.writeFileSync(source, 'var i = 0;\nwhile( 1 )\n{\n\ti = i + 1;\n}\n');
+	execFileSync(exe, ['c', source, bin]);
+	try {
+		for (const command of ['terminate', 'disconnect']) {
+			const dap = new DapClient();
+			await dap.ok('initialize', { adapterID: 'wrench' });
+			await dap.ok('launch', { program: bin });
+			await dap.waitEvent('initialized');
+			await dap.ok('configurationDone');
+			await new Promise((resolve) => setTimeout(resolve, 300));
+			const start = Date.now();
+			await dap.ok(command, command === 'disconnect' ? { terminateDebuggee: true } : {});
+			if (command === 'terminate') {
+				await dap.waitEvent('terminated');
+				await dap.ok('disconnect', {});
+			}
+			const took = Date.now() - start;
+			assert(took < 2500, `${command} took ${took} ms`);
+			dap.close();
+		}
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+}
+
 (async () => {
-	const tests = [testLaunchSession, testDataBreakpoints, testIncludedFiles, testImportedModule, testRuntimeError, testHostProject, testBinaryProgram, testUploadRefused, testAttachToWaitingScript, testRobustness, testErrors, testRemoteAttach, testAttachedContext];
+	const tests = [testLaunchSession, testDataBreakpoints, testIncludedFiles, testImportedModule, testRuntimeError, testHostProject, testBinaryProgram, testUploadRefused, testAttachToWaitingScript, testRobustness, testErrors, testRemoteAttach, testAttachedContext, testProgramEndsBesideContext,
+		testAttachDefaults, testNoLoadedNoticeForOwnUpload, testQuickStopWithoutDebugCode];
 	let failed = 0;
-	for (const t of tests) {
+	for (const t of tests.filter((t) => !process.argv[3] || t.name === process.argv[3])) {
 		try {
 			await t();
 			console.log(`PASS ${t.name}`);

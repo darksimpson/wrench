@@ -117,7 +117,10 @@ private:
 	bool loadProgram( std::string& error );
 	bool fetchProgram();
 	bool start();
-	void waitForStop();
+	void leave();
+	void restart();
+	void waitForStop( bool restoreBreakpointsOnEntry = false );
+	void onIdleEvent( const WrenchDebugEvent& e );
 	void onStopped( const WrenchDebugEvent& e );
 	void showLocation();
 	void showBacktrace();
@@ -126,6 +129,7 @@ private:
 	void listSource( int program, int file, int center, int radius );
 	void toggleBreakpoint( const std::string& arg );
 	bool syncBreakpoints();
+	void clearTargetBreakpoints();
 	void syncPrograms();
 	void listPrograms();
 	void onProgramEvent( const WrenchDebugEvent& e );
@@ -144,9 +148,10 @@ private:
 	void setExpression( const std::string& text );
 	void help();
 	bool refreshStack();
-	void pingLoop();
-	void startPinger();
-	void stopPinger();
+	void readerLoop();
+	void startReader();
+	void stopReader();
+	void prompt();
 	char* readCommand( char* buf, int size );
 
 	FILE* m_in;
@@ -177,64 +182,113 @@ private:
 	bool m_stopped = false;
 	bool m_running = false;
 	bool m_hex = false;
+	bool m_connected = false; // the target answered the hello
 
-	// a halted target may give up on a debugger it has not heard from
-	// (setLinkTimeout): while the prompt waits for the user, a thread pings
-	// it. The client is only used by whichever thread holds m_clientLock
-	// while m_idleAtPrompt says the prompt is waiting
-	std::thread m_pinger;
-	std::mutex m_clientLock;
-	std::condition_variable m_pingWake;
-	bool m_pingQuit = false;
-	bool m_idleAtPrompt = false;
+	// the prompt's line is read by a thread of its own, one line when asked
+	// for, while this thread keeps serving the link: events (a stop in a
+	// function the firmware called) show at once, and a halted remote
+	// target, which may give up on a debugger it has not heard from
+	// (setLinkTimeout), is pinged
+	std::thread m_reader;
+	std::mutex m_readLock;
+	std::condition_variable m_readWake;
+	bool m_readWanted = false;
+	bool m_readDone = false;
+	bool m_readEof = false;
+	bool m_readQuit = false;
+	std::string m_readLine;
 };
 
-void CliDebugger::pingLoop()
+void CliDebugger::readerLoop()
 {
-	std::unique_lock<std::mutex> lock( m_clientLock );
-	while ( !m_pingQuit )
+	std::unique_lock<std::mutex> lock( m_readLock );
+	for ( ;; )
 	{
-		m_pingWake.wait_for( lock, std::chrono::seconds(1) );
-		if ( !m_pingQuit && m_idleAtPrompt && m_client && m_client->linkUp() )
+		m_readWake.wait( lock, [this]() { return m_readWanted || m_readQuit; } );
+		if ( m_readQuit )
 		{
-			m_client->ping();
+			return;
 		}
+		m_readWanted = false;
+		lock.unlock();
+		char buf[1024];
+		char* got = fgets( buf, (int)sizeof(buf), m_in );
+		lock.lock();
+		m_readEof = !got;
+		m_readLine = got ? buf : "";
+		m_readDone = true;
+		m_readWake.notify_all();
 	}
 }
 
-void CliDebugger::startPinger()
+void CliDebugger::startReader()
 {
-	m_pinger = std::thread( [this]() { pingLoop(); } );
+	m_reader = std::thread( [this]() { readerLoop(); } );
 }
 
-void CliDebugger::stopPinger()
+// only called while no line is asked for, so the reader is not inside fgets
+void CliDebugger::stopReader()
 {
-	if ( !m_pinger.joinable() )
+	if ( !m_reader.joinable() )
 	{
 		return;
 	}
 	{
-		std::lock_guard<std::mutex> lock( m_clientLock );
-		m_pingQuit = true;
+		std::lock_guard<std::mutex> lock( m_readLock );
+		m_readQuit = true;
 	}
-	m_pingWake.notify_all();
-	m_pinger.join();
+	m_readWake.notify_all();
+	m_reader.join();
 }
 
-// the next command line; meanwhile the pinger keeps a halted remote target
-// from letting go of us
+void CliDebugger::prompt()
+{
+	printf( m_stopped ? "(wdb) " : "(wdb:idle) " );
+	fflush( stdout );
+}
+
+// the next command line, null at the end of the input
 char* CliDebugger::readCommand( char* buf, int size )
 {
+	std::unique_lock<std::mutex> lock( m_readLock );
+	m_readWanted = true;
+	m_readWake.notify_all();
+	std::chrono::steady_clock::time_point lastPing = std::chrono::steady_clock::now();
+	while ( !m_readDone )
 	{
-		std::lock_guard<std::mutex> lock( m_clientLock );
-		m_idleAtPrompt = m_stopped && !m_link.isLocal();
+		m_readWake.wait_for( lock, std::chrono::milliseconds(50) );
+		if ( m_readDone )
+		{
+			break;
+		}
+		lock.unlock();
+		bool shown = false;
+		WrenchDebugEvent e;
+		while ( m_client->waitEvent(e, 0) )
+		{
+			onIdleEvent( e );
+			shown = true;
+		}
+		std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+		if ( m_stopped && !m_link.isLocal() && m_client->linkUp() && now - lastPing >= std::chrono::seconds(1) )
+		{
+			m_client->ping();
+			lastPing = now;
+		}
+		if ( shown )
+		{
+			prompt();
+		}
+		fflush( stdout );
+		lock.lock();
 	}
-	char* line = fgets( buf, size, m_in );
+	m_readDone = false;
+	if ( m_readEof )
 	{
-		std::lock_guard<std::mutex> lock( m_clientLock );
-		m_idleAtPrompt = false;
+		return nullptr;
 	}
-	return line;
+	snprintf( buf, (size_t)size, "%s", m_readLine.c_str() );
+	return buf;
 }
 
 // a .w file is compiled, a .bin is used as it is with its embedded source
@@ -379,9 +433,13 @@ bool CliDebugger::parseLocation( const std::string& arg, int& program, int& file
 		for ( size_t f = 0; f < files.size(); ++f )
 		{
 			const std::string& full = files[f].name;
+			// either may be the longer path: included files are named
+			// relative to the main file's folder ("lib/util.w")
 			bool match = full == name
 				|| (full.size() > name.size() && full.compare(full.size() - name.size(), name.size(), name) == 0
-					&& (full[full.size() - name.size() - 1] == '/' || full[full.size() - name.size() - 1] == '\\'));
+					&& (full[full.size() - name.size() - 1] == '/' || full[full.size() - name.size() - 1] == '\\'))
+				|| (f > 0 && !full.empty() && name.size() > full.size() && name.compare(name.size() - full.size(), full.size(), full) == 0
+					&& (name[name.size() - full.size() - 1] == '/' || name[name.size() - full.size() - 1] == '\\'));
 			if ( match )
 			{
 				program = p;
@@ -546,6 +604,7 @@ bool CliDebugger::start()
 		printf( "no answer from target (%s): %s\n", m_spec.describe().c_str(), m_client->lastError().c_str() );
 		return false;
 	}
+	m_connected = true;
 	printf( "connected to %s, wrench %s, max packet %u bytes\n",
 					m_spec.describe().c_str(), info.wrenchVersion.c_str(), (unsigned)info.maxPayload );
 
@@ -580,6 +639,11 @@ bool CliDebugger::start()
 			printf( "warning: the target runs a different build of %s than the local one\n", m_sourcePath.c_str() );
 		}
 	}
+	else if ( !(info.caps & WRD_CapLaunch) )
+	{
+		printf( "the target runs its own program and takes no launches (its firmware did not call setLaunchable(true)), use -attach\n" );
+		return false;
+	}
 	else if ( !(info.caps & WRD_CapLoad) )
 	{
 		printf( "the target does not accept uploaded programs (its firmware called setAllowUpload(false)), use -attach\n" );
@@ -600,6 +664,114 @@ bool CliDebugger::start()
 	return syncBreakpoints();
 }
 
+// the end of a session, whichever way it ends once the target answered: a
+// remote target is detached (it drops our breakpoints and runs on, not
+// halted for a debugger that is gone), the local one ends
+void CliDebugger::leave()
+{
+	stopReader();
+	if ( m_connected && m_client && m_client->linkUp() )
+	{
+		if ( m_link.isLocal() )
+		{
+			m_client->terminate();
+		}
+		else
+		{
+			m_client->detach();
+		}
+	}
+	m_connected = false;
+	m_link.close();
+}
+
+// r: run program 0 from its start. A run that is on is terminated first.
+// That does not end a function the firmware called (a host driven target),
+// and the firmware may call it again: the breakpoints are off the target
+// until the new run halts on its first line, so a stop there cannot keep
+// the target too busy to launch
+void CliDebugger::restart()
+{
+	bool wasOn = m_stopped || m_running;
+	if ( wasOn )
+	{
+		// only a run of program 0's global code ends with an Ended event
+		bool globalCode = m_stopped && !m_frames.empty() && m_frames.back().function < 0 && m_frames.back().program <= 0;
+		bool waitEnded = !m_stopped || globalCode;
+		clearTargetBreakpoints();
+		m_client->terminate();
+		m_stopped = false;
+		m_running = false;
+		m_frames.clear();
+		std::chrono::steady_clock::time_point until = std::chrono::steady_clock::now() + std::chrono::seconds( 2 );
+		while ( waitEnded && std::chrono::steady_clock::now() < until )
+		{
+			WrenchDebugEvent e;
+			if ( !m_client->waitEvent(e, 100) )
+			{
+				continue;
+			}
+			if ( e.type == WrenchDebugEvent::Ended )
+			{
+				break;
+			}
+			if ( e.type == WrenchDebugEvent::Stopped )
+			{
+				// a step or a watch of the run that is going away
+				m_client->terminate();
+			}
+			else
+			{
+				onIdleEvent( e );
+			}
+		}
+	}
+
+	// a target still inside a call of the firmware takes the launch once
+	// that call returned
+	std::chrono::steady_clock::time_point until = std::chrono::steady_clock::now() + std::chrono::seconds( 3 );
+	while ( !m_client->launch(wasOn) )
+	{
+		if ( m_client->lastError() != WrenchDebugClient::errorName(WRD_ErrBusy) || std::chrono::steady_clock::now() >= until )
+		{
+			printf( "launch failed: %s\n", m_client->lastError().c_str() );
+			if ( wasOn )
+			{
+				syncBreakpoints();
+			}
+			return;
+		}
+		WrenchDebugEvent e;
+		if ( !m_client->waitEvent(e, 100) )
+		{
+			continue;
+		}
+		if ( e.type == WrenchDebugEvent::Stopped )
+		{
+			m_client->terminate();
+		}
+		else
+		{
+			onIdleEvent( e );
+		}
+	}
+	waitForStop( wasOn );
+}
+
+// every program's breakpoints off the target, ours are kept
+void CliDebugger::clearTargetBreakpoints()
+{
+	std::vector<int> ids = m_programs.ids();
+	if ( std::find(ids.begin(), ids.end(), 0) == ids.end() )
+	{
+		ids.push_back( 0 );
+	}
+	for ( int p : ids )
+	{
+		m_client->setBreakpoints( std::vector<int>(), p );
+	}
+}
+
 bool CliDebugger::refreshStack()
 {
 	m_frames.clear();
@@ -613,6 +785,40 @@ bool CliDebugger::refreshStack()
 		m_frame = 0;
 	}
 	return true;
+}
+
+// an event that came while no command waits for one
+void CliDebugger::onIdleEvent( const WrenchDebugEvent& e )
+{
+	if ( e.type == WrenchDebugEvent::Output )
+	{
+		fwrite( e.text.data(), 1, e.text.size(), stdout );
+	}
+	else if ( e.type == WrenchDebugEvent::Stopped )
+	{
+		onStopped( e );
+	}
+	else if ( e.type == WrenchDebugEvent::Ended )
+	{
+		m_running = false;
+		m_stopped = false;
+		printf( "\n[ended%s%s]\n", e.error ? " with " : "", e.error ? wr_debugErrorText(e.error).c_str() : "" );
+	}
+	else if ( e.type == WrenchDebugEvent::WatchRemoved )
+	{
+		onWatchRemoved( e.watch );
+	}
+	else if ( e.type == WrenchDebugEvent::ProgramAdded || e.type == WrenchDebugEvent::ProgramRemoved )
+	{
+		onProgramEvent( e );
+	}
+	else if ( e.type == WrenchDebugEvent::Disconnected )
+	{
+		m_running = false;
+		m_stopped = false;
+		printf( "\n[target disconnected]\n" );
+	}
+	fflush( stdout );
 }
 
 void CliDebugger::onStopped( const WrenchDebugEvent& e )
@@ -727,10 +933,14 @@ void CliDebugger::listWatches()
 	}
 }
 
-void CliDebugger::waitForStop()
+// restoreBreakpointsOnEntry: the run was launched halted on its first line
+// without breakpoints on the target (restart()): that stop puts them back
+// and goes on, unless one of them is on that very line
+void CliDebugger::waitForStop( bool restoreBreakpointsOnEntry )
 {
 	m_running = true;
 	m_stopped = false;
+	m_frames.clear(); // a running program has no stack to show
 	g_interrupt = false;
 	bool pauseSent = false;
 
@@ -774,6 +984,25 @@ void CliDebugger::waitForStop()
 			}
 			case WrenchDebugEvent::Stopped:
 			{
+				if ( restoreBreakpointsOnEntry && e.reason == WRD_StopEntry )
+				{
+					restoreBreakpointsOnEntry = false;
+					syncBreakpoints();
+					if ( std::find(m_breakpoints.begin(), m_breakpoints.end(), std::make_pair((int)e.program, (int)e.line)) == m_breakpoints.end() )
+					{
+						if ( !m_client->resume() )
+						{
+							printf( "%s\n", m_client->lastError().c_str() );
+							onStopped( e );
+							return;
+						}
+						break;
+					}
+					WrenchDebugEvent hit = e;
+					hit.reason = WRD_StopBreakpoint;
+					onStopped( hit );
+					return;
+				}
 				onStopped( e );
 				return;
 			}
@@ -1052,6 +1281,7 @@ int CliDebugger::run( const char* sourcePath, const char* target, bool attach, c
 	}
 	if ( !start() )
 	{
+		leave();
 		return -1;
 	}
 	if ( !m_program.hasDebugCode() )
@@ -1072,47 +1302,19 @@ int CliDebugger::run( const char* sourcePath, const char* target, bool attach, c
 	}
 
 	signal( SIGINT, onInterrupt );
-	startPinger();
+	startReader();
 
 	char buf[1024];
 	for ( ;; )
 	{
-		// collect output and events that arrived while we were idle
+		// collect output and events that arrived meanwhile
 		WrenchDebugEvent e;
 		while ( m_client->waitEvent(e, 0) )
 		{
-			if ( e.type == WrenchDebugEvent::Output )
-			{
-				fwrite( e.text.data(), 1, e.text.size(), stdout );
-			}
-			else if ( e.type == WrenchDebugEvent::Stopped )
-			{
-				onStopped( e );
-			}
-			else if ( e.type == WrenchDebugEvent::Ended )
-			{
-				m_running = false;
-				m_stopped = false;
-				printf( "\n[ended%s%s]\n", e.error ? " with " : "", e.error ? wr_debugErrorText(e.error).c_str() : "" );
-			}
-			else if ( e.type == WrenchDebugEvent::WatchRemoved )
-			{
-				onWatchRemoved( e.watch );
-			}
-			else if ( e.type == WrenchDebugEvent::ProgramAdded || e.type == WrenchDebugEvent::ProgramRemoved )
-			{
-				onProgramEvent( e );
-			}
-			else if ( e.type == WrenchDebugEvent::Disconnected )
-			{
-				m_running = false;
-				m_stopped = false;
-				printf( "\n[target disconnected]\n" );
-			}
+			onIdleEvent( e );
 		}
 
-		printf( m_stopped ? "(wdb) " : "(wdb:idle) " );
-		fflush( stdout );
+		prompt();
 		if ( !readCommand(buf, (int)sizeof(buf)) )
 		{
 			break;
@@ -1141,21 +1343,7 @@ int CliDebugger::run( const char* sourcePath, const char* target, bool attach, c
 		}
 		else if ( cmd == "r" || cmd == "run" )
 		{
-			if ( m_stopped || m_running )
-			{
-				m_client->terminate();
-				WrenchDebugEvent ended;
-				while ( m_client->waitEvent(ended, 2000) && ended.type != WrenchDebugEvent::Ended )
-				{
-				}
-			}
-			m_stopped = false;
-			if ( !m_client->launch(false) )
-			{
-				printf( "launch failed: %s\n", m_client->lastError().c_str() );
-				continue;
-			}
-			waitForStop();
+			restart();
 		}
 		else if ( cmd == "c" || cmd == "continue" )
 		{
@@ -1319,13 +1507,22 @@ int CliDebugger::run( const char* sourcePath, const char* target, bool attach, c
 		}
 		else if ( cmd == "kill" )
 		{
+			// a function the firmware called ends without an Ended event
+			bool firmwareCall = m_stopped && !m_frames.empty() && (m_frames.back().function >= 0 || m_frames.back().program > 0);
 			if ( !m_client->terminate() )
 			{
 				printf( "%s\n", m_client->lastError().c_str() );
 				m_stopped = m_stopped && m_client->linkUp();
 				continue;
 			}
-			if ( m_stopped || m_running )
+			if ( firmwareCall )
+			{
+				m_stopped = false;
+				m_running = false;
+				m_frames.clear();
+				printf( "[terminated the call of the firmware]\n" );
+			}
+			else if ( m_stopped || m_running )
 			{
 				waitForStop();
 			}
@@ -1336,19 +1533,7 @@ int CliDebugger::run( const char* sourcePath, const char* target, bool attach, c
 		}
 	}
 
-	stopPinger();
-	if ( m_client && m_client->linkUp() )
-	{
-		if ( m_link.isLocal() )
-		{
-			m_client->terminate();
-		}
-		else
-		{
-			m_client->detach();
-		}
-	}
-	m_link.close();
+	leave();
 	signal( SIGINT, SIG_DFL );
 	return 0;
 }

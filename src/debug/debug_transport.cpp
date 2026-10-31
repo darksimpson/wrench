@@ -228,7 +228,8 @@ WrenchDebugTcpServerTransport::~WrenchDebugTcpServerTransport()
 	}
 }
 
-bool WrenchDebugTcpServerTransport::listen( int port, bool loopbackOnly )
+// a listening socket on port of the address ip (network byte order)
+static bool wr_tcpListen( intptr_t& listenSocket, int port, uint32_t ip )
 {
 	wr_socket_t s = socket( AF_INET, SOCK_STREAM, IPPROTO_TCP );
 	if ( (intptr_t)s == WR_SOCKET_INVALID )
@@ -248,7 +249,7 @@ bool WrenchDebugTcpServerTransport::listen( int port, bool loopbackOnly )
 	memset( &addr, 0, sizeof(addr) );
 	addr.sin_family = AF_INET;
 	addr.sin_port = htons( (unsigned short)port );
-	addr.sin_addr.s_addr = htonl( loopbackOnly ? INADDR_LOOPBACK : INADDR_ANY );
+	addr.sin_addr.s_addr = ip;
 
 	if ( bind(s, (struct sockaddr*)&addr, sizeof(addr)) != 0 || ::listen(s, 1) != 0 )
 	{
@@ -257,8 +258,34 @@ bool WrenchDebugTcpServerTransport::listen( int port, bool loopbackOnly )
 	}
 
 	wr_socketNonBlocking( s );
-	m_listen = (intptr_t)s;
+	listenSocket = (intptr_t)s;
 	return true;
+}
+
+bool WrenchDebugTcpServerTransport::listen( int port, bool loopbackOnly )
+{
+	return wr_tcpListen( m_listen, port, htonl(loopbackOnly ? INADDR_LOOPBACK : INADDR_ANY) );
+}
+
+bool WrenchDebugTcpServerTransport::listenOn( const char* address, int port )
+{
+	if ( !address || !address[0] )
+	{
+		return false;
+	}
+	struct addrinfo hints;
+	memset( &hints, 0, sizeof(hints) );
+	hints.ai_family = AF_INET;
+	hints.ai_socktype = SOCK_STREAM;
+	hints.ai_flags = AI_PASSIVE;
+	struct addrinfo* result = 0;
+	if ( getaddrinfo(address, 0, &hints, &result) != 0 || !result )
+	{
+		return false;
+	}
+	uint32_t ip = ((struct sockaddr_in*)result->ai_addr)->sin_addr.s_addr;
+	freeaddrinfo( result );
+	return wr_tcpListen( m_listen, port, ip );
 }
 
 bool WrenchDebugTcpServerTransport::waitForClient( int timeoutMs )

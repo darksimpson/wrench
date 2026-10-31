@@ -182,7 +182,6 @@ public:
 	static int programOf( const WrenchDebugServerPrivate* I, const WRContext* context );
 	static int addProgram( WrenchDebugServerPrivate* I, WRContext* context, uint8_t importer, const char* name );
 	static void announceProgram( WrenchDebugServerPrivate* I, uint8_t type, int program );
-	static void runLaunch( WrenchDebugServerPrivate* I );
 	static void onDisconnect( WrenchDebugServerPrivate* I );
 
 	static uint8_t* payload( WrenchDebugServerPrivate* I ) { return I->tx + WRD_FRAME_HEADER; }
@@ -226,6 +225,7 @@ void WrenchDebugServerImpl::init( WrenchDebugServerPrivate* I )
 	I->stepMode = WRD_StepNone;
 	I->lastLine = -1;
 	I->stopProgram = WRD_NoProgram;
+	I->entryProgram = WRD_NoProgram;
 	for ( int p = 0; p < WRENCH_DEBUG_MAX_PROGRAMS; ++p )
 	{
 		I->programs[p].importer = WRD_NoProgram;
@@ -254,8 +254,8 @@ void WrenchDebugServerImpl::announceProgram( WrenchDebugServerPrivate* I, uint8_
 	}
 }
 
-// one more program, in the first free slot after program 0 (which is the
-// one loadBytes() and uploads use); -1 when they are all taken
+// one more program, in the first free slot after program 0 (the first
+// context attached, the one uploads replace); -1 when they are all taken
 int WrenchDebugServerImpl::addProgram( WrenchDebugServerPrivate* I, WRContext* context, uint8_t importer, const char* name )
 {
 	int existing = programOf( I, context );
@@ -1016,8 +1016,8 @@ void WrenchDebugServerImpl::readProgramInfo( WrenchDebugProgramSlot& p )
 	}
 }
 
-// stop debugging a program, destroying its context if the server made it
-// (the modules it imported go with it, and stop being debugged too)
+// stop debugging a program, and the modules it imported (the context is the
+// firmware's, it may live on undebugged)
 void WrenchDebugServerImpl::releaseProgram( WrenchDebugServerPrivate* I, int program )
 {
 	WrenchDebugProgramSlot& p = I->programs[program];
@@ -1063,8 +1063,6 @@ void WrenchDebugServerImpl::releaseProgram( WrenchDebugServerPrivate* I, int pro
 	I->breakpointCount = kept;
 
 	WRContext* context = p.context;
-	bool owned = p.ownsContext;
-	const uint8_t* bytes = p.ownsBytes ? p.bytes : 0;
 	bool wasThere = context != 0;
 	memset( (char*)&p, 0, sizeof(p) );
 	p.importer = WRD_NoProgram;
@@ -1072,12 +1070,19 @@ void WrenchDebugServerImpl::releaseProgram( WrenchDebugServerPrivate* I, int pro
 	if ( context )
 	{
 		context->debugServer = 0;
-		if ( owned )
+	}
+	if ( context && I->abortContext == context )
+	{
+		I->abortPending = false;
+		I->abortContext = 0;
+	}
+	for ( int m = 0; wasThere && m < WRENCH_DEBUG_MAX_PROGRAMS; ++m )
+	{
+		if ( I->programs[m].context && I->programs[m].importer == program )
 		{
-			wr_destroyContext( context );
+			releaseProgram( I, m );
 		}
 	}
-	g_free( (void*)bytes );
 
 	if ( program == 0 )
 	{
@@ -1101,9 +1106,10 @@ void WrenchDebugServerImpl::onDisconnect( WrenchDebugServerPrivate* I )
 	{
 		I->resume = true;
 	}
-	if ( I->abortOnDisconnect && (I->inLaunch || I->inHook || I->state == WRD_StateStopped) )
+	if ( I->abortOnDisconnect && (I->inHook || I->state == WRD_StateStopped) )
 	{
 		I->abortPending = true;
+		I->abortContext = 0;
 	}
 	I->decoder.reset();
 }
@@ -1194,12 +1200,15 @@ bool WrenchDebugServerImpl::stopLoop( WrenchDebugServerPrivate* I, uint8_t reaso
 
 	I->resume = false;
 	I->state = WRD_StateRunning;
+	I->lastPollMs = I->transport->millis();
 	resetHandles( I );
 	refreshWatches( I );
 
-	if ( I->abortPending )
+	// not one meant for a yielded call of another context
+	if ( I->abortPending && (!I->abortContext || I->abortContext == I->stopContext) )
 	{
 		I->abortPending = false;
+		I->abortContext = 0;
 		return true;
 	}
 	return false;
@@ -1230,105 +1239,11 @@ bool WrenchDebugServerImpl::waitForClient( WrenchDebugServerPrivate* I, uint32_t
 	return I->helloReceived;
 }
 
-void WrenchDebugServerImpl::runLaunch( WrenchDebugServerPrivate* I )
-{
-	I->launchPending = false;
-
-	// a launch runs program 0
-	WrenchDebugProgramSlot& P = I->programs[0];
-	if ( !P.context )
-	{
-		return;
-	}
-
-	if ( P.context->stopLocation || P.context->yield_pc || I->contextRan )
-	{
-		// already ran (maybe cut short by a terminate or an error), globals
-		// must start fresh so build a new context (the modules the old one
-		// imported go with it)
-		if ( !P.ownsContext || !P.bytes )
-		{
-			return;
-		}
-		resetHandles( I );
-		P.context->debugServer = 0;
-		wr_destroyContext( P.context );
-		P.context = wr_newContext( I->w, P.bytes, (int)P.bytesLen );
-		if ( !P.context )
-		{
-			I->state = WRD_StateNoProgram;
-			return;
-		}
-		P.context->debugServer = I->parent;
-		I->tickFlags |= WRD_TickProgramLoaded; // firmware must fetch context() again
-	}
-	I->contextRan = true;
-
-	// a run that was cut short leaves no frames behind; globals start over
-	clearWatches( I, true, true );
-	refreshWatches( I );
-
-	I->stepMode = (I->launchFlags & WRD_LaunchStopOnEntry) ? WRD_StepEntry : WRD_StepNone;
-	I->abortPending = false;
-	I->state = WRD_StateRunning;
-	I->inLaunch = true;
-	I->lastLine = -1;
-
-	WRValue* ret = wr_executeContext( P.context );
-	while ( !ret && I->w->err == WR_ERR_None && P.context->yield_pc )
-	{
-		// nobody else will resume a script yield in server driven mode
-		pump( I );
-		if ( I->abortPending )
-		{
-			I->abortPending = false;
-			I->w->err = WR_ERR_debugger_terminated;
-			break;
-		}
-		ret = wr_continue( P.context );
-	}
-
-	I->inLaunch = false;
-	I->state = WRD_StateEnded;
-	I->stepMode = WRD_StepNone;
-	resetHandles( I );
-
-	uint8_t err = I->w->err;
-	WrenchDebugWriter out( payload(I), WRENCH_DEBUG_MAX_PAYLOAD );
-	out.u8( err );
-	uint8_t flags = 0;
-	if ( err == WR_ERR_debugger_terminated )
-	{
-		flags |= WRD_EndedAborted;
-	}
-	if ( I->hostDriven )
-	{
-		flags |= WRD_EndedHostDriven;
-	}
-	out.u8( flags );
-	out.i32( I->lastLine );
-	out.u32( missingFunction(I, err) );
-	if ( ret )
-	{
-		writeValue( I, out, *ret );
-	}
-	else
-	{
-		WRValue zero;
-		zero.init();
-		writeValue( I, out, zero );
-	}
-	send( I, WRD_MsgEventEnded, 0, out.overflow() ? 10 : out.size() );
-	resetHandles( I );
-
-	I->tickFlags |= WRD_TickProgramRan;
-}
-
 void WrenchDebugServerImpl::process( WrenchDebugServerPrivate* I, const WrenchDebugFrame& frame )
 {
 	WrenchDebugReader in( frame.payload, frame.length );
 	uint8_t seq = frame.seq;
-	bool inVm = I->inLaunch || I->inHook || I->state == WRD_StateStopped;
+	bool inVm = I->inHook || I->state == WRD_StateStopped;
 	bool stopped = (I->state == WRD_StateStopped);
 
 	// a retransmitted control request (its reply was lost) must not act
@@ -1384,10 +1299,14 @@ void WrenchDebugServerImpl::process( WrenchDebugServerPrivate* I, const WrenchDe
 			I->lastRequestType = 0;
 			I->tickFlags |= WRD_TickClientAttached;
 
-			uint8_t caps = WRD_CapLaunch | WRD_CapSetValue | WRD_CapWatch;
-			if ( !I->uploadDisabled )
+			uint8_t caps = WRD_CapSetValue | WRD_CapWatch;
+			if ( I->launchable )
 			{
-				caps |= WRD_CapLoad;
+				caps |= WRD_CapLaunch;
+				if ( !I->uploadDisabled )
+				{
+					caps |= WRD_CapLoad;
+				}
 			}
 			if ( I->hostDriven )
 			{
@@ -1453,7 +1372,7 @@ void WrenchDebugServerImpl::process( WrenchDebugServerPrivate* I, const WrenchDe
 				{
 					continue;
 				}
-				uint8_t flags = p.ownsContext ? WRD_ProgramOwned : 0;
+				uint8_t flags = 0;
 				if ( p.importer != WRD_NoProgram )
 				{
 					flags |= WRD_ProgramImported;
@@ -1488,7 +1407,7 @@ void WrenchDebugServerImpl::process( WrenchDebugServerPrivate* I, const WrenchDe
 		case WRD_MsgLoadBegin:
 		{
 			uint32_t size = in.u32();
-			if ( I->uploadDisabled )
+			if ( I->uploadDisabled || !I->launchable )
 			{
 				replyError( I, seq, WRD_ErrUploadDisabled );
 				return;
@@ -1504,10 +1423,12 @@ void WrenchDebugServerImpl::process( WrenchDebugServerPrivate* I, const WrenchDe
 				return;
 			}
 
+			// a new transfer replaces one the firmware has not taken yet
 			g_free( I->upload );
 			I->upload = (uint8_t*)g_malloc( size );
 			I->uploadSize = I->upload ? size : 0;
 			I->uploadReceived = 0;
+			I->uploadReady = false;
 			if ( !I->upload )
 			{
 				replyError( I, seq, WRD_ErrNoMemory );
@@ -1522,12 +1443,12 @@ void WrenchDebugServerImpl::process( WrenchDebugServerPrivate* I, const WrenchDe
 			uint32_t offset = in.u32();
 			uint32_t len = in.remaining();
 			const uint8_t* data = in.bytes( len );
-			if ( I->uploadDisabled )
+			if ( I->uploadDisabled || !I->launchable )
 			{
 				replyError( I, seq, WRD_ErrUploadDisabled );
 				return;
 			}
-			if ( in.bad() || !I->upload || offset > I->uploadSize || len > I->uploadSize - offset )
+			if ( in.bad() || !I->upload || I->uploadReady || offset > I->uploadSize || len > I->uploadSize - offset )
 			{
 				replyError( I, seq, WRD_ErrBadRequest );
 				return;
@@ -1543,7 +1464,7 @@ void WrenchDebugServerImpl::process( WrenchDebugServerPrivate* I, const WrenchDe
 
 		case WRD_MsgLoadEnd:
 		{
-			if ( I->uploadDisabled )
+			if ( I->uploadDisabled || !I->launchable )
 			{
 				replyError( I, seq, WRD_ErrUploadDisabled );
 				return;
@@ -1553,30 +1474,27 @@ void WrenchDebugServerImpl::process( WrenchDebugServerPrivate* I, const WrenchDe
 				replyError( I, seq, WRD_ErrBusy );
 				return;
 			}
-			if ( !I->upload || I->uploadReceived != I->uploadSize
-					|| !wr_isBytecodeValid(I->upload, I->uploadSize) )
+			uint32_t hash = 0;
+			if ( !I->upload || I->uploadReady || I->uploadReceived != I->uploadSize
+					|| !wr_isBytecodeValid(I->upload, I->uploadSize, &hash) )
 			{
 				g_free( I->upload );
 				I->upload = 0;
 				I->uploadSize = 0;
+				I->uploadReady = false;
 				replyError( I, seq, WRD_ErrBadBytecode );
 				return;
 			}
 
-			uint8_t* bytes = I->upload;
-			uint32_t size = I->uploadSize;
-			I->upload = 0;
-			I->uploadSize = 0;
-
-			if ( !I->parent->loadBytes(bytes, (int)size, true) )
-			{
-				replyError( I, seq, WRD_ErrBadBytecode );
-				return;
-			}
-			I->tickFlags |= WRD_TickProgramLoaded;
+			// the old program 0 is done with: the client sets the breakpoints of
+			// the new one right after this reply, they wait for the context the
+			// firmware makes of the upload (the next one attached is program 0)
+			releaseProgram( I, 0 );
+			I->uploadReady = true;
+			I->tickFlags |= WRD_TickProgramUploaded;
 
 			WrenchDebugWriter out( payload(I), WRENCH_DEBUG_MAX_PAYLOAD );
-			out.u32( I->programs[0].programHash );
+			out.u32( hash );
 			send( I, WRD_MsgReplyOk, seq, out.size() );
 			return;
 		}
@@ -1727,24 +1645,33 @@ void WrenchDebugServerImpl::process( WrenchDebugServerPrivate* I, const WrenchDe
 		case WRD_MsgLaunch:
 		{
 			uint8_t flags = in.u8();
+			if ( !I->launchable )
+			{
+				replyError( I, seq, WRD_ErrUnsupported );
+				return;
+			}
 			if ( inVm )
 			{
 				replyError( I, seq, WRD_ErrBusy );
 				return;
 			}
-			const WrenchDebugProgramSlot& p = I->programs[0];
-			if ( !p.context )
+			if ( !I->programs[0].context && !I->uploadReady )
 			{
 				replyError( I, seq, WRD_ErrNoProgram );
 				return;
 			}
-			if ( (p.context->stopLocation || p.context->yield_pc || I->contextRan) && (!p.ownsContext || !p.bytes) )
-			{
-				replyError( I, seq, WRD_ErrUnsupported );
-				return;
-			}
-			I->launchFlags = flags;
-			I->launchPending = true;
+
+			// the firmware runs it when tick() returns; a stop on entry halts
+			// its first line (not one of another program the firmware runs)
+			I->entryBreak = (flags & WRD_LaunchStopOnEntry) != 0;
+			I->entryProgram = 0;
+			I->entryWaitMs = 0;
+			I->stepMode = WRD_StepNone;
+			I->abortPending = false;
+			I->abortContext = 0;
+			I->lastLine = -1;
+			I->launched = true;
+			I->tickFlags |= WRD_TickRunRequested;
 			replyOk( I, seq );
 			return;
 		}
@@ -1806,11 +1733,27 @@ void WrenchDebugServerImpl::process( WrenchDebugServerPrivate* I, const WrenchDe
 
 		case WRD_MsgTerminate:
 		{
-			I->launchPending = false;
+			// a run not started yet is off; script code that runs (or is halted)
+			// ends on its next line; a call of program 0 that yielded, its
+			// global code or a function the firmware called, ends on its next
+			// line once the firmware continues it (wr_continue() returns 0 with
+			// WR_ERR_debugger_terminated)
+			if ( I->tickFlags & WRD_TickRunRequested )
+			{
+				I->tickFlags &= ~WRD_TickRunRequested;
+				I->launched = false;
+			}
+			WRContext* main = I->programs[0].context;
 			if ( inVm )
 			{
 				I->abortPending = true;
+				I->abortContext = 0;
 				I->resume = stopped;
+			}
+			else if ( main && main->yield_pc )
+			{
+				I->abortPending = true;
+				I->abortContext = main;
 			}
 			replyOk( I, seq );
 			return;
@@ -2089,10 +2032,10 @@ int WrenchDebugServer::tick()
 		return 0;
 	}
 
-	if ( I->state == WRD_StateRunning && !I->inLaunch )
+	if ( I->state == WRD_StateRunning )
 	{
-		// host driven code left the VM since we last looked, anything handed
-		// out before may have been changed or collected meanwhile
+		// script code left the VM since we last looked, anything handed out
+		// before may have been changed or collected meanwhile
 		I->state = WRD_StateLoaded;
 		WrenchDebugServerImpl::resetHandles( I );
 	}
@@ -2101,60 +2044,23 @@ int WrenchDebugServer::tick()
 	I->importCallDepth = 0; // no script runs, so no import call is under way
 	WrenchDebugServerImpl::pump( I );
 
-	if ( I->launchPending )
-	{
-		WrenchDebugServerImpl::runLaunch( I );
-	}
-
 	int flags = I->tickFlags;
 	I->tickFlags = 0;
 	return flags;
 }
 
-WRContext* WrenchDebugServer::loadBytes( const uint8_t* bytes, const int len, const bool takeOwnership )
+void WrenchDebugServer::poll()
 {
-	if ( !I )
+	// inside the VM, like the polling between script lines: requests that
+	// need an idle VM (upload, launch) are answered busy
+	if ( !I || I->inHook || I->state == WRD_StateStopped )
 	{
-		return 0;
+		return;
 	}
-
-	WrenchDebugServerImpl::releaseProgram( I, 0 );
-
-	if ( !bytes || len < 8 )
-	{
-		if ( takeOwnership )
-		{
-			g_free( (void*)bytes );
-		}
-		return 0;
-	}
-
-	WrenchDebugProgramSlot& p = I->programs[0];
-	p.bytes = bytes;
-	p.bytesLen = (uint32_t)len;
-	p.ownsBytes = takeOwnership;
-
-	p.context = wr_newContext( I->w, bytes, len );
-	if ( !p.context )
-	{
-		WrenchDebugServerImpl::releaseProgram( I, 0 );
-		return 0;
-	}
-
-	p.ownsContext = true;
-	p.context->debugServer = this;
-	WrenchDebugServerImpl::readProgramInfo( p );
-	I->state = WRD_StateLoaded;
-	I->lastLine = -1;
-
-	if ( I->helloReceived )
-	{
-		WrenchDebugWriter out( WrenchDebugServerImpl::payload(I), WRENCH_DEBUG_MAX_PAYLOAD );
-		out.u32( p.programHash );
-		WrenchDebugServerImpl::send( I, WRD_MsgEventLoaded, 0, out.size() );
-	}
-
-	return p.context;
+	I->lastPollMs = I->transport->millis();
+	I->inHook = true;
+	WrenchDebugServerImpl::pump( I );
+	I->inHook = false;
 }
 
 int WrenchDebugServer::attach( WRContext* context, const char* name )
@@ -2164,7 +2070,8 @@ int WrenchDebugServer::attach( WRContext* context, const char* name )
 		return -1;
 	}
 
-	// the first context attached is program 0 when loadBytes() was not used
+	// the first context attached is program 0, and the first after an upload
+	// released it (the one the firmware made of the upload)
 	int program = WrenchDebugServerImpl::programOf( I, context );
 	if ( program < 0 && !I->programs[0].context )
 	{
@@ -2181,6 +2088,15 @@ int WrenchDebugServer::attach( WRContext* context, const char* name )
 		context->debugServer = this;
 		WrenchDebugServerImpl::readProgramInfo( p );
 		I->state = WRD_StateLoaded;
+		I->contextRan = context->stopLocation || context->yield_pc;
+		I->lastLine = -1;
+
+		if ( I->helloReceived )
+		{
+			WrenchDebugWriter out( WrenchDebugServerImpl::payload(I), WRENCH_DEBUG_MAX_PAYLOAD );
+			out.u32( p.programHash );
+			WrenchDebugServerImpl::send( I, WRD_MsgEventLoaded, 0, out.size() );
+		}
 		return 0;
 	}
 	if ( program < 0 )
@@ -2209,8 +2125,6 @@ void WrenchDebugServer::detach()
 	{
 		return;
 	}
-	// imports and attached contexts first: releasing program 0 may destroy
-	// the context it owns, with the modules it imported
 	for ( int p = WRENCH_DEBUG_MAX_PROGRAMS - 1; p >= 0; --p )
 	{
 		if ( I->programs[p].context || p == 0 )
@@ -2218,11 +2132,6 @@ void WrenchDebugServer::detach()
 			WrenchDebugServerImpl::releaseProgram( I, p );
 		}
 	}
-}
-
-WRContext* WrenchDebugServer::context( const int program ) const
-{
-	return (I && program >= 0 && program < WRENCH_DEBUG_MAX_PROGRAMS) ? I->programs[program].context : 0;
 }
 
 void WrenchDebugServer::onImport( WRContext* importer, WRContext* import )
@@ -2268,16 +2177,81 @@ void WrenchDebugServer::onContextDestroyed( WRContext* context )
 	int program = I ? WrenchDebugServerImpl::programOf( I, context ) : -1;
 	if ( program >= 0 )
 	{
-		// it is being destroyed already, by its owner
-		I->programs[program].ownsContext = false;
 		WrenchDebugServerImpl::releaseProgram( I, program );
 	}
 }
 
-bool WrenchDebugServer::ready() const
+void WrenchDebugServer::onContextReset( WRContext* context )
 {
-	const WRContext* context = I ? I->programs[0].context : 0;
-	return context && context->stopLocation && !context->yield_pc && !I->inLaunch;
+	int program = I ? WrenchDebugServerImpl::programOf( I, context ) : -1;
+	if ( program < 0 )
+	{
+		return;
+	}
+	// its globals start over (watches on them follow) and the values handed
+	// out may be gone; a yielded call it had is gone, a terminate for it too
+	if ( I->abortContext == context )
+	{
+		I->abortPending = false;
+		I->abortContext = 0;
+	}
+	WrenchDebugServerImpl::resetHandles( I );
+	WrenchDebugServerImpl::clearWatches( I, true, true );
+	WrenchDebugServerImpl::refreshWatches( I );
+	if ( program == 0 )
+	{
+		I->contextRan = false;
+		I->state = WRD_StateLoaded;
+	}
+}
+
+void WrenchDebugServer::onGlobalCodeEnd( WRContext* context, WRValue* ret )
+{
+	// the end of program 0's run, whoever started it
+	if ( !I || WrenchDebugServerImpl::programOf(I, context) != 0 )
+	{
+		return;
+	}
+
+	I->state = WRD_StateEnded;
+	I->stepMode = WRD_StepNone;
+	I->entryBreak = false;
+	I->abortPending = false;
+	I->abortContext = 0;
+	WrenchDebugServerImpl::resetHandles( I );
+	bool launched = I->launched;
+	I->launched = false;
+	if ( !I->helloReceived && !launched )
+	{
+		return;
+	}
+
+	uint8_t err = I->w->err;
+	WrenchDebugWriter out( WrenchDebugServerImpl::payload(I), WRENCH_DEBUG_MAX_PAYLOAD );
+	out.u8( err );
+	uint8_t flags = 0;
+	if ( err == WR_ERR_debugger_terminated )
+	{
+		flags |= WRD_EndedAborted;
+	}
+	if ( I->hostDriven )
+	{
+		flags |= WRD_EndedHostDriven;
+	}
+	out.u8( flags );
+	out.i32( I->lastLine );
+	out.u32( WrenchDebugServerImpl::missingFunction(I, err) );
+	if ( ret )
+	{
+		WrenchDebugServerImpl::writeValue( I, out, *ret );
+	}
+	else
+	{
+		WRValue zero;
+		zero.init();
+		WrenchDebugServerImpl::writeValue( I, out, zero );
+	}
+	WrenchDebugServerImpl::send( I, WRD_MsgEventEnded, 0, out.overflow() ? 10 : out.size() );
 }
 
 void WrenchDebugServer::setHostDriven( const bool hostDriven )
@@ -2293,8 +2267,32 @@ void WrenchDebugServer::breakOnEntry( const uint32_t waitMs )
 	if ( I )
 	{
 		I->entryBreak = true;
+		I->entryProgram = WRD_NoProgram;
 		I->entryWaitMs = waitMs;
 	}
+}
+
+void WrenchDebugServer::setLaunchable( const bool launchable )
+{
+	if ( I )
+	{
+		I->launchable = launchable;
+	}
+}
+
+bool WrenchDebugServer::takeUpload( uint8_t*& bytes, int& size )
+{
+	if ( !I || !I->uploadReady )
+	{
+		return false;
+	}
+	bytes = I->upload;
+	size = (int)I->uploadSize;
+	I->upload = 0;
+	I->uploadSize = 0;
+	I->uploadReceived = 0;
+	I->uploadReady = false;
+	return true;
 }
 
 void WrenchDebugServer::setLinkTimeout( const uint32_t ms )
@@ -2319,6 +2317,7 @@ void WrenchDebugServer::setAllowUpload( const bool allow )
 		I->upload = 0;
 		I->uploadSize = 0;
 		I->uploadReceived = 0;
+		I->uploadReady = false;
 	}
 }
 
@@ -2430,9 +2429,10 @@ bool WrenchDebugServer::onDebugInfo( WRContext* context, const unsigned char* pc
 		}
 	}
 
-	if ( I->entryBreak )
+	if ( I->entryBreak && (I->entryProgram == WRD_NoProgram || I->entryProgram == program) )
 	{
-		// breakOnEntry(): halt here, first waiting for a debugger if needed
+		// breakOnEntry() or a launch: halt here, first waiting for a debugger
+		// if needed
 		I->entryBreak = false;
 		if ( I->helloReceived || WrenchDebugServerImpl::waitForClient(I, I->entryWaitMs) )
 		{
@@ -2441,22 +2441,31 @@ bool WrenchDebugServer::onDebugInfo( WRContext* context, const unsigned char* pc
 		}
 	}
 
-	if ( !stop && ++I->pollCounter >= WRENCH_DEBUG_POLL_INTERVAL )
+	// the link, every WRENCH_DEBUG_POLL_MS however long lines take; the clock
+	// is read only every few lines, which keeps short lines cheap
+	if ( !stop && ++I->pollCounter >= WRENCH_DEBUG_POLL_LINES )
 	{
 		I->pollCounter = 0;
-		I->inHook = true;
-		WrenchDebugServerImpl::pump( I );
-		I->inHook = false;
-		if ( I->stepMode == WRD_StepPause )
+		uint32_t now = I->transport->millis();
+		if ( (uint32_t)(now - I->lastPollMs) >= WRENCH_DEBUG_POLL_MS )
 		{
-			stop = true;
-			reason = WRD_StopPause;
+			I->lastPollMs = now;
+			I->inHook = true;
+			WrenchDebugServerImpl::pump( I );
+			I->inHook = false;
+			if ( I->stepMode == WRD_StepPause )
+			{
+				stop = true;
+				reason = WRD_StopPause;
+			}
 		}
 	}
 
-	if ( I->abortPending )
+	// a terminate for a yielded call waits for that call to go on
+	if ( I->abortPending && (!I->abortContext || I->abortContext == context) )
 	{
 		I->abortPending = false;
+		I->abortContext = 0;
 		return true;
 	}
 

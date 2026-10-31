@@ -32,14 +32,17 @@ Highlights:
 
 - API is designed to be easily extended, that's the whole point!
 
-- Memory is garbage-collected but only for dynamic arrays. Unless you are allocating/de-allocating arrays the gc _never_ runs.
+- Memory is garbage-collected, but only strings and containers (arrays, hash tables,
+  structs) created at run time are collected, and only after a configurable amount has
+  been allocated: scripts that work with numbers never run the gc.
 
 - Includes a handy command-line tool
 
 - Source level debugging on the PC or on the device (UART, USB serial, TCP):
   breakpoints, stepping, pause, call stack, variables, runtime error stops.
   VS Code support through a language server and a debug adapter, see
-  docs/debugging.md, tools/vscode-wrench and examples/debug_targets
+  the book (docs/book, part "Debugging"), tools/vscode-wrench and
+  examples/debug_targets
 
 - Easy to integrate, here is a complete example:
 
@@ -128,4 +131,18 @@ debug server is part of the single file build. The host side
 (WRENCH_INCLUDE_DEBUG_CLIENT, the dbg / dap / lsp tools) builds from
 src/ only. The VS Code extension in tools/vscode-wrench adds
 highlighting, live compiler errors, completion, navigation and a debugger
-for local, TCP and serial targets. Details in docs/debugging.md.
+for local, TCP and serial targets. Details in the book, see below.
+
+Documentation
+-------------
+
+The Wrench Book (docs/book) covers the language, the standard library,
+embedding wrench in an application or firmware, debugging, the VS Code
+extension and the internals. Read it in the repository starting at
+docs/book/src/introduction.md, or build it with mdBook
+(https://rust-lang.github.io/mdBook/) and open docs/book/book/index.html,
+which works offline:
+
+	mdbook build docs/book
+
+Every release also carries the built book as wrench-book.zip.

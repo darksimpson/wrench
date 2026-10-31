@@ -1,6 +1,7 @@
 // Copy wrench executables into the extension so the packaged .vsix works
 // without any settings. Each binary lands in bin/<platform>-<arch>/, the
-// platform and architecture are read from its PE or ELF header.
+// platform and architecture are read from its PE or ELF header; the folders
+// of other platforms and architectures already in bin/ are kept.
 // usage: node scripts/bundle-exe.js [paths to wrench executables...]
 // Without arguments it takes the Windows build from win32/Release and the
 // Linux build from the repository root (on Linux or WSL:
@@ -49,10 +50,9 @@ const candidates = explicit ? process.argv.slice(2) : [
 	path.join(repo, 'wrench'),
 ];
 
-const destRoot = path.join(root, 'bin');
-fs.rmSync(destRoot, { recursive: true, force: true });
-
-const bundled = {};
+// every argument is checked before bin/ is touched, so a failed run leaves
+// it as it was
+const copies = [];
 for (const source of candidates) {
 	if (!fs.existsSync(source)) {
 		if (explicit) {
@@ -66,24 +66,32 @@ for (const source of candidates) {
 		console.error(`not a Windows or Linux executable: ${source}`);
 		process.exit(1);
 	}
-	const target = `${kind.platform}-${kind.arch}`;
-	const destDir = path.join(destRoot, target);
+	copies.push({ source, kind, target: `${kind.platform}-${kind.arch}` });
+}
+if (!copies.length) {
+	console.error('nothing to bundle (build win32/wrench.vcxproj Release, or run make LDFLAGS=\'-static -s\' in the repository root)');
+	process.exit(1);
+}
+
+// only the platform-architecture folders bundled now are replaced, the
+// others in bin/ stay
+const destRoot = path.join(root, 'bin');
+for (const copy of copies) {
+	const destDir = path.join(destRoot, copy.target);
+	fs.rmSync(destDir, { recursive: true, force: true });
 	fs.mkdirSync(destDir, { recursive: true });
-	const dest = path.join(destDir, kind.platform === 'win32' ? 'wrench.exe' : 'wrench');
-	fs.copyFileSync(source, dest);
+	const dest = path.join(destDir, copy.kind.platform === 'win32' ? 'wrench.exe' : 'wrench');
+	fs.copyFileSync(copy.source, dest);
 	if (process.platform !== 'win32') {
 		fs.chmodSync(dest, 0o755);
 	}
-	bundled[kind.platform] = true;
-	console.log(`bundled ${source} -> bin/${target}`);
+	console.log(`bundled ${copy.source} -> bin/${copy.target}`);
 }
 
-if (!bundled.win32) {
-	console.warn('warning: no Windows build bundled (build win32/wrench.vcxproj Release)');
+const present = fs.readdirSync(destRoot);
+if (!present.some((d) => d.startsWith('win32-'))) {
+	console.warn('warning: bin/ has no Windows build (build win32/wrench.vcxproj Release)');
 }
-if (!bundled.linux) {
-	console.warn('warning: no Linux build bundled (run make LDFLAGS=\'-static -s\' in the repository root)');
-}
-if (!bundled.win32 && !bundled.linux) {
-	process.exit(1);
+if (!present.some((d) => d.startsWith('linux-'))) {
+	console.warn('warning: bin/ has no Linux build (run make LDFLAGS=\'-static -s\' in the repository root)');
 }

@@ -17,9 +17,7 @@ const char* wrenchCode =
 "{                            "
 "    print( i );              "
 "}                            "
-"print(\"\\n\");              ";
-
-
+"print( \"\\n\" );            ";
 
 int main( int argn, char** argv )
 {

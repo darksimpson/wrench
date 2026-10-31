@@ -33,6 +33,11 @@ void wr_write_file( WRValue* stackTop, const int argn, WRContext* c );
 void wr_delete_file( WRValue* stackTop, const int argn, WRContext* c );
 
 void wr_getline( WRValue* stackTop, const int argn, WRContext* c );
+#if defined(WRENCH_WIN32_FILE_IO) || defined(WRENCH_LINUX_FILE_IO)
+#include <stdio.h>
+// io::getline reading from 'in' instead of stdin
+void wr_getlineEx( FILE* in, WRValue* stackTop, WRContext* c );
+#endif
 
 void wr_ioOpen( WRValue* stackTop, const int argn, WRContext* c );
 void wr_ioClose( WRValue* stackTop, const int argn, WRContext* c );

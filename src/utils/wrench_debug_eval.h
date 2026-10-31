@@ -107,6 +107,7 @@ private:
 									WrenchDebugLocation& where, std::string& error );
 	bool child( const WrenchDebugValue& parent, const WrenchDebugValue& key, bool member,
 							WrenchDebugValue& result, WrenchDebugLocation& where, std::string& error );
+	bool intrinsic( const WrenchDebugValue& value, const std::string& name, WrenchDebugValue& result, std::string& error );
 
 	static const WrenchDebugProgram& symbolsFor( const WrenchDebugPrograms& programs, const std::vector<WrenchDebugStackFrame>& frames, int frame );
 

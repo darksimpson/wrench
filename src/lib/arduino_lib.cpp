@@ -69,14 +69,36 @@ void wr_io_analogRead( WRValue* stackTop, const int argn, WRContext* c)
 	}
 }
 
+#ifdef WR_ARDUINO_LCD
+
+// the display is the object WR_ARDUINO_LCD names (see wrench.h), any
+// display with the LiquidCrystal interface: LiquidCrystal, LiquidCrystal_I2C,
+// hd44780 and others
+
+// begin() returns nothing in LiquidCrystal but a status in other libraries:
+// "(begin(), status)" stores a returned int through the operator below and
+// leaves 0 when begin() is void (a void operand takes the built-in comma)
+struct WRLcdStatus
+{
+	int value;
+};
+
+inline WRLcdStatus& operator,( const int value, WRLcdStatus& status )
+{
+	status.value = value;
+	return status;
+}
+
 //------------------------------------------------------------------------------
 void wr_lcd_begin( WRValue* stackTop, const int argn, WRContext* c)
 {
 	// lcd::begin( columns, rows )
-	// returns status
+	// returns status (0 when the library reports none)
 	if( argn == 2)
 	{
-//		stackTop->i = lcd.begin( stackTop[-2].asInt(), stackTop[-1].asInt());
+		WRLcdStatus status;
+		status.value = 0;
+		stackTop->i = (WR_ARDUINO_LCD.begin( stackTop[-2].asInt(), stackTop[-1].asInt() ), status).value;
 	}
 }
 
@@ -86,7 +108,7 @@ void wr_lcd_setCursor( WRValue* stackTop, const int argn, WRContext* c)
 	// lcd::setCursor( column, row )
 	if( argn == 2 )
 	{
-//		lcd.setCursor( stackTop[-2].asInt(), stackTop[-1].asInt());
+		WR_ARDUINO_LCD.setCursor( stackTop[-2].asInt(), stackTop[-1].asInt() );
 	}
 }
 
@@ -97,10 +119,12 @@ void wr_lcd_print( WRValue* stackTop, const int argn, WRContext* c)
 	// returns number of chars printed
 	if( argn == 1 )
 	{
-//		char buf[61];
-//		stackTop->i = lcd.print( stackTop[-1].asString(buf, sizeof(buf)-1));
+		char buf[61];
+		stackTop->i = (int)WR_ARDUINO_LCD.print( stackTop[-1].asString(buf, sizeof(buf)) );
 	}
 }
+
+#endif
 
 //------------------------------------------------------------------------------
 void wr_wire_begin( WRValue* stackTop, const int argn, WRContext* c)
@@ -118,15 +142,40 @@ void wr_wire_beginTransmission( WRValue* stackTop, const int argn, WRContext* c)
 }
 
 //------------------------------------------------------------------------------
+// wire::write( value [, count] )
+// queues bytes of the transmission: an int is one byte, a string its
+// characters, at most 'count' of them when 'count' is given. Returns the
+// number of bytes queued
 void wr_wire_write( WRValue* stackTop, const int argn, WRContext* c)
 {
-	if( argn == 1)
+	if( argn != 1 && argn != 2 )
 	{
-		Wire.write( stackTop[-1].asInt() );
+		return;
 	}
-	else if( argn == 2)
+
+	WRValue* args = stackTop - argn;
+	unsigned int len = 1;
+	const uint8_t* data = (const uint8_t*)args[0].array( &len, SV_CHAR );
+	if ( argn == 2 )
 	{
-		// To be added !
+		const int count = args[1].asInt();
+		if ( count <= 0 )
+		{
+			return;
+		}
+		if ( (unsigned int)count < len )
+		{
+			len = (unsigned int)count;
+		}
+	}
+
+	if ( data )
+	{
+		stackTop->i = len ? (int)Wire.write( data, len ) : 0;
+	}
+	else
+	{
+		stackTop->i = (int)Wire.write( (uint8_t)args[0].asInt() );
 	}
 }
 
@@ -192,11 +241,15 @@ void wr_loadArduinoIOLib( WRState* w )
 }
 
 //------------------------------------------------------------------------------
+// registers nothing without a display (WR_ARDUINO_LCD), so a script calling
+// lcd:: fails with WR_ERR_lib_function_not_found instead of doing nothing
 void wr_loadArduinoLCDLib( WRState* w )
 {
+#ifdef WR_ARDUINO_LCD
 	wr_registerLibraryFunction( w, "lcd::begin", wr_lcd_begin );
 	wr_registerLibraryFunction( w, "lcd::setCursor", wr_lcd_setCursor );
 	wr_registerLibraryFunction( w, "lcd::print", wr_lcd_print );
+#endif
 }
 
 //------------------------------------------------------------------------------

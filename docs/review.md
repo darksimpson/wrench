@@ -16,7 +16,7 @@ and what would be worth improving next.
   change program behaviour unnoticed. Output mismatches fail the run.
 * Internal tests cover host API corners and compiler limits (too many
   arguments, deep nesting, stores kept with debug information).
-* The debugger has an end to end suite (`[debugger protocol]`, 253 checks)
+* The debugger has an end to end suite (`[debugger protocol]`, 507 checks)
   driving a real server thread through the protocol, including a link that
   corrupts bytes, sequence number wrap, lost stop events, relaunch, step
   resumption and link timeouts.
@@ -278,8 +278,8 @@ adapter tests (`import.w`, `ticker.w` run by `dbgserver -context`) cover
 this.
 
 * One `WrenchDebugServer` debugs up to `WRENCH_DEBUG_MAX_PROGRAMS` (4)
-  programs: program 0 (`loadBytes()`, uploads), contexts the firmware hands
-  over with `attach( context, name )` / `detach()`, and the modules a
+  programs: contexts the firmware hands over with `attach( context, name )`
+  / `detach()` (the first is program 0, the one uploads replace), and the modules a
   debugged program imports with `sys::importCompile` or
   `sys::importByteCode`. A destroyed context stops being debugged (a hook in
   `wr_destroyContextEx`). Protocol version 2 was extended in place, it was
@@ -322,6 +322,57 @@ this.
   has the member).
 * `examples/arduino/debug` (an empty sketch with bytecode in an old format)
   is gone; `examples/debug_targets/arduino_serial` replaces it.
+
+## Debug server API: the firmware loads and runs, done
+
+* The server mixed loading and running scripts with debugging them:
+  `loadBytes()` made program 0's context and owned it, `tick()` ran a
+  launched program itself, and an upload swapped the context under the
+  firmware, which therefore had to ask `context()` again every time. Now
+  the server runs no script code. The firmware makes contexts
+  (`wr_newContext()`), hands them over with `attach()` and runs them;
+  `loadBytes()`, `context()` and `ready()` are gone.
+* A launch or an upload is a request to the firmware: `tick()` returns
+  `WRD_TickRunRequested` / `WRD_TickProgramUploaded`, the firmware takes
+  the bytes with `takeUpload()`, swaps its context and runs it. Firmware
+  says it does so with `setLaunchable( true )`; without it a debugger can
+  only attach (launches and uploads are refused instead of hanging).
+* `wr_resetContext()` (new, VM): fresh globals, the modules it imported
+  destroyed, the same pointer. A restart works for any program 0 now; it
+  used to be refused for a context the firmware made.
+* The end of program 0's run reaches the debugger through a VM hook in
+  `wr_executeContext()` / `wr_continue()`, whoever started the run (a run
+  the firmware started on its own, `dbgserver -hold` for example, used to
+  end silently).
+* The examples, `wrench dbgserver`, the local target of `wrench dap` /
+  `dbg` and the test harness are firmware like any other (the host tools
+  share `WrenchHostProgram`). Debugger checks: restarting a firmware
+  program in place, a target that is not launchable; internal test
+  `[wr_resetContext runs the global code again]`.
+
+## Blocking scripts and natives, done
+
+* `while ( 1 ) {}`, `for ( ;; ) {}` and `do {} while ( 1 );` compiled with
+  debug information had no line marker on their way round (a literal or
+  missing condition emits none, an empty body neither): the server never
+  polled, a debugger could not pause or terminate them. A loop whose
+  condition emitted no line marker now gets one for the loop's line where
+  each pass begins (`pushLoopMarker()`).
+* Polling was every 64 line markers, so slow lines (a native that waits 30
+  ms) stretched it to seconds. Now every `WRENCH_DEBUG_POLL_MS` (20); the
+  clock is read every `WRENCH_DEBUG_POLL_LINES` (8) markers, a clock read
+  per VM instruction would cost more than the instructions.
+* Nothing runs line markers inside a native: `WrenchDebugServer::poll()`
+  lets a native that blocks service the link while it waits (the same
+  limits as polling between lines; pause and terminate land on the next
+  line).
+* Terminate aborted a yielded program 0 only in its global code, and with
+  the next script code of any context. Now any yielded call of program 0,
+  and only that context (`abortContext`), also in the stop loop of another
+  program; a reset or release of the context drops it.
+* Debugger checks: pause and terminate in the three empty loops, pause
+  latency with slow lines, requests answered inside a polling native, a
+  terminated yielded call of a host driven firmware.
 
 ## Open issues
 
@@ -372,3 +423,68 @@ Tools:
 * The language server's find references and rename stay within one file,
   and types are only the evident ones (`new S`): a variable given the
   result of a call, a parameter or a member gets no type.
+
+
+## Found while writing the book, done
+
+Writing the user documentation (docs/book) turned up the bugs below; each
+fix has a test (tests/039_compiler_book_fixes.w, 040_vm_book_fixes.w,
+041_library_book_fixes.w, internal tests, debugger checks, the node suites
+and tools/test/extension_test.js). CHANGELIST, 8.0.0, lists them for users.
+
+* Version 8.0.0: the unreleased opcodes and image flag needed a new major
+  version, which salts the image CRC: 7.x VMs refuse 8.0 images, the 8.0 VM
+  runs 7.x images that lack WR_READS_KEEP_VALUES (tests/v7_image.bin).
+* Compiler: a struct with parameters and no member crashed, a member named
+  like a parameter declared nothing; `new` only as the right side of an
+  assignment; empty conditions compiled; `var a[n]` made no array; nested
+  initializers had to come last in a hash literal; `enum { A B }`;
+  `var = 1;`; literal errors reported as unexpected EOF; nested call
+  argument errors; absolute include paths in images; a return in the middle
+  of the global code left no Stop behind it, so later host calls ran on
+  into the rest of the global code.
+* VM: arguments aliased the caller's variable and natives read them late;
+  a module calling its importer crashed; float keys and indexes; `h.name`
+  replaced stored keys; reads created entries (new images only now); a full
+  hash table overwrote entries; `~` on floats; string ordering by hash;
+  numbers equal to strings; `._exists` on arrays; unknown struct members;
+  `wr_callFunction( c, 0 )` re-ran the global code; the sticky malloc
+  failure flag; the division trap; `wr_getValueFromContainer` inserting;
+  no way to keep host-held values from the collector (`wr_keepValue`);
+  scheduler ids; `wr_runCommand` ignoring runtime errors; `+=` with a string
+  on an element of a container (`h["k"] += "b"`) left it unchanged or
+  stored a hash (both interpreters, `wr_concatStringToElement`).
+* Libraries: `sys::isFunction` for imported functions, `str::mid` of "",
+  `str::format` (now C printf, without the C library unless
+  WRENCH_FLOAT_SPRINTF), `time::ms` / `std::time` on boards, tcp failure
+  values, io (`O_WRONLY`, `getline`, `deleteFile`, `write`), `msg::` storing
+  hashes (now values, with a host API), `str::isalnum`, loader declarations,
+  `wire::write`, `lcd::`, the empty `wr_loadEsp32Lib` (removed), a global
+  rand seed.
+* Tools: CLI exit codes and error names, the command word anywhere in the
+  arguments, `ca`, `release`, dbg leaving without a Detach, `r` while halted
+  in a firmware call, the idle prompt, `._count` in the evaluator, option
+  checks, dbgserver listening on every interface (now loopback by default),
+  VS Code attach defaults and messages, the wrench.json schema, bundle-exe,
+  Show Disassembly, the disassembler (member tables, GlobalStop, line
+  markers, symbols), the stale image in examples/arduino/hello_world.
+
+Still open from that round:
+
+* `._remove()` returns the container, so removals chain; a 1 / 0 result
+  would need a new opcode, the compiler builds `{}` with this one.
+* A module cannot call functions of its importer
+  (WR_ERR_function_not_found): the importer's global code is still running
+  when the module's runs. Modules can call each other and the host.
+* Member syntax on a key that does not exist yet stores the key's hash, the
+  name itself is not in the bytecode.
+* A `wrench dbg` without -attach on a target that refuses uploads detaches
+  now, but its Hello has already consumed a `-hold` halt; avoiding that
+  needs a protocol change.
+* `WR_ERR_tried_to_load_non_resolvable`, `WR_ERR_array_must_be_indexed`,
+  `WR_ERR_scontext_not_found` and `WR_ERR_switch_with_no_cases` are never
+  set; `c_errStrings` is not there with WRENCH_WITHOUT_COMPILER.
+* glibc 2.41 prints `%#g` wrong when rounding carries into a new digit;
+  wrench without WRENCH_FLOAT_SPRINTF prints the C standard result.
+* The website (www/index.html) is behind the code in many places; the book
+  is the reference.

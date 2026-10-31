@@ -1,0 +1,23 @@
+{
+	"version": "0.2.0",
+	"configurations": [
+		{
+			"type": "wrench",
+			"request": "launch",
+			"name": "Demo 1: main.w in a local VM",
+			"program": "${workspaceFolder}/main.w",
+			"stopOnEntry": true
+		},
+		{
+			"type": "wrench",
+			"request": "launch",
+			"name": "Demo 2: main.w on dbgserver, beside sensor.w",
+			"program": "${workspaceFolder}/main.w",
+			"stopOnEntry": true,
+			"transport": "tcp",
+			"host": "127.0.0.1",
+			"port": 5050,
+			"preLaunchTask": "wrench dbgserver"
+		}
+	]
+}

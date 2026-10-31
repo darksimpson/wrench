@@ -87,6 +87,7 @@ char WRCompilationContext::parseExpressionBody( WRExpression& expression )
 {
 	int depth = 0;
 	char end = 0;
+	bool needName = false; // after var or blank
 
 	m_newHashValue = 0;
 
@@ -101,6 +102,17 @@ char WRCompilationContext::parseExpressionBody( WRExpression& expression )
 		if ( !getToken(expression.context[depth]) )
 		{
 			return 0;
+		}
+
+		if ( needName )
+		{
+			// var = 1; or var 5; declares nothing (var ::g is a global)
+			needName = false;
+			if ( value.type != WR_REF || !token.size() || !(isalpha((unsigned char)token[0]) || token[0] == '_' || token[0] == ':') )
+			{
+				m_err = WR_ERR_unexpected_token;
+				return 0;
+			}
 		}
 
 		if ( value.type != WR_REF )
@@ -138,6 +150,7 @@ char WRCompilationContext::parseExpressionBody( WRExpression& expression )
 		{
 			expression.context[depth].varSeen = true;
 			expression.allowFunctionNameHashLiteral = true;
+			needName = true;
 			continue;
 		}
 		else if ( token == "blank" )
@@ -145,6 +158,7 @@ char WRCompilationContext::parseExpressionBody( WRExpression& expression )
 			expression.context[depth].varSeen = true;
 			expression.context[depth].blankSeen = true;
 			expression.allowFunctionNameHashLiteral = true;
+			needName = true;
 			continue;
 		}
 		else if ( token == "{" )
@@ -335,22 +349,21 @@ char WRCompilationContext::parseExpressionBody( WRExpression& expression )
 		
 		if ( !m_quoted && token == "new" )
 		{
-			if ( (depth < 2) || 
-				 (expression.context[depth - 1].operation
-				  && expression.context[ depth - 1 ].operation->opcode != O_Assign) )
+			// new makes an operand: f( new S ), return new S, c ? new S : 0
+			if ( depth > 0 && wr_completesOperand(expression.context[depth - 1]) )
 			{
 				m_err = WR_ERR_unexpected_token;
 				return 0;
 			}
 
-			if ( (depth < 2) 
-				 || (expression.context[depth - 2].operation
-					 && expression.context[ depth - 2 ].operation->opcode != O_Index) )
-			{
-				m_err = WR_ERR_unexpected_token;
-				return 0;
-			}
-			
+			// "x = new S[] { ... }" fills x in place, anywhere else the
+			// array is a value
+			bool inPlace = depth >= 2
+				&& expression.context[depth - 1].operation
+				&& expression.context[depth - 1].operation->opcode == O_Assign
+				&& (!expression.context[depth - 2].operation
+					|| expression.context[depth - 2].operation->opcode == O_Index);
+
 			WRstr& token2 = expression.context[depth].token;
 			WRValue& value2 = expression.context[depth].value;
 
@@ -379,18 +392,7 @@ char WRCompilationContext::parseExpressionBody( WRExpression& expression )
 				return 0;
 			}
 
-			if ( !m_quoted && token2 == ";" )
-			{
-				if ( !parseCallFunction(expression, functionName, depth, false) )
-				{
-					return 0;
-				}
-
-				m_loadedToken = ";";
-				m_loadedValue.p2 = INIT_AS_REF;
-				m_loadedQuoted = m_quoted;
-			}
-			else if ( !m_quoted && token2 == "(" )
+			if ( !m_quoted && token2 == "(" )
 			{
 				if ( !parseCallFunction(expression, functionName, depth, true) )
 				{
@@ -427,8 +429,16 @@ char WRCompilationContext::parseExpressionBody( WRExpression& expression )
 					return 0;
 				}
 
-				expression.context.remove( depth - 1, 1 ); // knock off the equate
-				depth--;
+				if ( inPlace )
+				{
+					expression.context.remove( depth - 1, 1 ); // knock off the equate
+					depth--;
+				}
+				else
+				{
+					// the array the elements are assigned to, as for "{ ... }"
+					pushOpcode( expression.context[depth].bytecode, O_LiteralZero );
+				}
 
 				WRstr& token3 = expression.context[depth].token;
 				WRValue& value3 = expression.context[depth].value;
@@ -501,7 +511,21 @@ char WRCompilationContext::parseExpressionBody( WRExpression& expression )
 							break;
 						}
 					}
-					
+
+					if ( !inPlace )
+					{
+						if ( initializer == 0 )
+						{
+							pushOpcode( expression.context[depth].bytecode, O_LiteralZero );
+							pushOpcode( expression.context[depth].bytecode, O_InitArray );
+						}
+
+						expression.context[depth].type = EXTYPE_BYTECODE_RESULT;
+						expression.context[depth].temporary = true;
+						++depth;
+						continue;
+					}
+
 					if ( !getToken(expression.context[depth], ";") )
 					{
 						m_err = WR_ERR_unexpected_token;
@@ -532,10 +556,17 @@ char WRCompilationContext::parseExpressionBody( WRExpression& expression )
 				++depth;
 				continue;
 			}
-			else if ( token2 != "{" )
+			else
 			{
-				m_err = WR_ERR_bad_expression;
-				return 0;
+				// "new S" without arguments: what follows is parsed next
+				if ( !parseCallFunction(expression, functionName, depth, false) )
+				{
+					return 0;
+				}
+
+				m_loadedToken = token2;
+				m_loadedValue = value2;
+				m_loadedQuoted = m_quoted;
 			}
 
 			if ( !pushObjectTable(expression.context[depth], expression.bytecode.localSpace, hash) )
@@ -690,6 +721,15 @@ char WRCompilationContext::parseExpressionBody( WRExpression& expression )
 
 			WRstr label = token;
 
+			if ( depth == 0
+				&& expression.lValue
+				&& expression.context[0].varSeen
+				&& !isGlobal
+				&& !isLibConstant )
+			{
+				shadowParameter( expression, label );
+			}
+
 			if ( depth == 0 && !m_parsingFor && expression.allowLabelDeclarations )
 			{
 				if ( !getToken(expression.context[depth]) )
@@ -777,7 +817,10 @@ char WRCompilationContext::parseExpressionBody( WRExpression& expression )
 		{
 			case O_Index:
 			{
+				// the opcode list too: appending a load followed by O_Index
+				// is turned into an index of two variables ("var a[n];")
 				expression.context[1].bytecode.all[a] = O_InitArray;
+				expression.context[1].bytecode.opcodes[i] = O_InitArray;
 				break;
 			}
 

@@ -307,10 +307,8 @@ int wr_bindTCPEx( const int port )
 //------------------------------------------------------------------------------
 void wr_bindTCP( WRValue* stackTop, const int argn, WRContext* c )
 {
-	if ( argn )
-	{
-		stackTop->i = wr_bindTCPEx( (stackTop - argn)->asInt() );
-	}
+	stackTop->init();
+	stackTop->i = argn ? wr_bindTCPEx( (stackTop - argn)->asInt() ) : -1;
 }
 
 //------------------------------------------------------------------------------
@@ -326,6 +324,7 @@ int wr_acceptTCPEx( const int socket, sockaddr* info )
 void wr_acceptTCP( WRValue* stackTop, const int argn, WRContext* c )
 {
 	stackTop->init();
+	stackTop->i = -1;
 	if ( argn < 1 )
 	{
 		return;
@@ -369,6 +368,7 @@ int wr_connectTCPEx( const char* address, const int port )
 void wr_connectTCP( WRValue* stackTop, const int argn, WRContext* c )
 {
 	stackTop->init();
+	stackTop->i = -1;
 	if ( argn < 2 )
 	{
 		return;
@@ -377,12 +377,10 @@ void wr_connectTCP( WRValue* stackTop, const int argn, WRContext* c )
 	WRValue* args = stackTop - argn;
 
 	char* address = args[0].asMallocString();
-	if ( !address || !address[0] )
+	if ( address && address[0] )
 	{
-		return;
+		stackTop->i = wr_connectTCPEx( address, args[1].asInt() );
 	}
-
-	stackTop->i = wr_connectTCPEx( address, args[1].asInt() );
 	g_free( address );
 }
 
@@ -590,8 +588,10 @@ int wr_peekTCPEx( const int socket, const int timeoutMilliseconds )
 //------------------------------------------------------------------------------
 void wr_peekTCP( WRValue* stackTop, const int argn, WRContext* c )
 {
+	stackTop->init();
 	if ( argn < 1 )
 	{
+		stackTop->i = -1; // no socket is an invalid one
 		return;
 	}
 

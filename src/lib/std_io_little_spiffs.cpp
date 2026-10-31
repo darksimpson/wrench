@@ -214,14 +214,18 @@ void wr_write_file( WRValue* stackTop, const int argn, WRContext* c )
 }
 
 //------------------------------------------------------------------------------
+// returns 0 when the file was deleted, -1 when it was not
 void wr_delete_file( WRValue* stackTop, const int argn, WRContext* c )
 {
+	stackTop->init();
+	stackTop->i = -1;
+
 	if ( argn == 1 )
 	{
 		WRValue::MallocStrScoped fileName( *(stackTop - 1) );
-		if ( fileName )
+		if ( fileName && FILE_OBJ.remove(fileName) )
 		{
-			FILE_OBJ.remove( fileName );
+			stackTop->i = 0;
 		}
 	}
 }
@@ -229,7 +233,10 @@ void wr_delete_file( WRValue* stackTop, const int argn, WRContext* c )
 //------------------------------------------------------------------------------
 void wr_getline( WRValue* stackTop, const int argn, WRContext* c )
 {
-	// there is no standard input with a file system backend
+	// there is no standard input with a file system backend: the input has
+	// always ended, which io::getline reports as the int -1
+	stackTop->init();
+	stackTop->i = -1;
 }
 
 // maps io::open flags to an Arduino FS (fopen style) mode, or 0 when the
@@ -566,6 +573,7 @@ void wr_ioCleanupFunction( WRState* w, void* param )
 void wr_ioPushConstants( WRState* w )
 {
 	wr_registerLibraryConstant( w, "io::O_RDONLY", (int32_t)WRFS_O_RDONLY );
+	wr_registerLibraryConstant( w, "io::O_WRONLY", (int32_t)WRFS_O_WRONLY );
 	wr_registerLibraryConstant( w, "io::O_RDWR", (int32_t)WRFS_O_RDWR );
 	wr_registerLibraryConstant( w, "io::O_APPEND", (int32_t)WRFS_O_APPEND );
 	wr_registerLibraryConstant( w, "io::O_CREAT", (int32_t)WRFS_O_CREAT );

@@ -23,7 +23,7 @@
 							"Every library",
 							"math:: (wr_loadMathLib)",
 							"std::rand, std::time, time:: (wr_loadStdLib)",
-							"io:: files and time (wr_loadIOLib)",
+							"io:: files: open, read, write, seek, readFile, writeFile... (wr_loadIOLib)",
 							"str:: (wr_loadStringLib)",
 							"msg:: messages between contexts (wr_loadMessageLib)",
 							"sys:: (wr_loadSysLib)",
@@ -74,6 +74,13 @@
 						}
 					}
 				]
+			}
+		},
+		"include": {
+			"description": "Folders searched for include \"file\" after the including file's own folder (and after -I folders on the command line), relative to this wrench.json's folder or absolute.",
+			"type": "array",
+			"items": {
+				"type": "string"
 			}
 		},
 		"undeclaredCalls": {

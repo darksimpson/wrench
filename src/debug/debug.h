@@ -88,15 +88,13 @@ struct WrenchDebugWatch
 	WrenchDebugWatchSnapshot last;
 };
 
-// one program the server debugs: the one it loads or is sent (program 0), a
-// context the firmware attached, or one a debugged program imported
+// one program the server debugs: a context the firmware attached (the first
+// is program 0) or one a debugged program imported
 struct WrenchDebugProgramSlot
 {
 	WRContext* context; // 0: the slot is free
-	bool ownsContext;
-	const uint8_t* bytes;
+	const uint8_t* bytes; // the context's bytecode
 	uint32_t bytesLen;
-	bool ownsBytes;
 	uint32_t programHash;
 	uint8_t compilerFlags;
 	const uint8_t* symbols;
@@ -130,33 +128,37 @@ struct WrenchDebugServerPrivate
 	WRState* w;
 	WrenchDebugTransport* transport;
 
-	// the programs; program 0 is the one loadBytes() or an upload gives
+	// the programs; program 0 is the first context attached, the one a
+	// debugger launches and uploads
 	WrenchDebugProgramSlot programs[WRENCH_DEBUG_MAX_PROGRAMS];
 	WrenchDebugImportCall importCalls[WRENCH_DEBUG_MAX_IMPORT_CALLS];
 	uint8_t importCallDepth; // may exceed WRENCH_DEBUG_MAX_IMPORT_CALLS, only those are kept
 
-	// upload in progress
+	// upload in progress, or complete and waiting for takeUpload()
 	uint8_t* upload;
 	uint32_t uploadSize;
 	uint32_t uploadReceived;
+	bool uploadReady;
 
 	// execution
 	uint8_t state; // WrenchDebugState
 	uint8_t stepMode; // WrenchDebugStepMode
 	uint32_t stepKey;
 	const WRValue* stepStack; // a step only stops on this stack (in its "thread")
-	uint32_t pollCounter;
+	uint32_t pollCounter; // source lines since the clock was last read
+	uint32_t lastPollMs; // when the link was last polled while script code ran
+	WRContext* abortContext; // a terminate for a yielded call: the context it aborts, 0 for whatever runs
 	bool hostDriven;
 	bool abortOnDisconnect;
 	bool uploadDisabled; // zero (uploads allowed) after the memset
-	bool entryBreak; // breakOnEntry() armed
+	bool launchable; // setLaunchable()
+	bool entryBreak; // breakOnEntry() armed, or a launch that stops on entry
+	uint8_t entryProgram; // the program it stops in, WRD_NoProgram for any
 	uint32_t entryWaitMs; // how long to wait for a debugger, 0 forever
 	bool helloReceived;
-	bool launchPending;
-	uint8_t launchFlags;
+	bool launched; // program 0 runs for a Launch, its end is reported even to a client given up on
 	bool abortPending;
 	bool resume;
-	bool inLaunch;
 	bool inHook; // polling the link from inside the VM
 	int32_t lastLine;
 	int32_t lineHigh; // pending WRD_LineHigh prefix
@@ -185,7 +187,7 @@ struct WrenchDebugServerPrivate
 	uint32_t lastRxMs;
 
 	// script code of program 0 has run (even if a terminate or an error cut
-	// it short): a launch needs a fresh context
+	// it short), a launch must reset it first
 	bool contextRan;
 
 	// where we are stopped

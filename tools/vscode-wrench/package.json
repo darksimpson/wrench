@@ -102,7 +102,7 @@
 				"wrench.nonStrict": {
 					"type": "boolean",
 					"default": false,
-					"description": "Allow variables without 'var' (compile with -nostrict) when checking files."
+					"description": "Allow variables without 'var' (compile with -nostrict) when checking, compiling and disassembling files."
 				},
 				"wrench.compileDebugInfo": {
 					"type": "boolean",
@@ -161,22 +161,22 @@
 							},
 							"host": {
 								"type": "string",
-								"description": "TCP host of the target.",
+								"description": "TCP host of the target, 127.0.0.1 when not given.",
 								"default": "127.0.0.1"
 							},
 							"port": {
 								"type": "number",
-								"description": "TCP port of the target.",
+								"description": "TCP port of the target, needed with transport tcp (wrench dbgserver and the examples use 5050).",
 								"default": 5050
 							},
 							"serialPort": {
 								"type": "string",
-								"description": "Serial port of the target: COM3 on Windows, /dev/ttyUSB0 on Linux.",
+								"description": "Serial port of the target, needed with transport serial: COM3 on Windows, /dev/ttyUSB0 on Linux.",
 								"default": "COM3"
 							},
 							"baudRate": {
 								"type": "number",
-								"description": "Serial baud rate.",
+								"description": "Serial baud rate, 115200 when not given.",
 								"default": 115200
 							},
 							"target": {
@@ -195,12 +195,12 @@
 							},
 							"timeout": {
 								"type": "number",
-								"description": "Milliseconds to wait for each reply from the target.",
+								"description": "Milliseconds to wait for each reply from the target: 3000 by default, 2000 on a serial port (which tries more often).",
 								"default": 3000
 							},
 							"connectTimeout": {
 								"type": "number",
-								"description": "Milliseconds to wait for a TCP connection.",
+								"description": "Milliseconds to wait for a TCP connection, 5000 by default.",
 								"default": 5000
 							},
 							"trace": {
@@ -228,23 +228,32 @@
 									"tcp",
 									"serial"
 								],
-								"default": "tcp"
+								"default": "tcp",
+								"description": "Where the target is: tcp (the default for attach) or serial.",
+								"enumDescriptions": [
+									"A wrench debug server reachable over TCP (ESP32 WiFi, wrench dbgserver...)",
+									"A wrench debug server on a serial port (UART, USB CDC)"
+								]
 							},
 							"host": {
 								"type": "string",
-								"default": "127.0.0.1"
+								"default": "127.0.0.1",
+								"description": "TCP host of the target, 127.0.0.1 when not given."
 							},
 							"port": {
 								"type": "number",
-								"default": 5050
+								"default": 5050,
+								"description": "TCP port of the target, needed with transport tcp (wrench dbgserver and the examples use 5050)."
 							},
 							"serialPort": {
 								"type": "string",
-								"default": "COM3"
+								"default": "COM3",
+								"description": "Serial port of the target, needed with transport serial: COM3 on Windows, /dev/ttyUSB0 on Linux."
 							},
 							"baudRate": {
 								"type": "number",
-								"default": 115200
+								"default": 115200,
+								"description": "Serial baud rate, 115200 when not given."
 							},
 							"target": {
 								"type": "string",
@@ -257,11 +266,18 @@
 							},
 							"timeout": {
 								"type": "number",
-								"default": 3000
+								"default": 3000,
+								"description": "Milliseconds to wait for each reply from the target: 3000 by default, 2000 on a serial port (which tries more often)."
+							},
+							"connectTimeout": {
+								"type": "number",
+								"description": "Milliseconds to wait for a TCP connection, 5000 by default.",
+								"default": 5000
 							},
 							"trace": {
 								"type": "boolean",
-								"default": false
+								"default": false,
+								"description": "Log the Debug Adapter Protocol traffic to the adapter's stderr."
 							}
 						}
 					}

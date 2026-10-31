@@ -567,6 +567,19 @@ private:
 	WRstr privateLabel( const WRstr& name, int file );
 	int findPrivate( const WRarray<WRPrivateName>& names, uint32_t hash, int file ) const;
 
+	// "var p" in a struct with a parameter p declares a member p: the
+	// statement declares it under a hidden name, so p in its initializer is
+	// still the parameter, and once the statement is compiled the member
+	// takes the name and the parameter is hidden
+	struct WRMemberShadow
+	{
+		int argument; // local slot of the parameter
+		WRstr label;
+	};
+	WRarray<WRMemberShadow> m_memberShadows;
+	bool shadowParameter( WRExpression& expression, WRstr& label );
+	void applyMemberShadows( WRBytecode& bytecode );
+
 public:
 
 	// relative jumps are 16 bit; one that turns out farther is recorded and
@@ -593,6 +606,7 @@ private:
 	bool isValidLabel( WRstr& token, bool& isGlobal, WRstr& prefix, bool& isLibConstant );
 
 	bool getToken( WRExpressionContext& ex, const char* expect =0 );
+	bool readToken( WRExpressionContext& ex, const char* expect );
 
 	static bool CheckSkipLoad( WROpcode opcode, WRBytecode& bytecode, int a, int o );
 	static bool CheckFastLoad( WROpcode opcode, WRBytecode& bytecode, int a, int o );
@@ -615,7 +629,9 @@ private:
 	
 	uint16_t m_lastCode;
 	int m_lastParam;
+	int m_lineMarkers; // line markers emitted so far
 	void pushDebug( uint16_t code, WRBytecode& bytecode,int param );
+	void pushLoopMarker( WRBytecode& bytecode, int markersBefore, int line );
 	int getSourcePosition();
 	int getSourcePosition( int& onLine, int& onChar, WRstr* line =0 );
 	
@@ -626,6 +642,7 @@ private:
 	void resolveRelativeJumps( WRBytecode& bytecode );
 
 	void appendBytecode( WRBytecode& bytecode, WRBytecode& addMe );
+	void flushWaitingArguments( WRBytecode& bytecode, WRBytecode* waiting, const bool* reference, int& count, bool readNow );
 	
 	void pushLiteral( WRBytecode& bytecode, WRExpressionContext& context );
 	void pushLibConstant( WRBytecode& bytecode, WRExpressionContext& context );
@@ -695,6 +712,7 @@ private:
 	bool m_loadedQuoted;
 	
 	WRError m_err;
+	WRError m_tokenErr; // a bad literal or string: the compile ends with it
 	bool m_EOF;
 	bool m_LastParsedLabel;
 	bool m_parsingFor;

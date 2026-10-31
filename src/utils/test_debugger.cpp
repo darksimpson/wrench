@@ -36,6 +36,7 @@ SOFTWARE.
 
 #include <filesystem>
 
+#include <functional>
 #include <thread>
 #include <atomic>
 #include <chrono>
@@ -78,10 +79,34 @@ public:
 	WrenchDebugPipe& pipe() { return m_pipe; }
 	std::atomic<int> hostCalls{ 0 };
 	bool allowUpload = true; // set before start()
+	bool launchable = true; // setLaunchable() value
 	int entryWait = -1; // >= 0 arms breakOnEntry( entryWait ) before the host runs its program
 	uint32_t linkTimeout = 0; // setLinkTimeout() value
 
+	// an onTick() that yielded waits until continueYield is set, then the
+	// host continues it once; continued counts that, lastError is its error
+	std::atomic<bool> continueYield{ false };
+	std::atomic<int> continued{ 0 };
+	std::atomic<int> lastError{ 0 };
+
 private:
+	// napMs( ms ): a native that blocks
+	static void napMs( WRContext* c, const WRValue* argv, const int argn, WRValue& retVal, void* usr )
+	{
+		std::this_thread::sleep_for( std::chrono::milliseconds(argn ? argv[0].asInt() : 0) );
+	}
+
+	// waitPolling( ms ): a native that blocks and services the link meanwhile
+	static void waitPolling( WRContext* c, const WRValue* argv, const int argn, WRValue& retVal, void* usr )
+	{
+		auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds( argn ? argv[0].asInt() : 0 );
+		while ( std::chrono::steady_clock::now() < until )
+		{
+			((WrenchDebugServer*)usr)->poll();
+			std::this_thread::sleep_for( std::chrono::milliseconds(5) );
+		}
+	}
+
 	static void print( WRContext* c, const WRValue* argv, const int argn, WRValue& retVal, void* usr )
 	{
 		for ( int i = 0; i < argn; ++i )
@@ -102,33 +127,49 @@ private:
 		WRState* w = wr_newState( 256 );
 		wr_loadAllLibs( w );
 		WrenchDebugServer server( w, m_pipe.server() );
+		WrenchHostProgram program( w, server );
 		server.setAbortOnDisconnect( true );
+		server.setLaunchable( launchable );
 		server.setAllowUpload( allowUpload );
 		server.setLinkTimeout( linkTimeout );
 		wr_registerFunction( w, "print", print, &server );
 		wr_registerFunction( w, "println", println, &server );
+		wr_registerFunction( w, "napMs", napMs );
+		wr_registerFunction( w, "waitPolling", waitPolling, &server );
 
 		bool hostDriven = !m_hostProgram.empty();
 		if ( hostDriven )
 		{
 			server.setHostDriven( true );
-			server.loadBytes( m_hostProgram.data(), (int)m_hostProgram.size() );
+			program.load( m_hostProgram.data(), (int)m_hostProgram.size() );
 			if ( entryWait >= 0 )
 			{
 				server.breakOnEntry( (uint32_t)entryWait );
 			}
-			wr_executeContext( server.context() );
+			program.run();
 		}
 
 		int counter = 0;
 		while ( !m_quit )
 		{
-			server.tick();
-			if ( hostDriven && server.context() )
+			program.handle( server.tick() );
+			WRContext* context = program.context();
+			if ( hostDriven && context && context->yield_pc )
+			{
+				if ( continueYield )
+				{
+					continueYield = false;
+					wr_continue( context );
+					lastError = (int)wr_getLastError( w );
+					++continued;
+				}
+				m_pipe.server()->idle();
+			}
+			else if ( hostDriven && context && context->stopLocation )
 			{
 				WRValue arg;
 				arg.init( counter++ );
-				wr_callFunction( server.context(), "onTick", &arg, 1 );
+				wr_callFunction( context, "onTick", &arg, 1 );
 				++hostCalls;
 				std::this_thread::sleep_for( std::chrono::milliseconds(1) );
 			}
@@ -138,6 +179,7 @@ private:
 			}
 		}
 
+		program.unload();
 		server.detach();
 		wr_destroyState( w );
 	}
@@ -332,6 +374,27 @@ void testServerDriven()
 	DCHECK( evalText(client, program, "arr[7]").find("out of range") != std::string::npos );
 	DCHECK( evalText(client, program, "nope").find("no variable") != std::string::npos );
 
+	// the read-only intrinsics of the language
+	DCHECK( evalText(client, program, "arr._count") == "3" );
+	DCHECK( evalText(client, program, "arr._count + 1") == "4" );
+	DCHECK( evalText(client, program, "s._count") == "5" );
+	DCHECK( evalText(client, program, "h._count") == "2" );
+	DCHECK( evalText(client, program, "p._count") == "2" );
+	DCHECK( evalText(client, program, "g._count") == "0" );
+	DCHECK( evalText(client, program, "\"abcd\"._count") == "4" );
+	DCHECK( evalText(client, program, "g._hash") == "10" );
+	DCHECK( evalText(client, program, "s._hash") == std::to_string((int32_t)wr_hashStr("hello")) );
+	DCHECK( evalText(client, program, "arr._hash").find("not available") != std::string::npos );
+	{
+		std::vector<WrenchDebugStackFrame> stack;
+		client.getStack( stack, &program, 0 );
+		WrenchDebugEvaluator ev( client, program, stack, 0 );
+		WrenchDebugWatchPath path;
+		WrenchDebugValue value;
+		std::string error;
+		DCHECK( !ev.watchPath("arr._count", path, value, error) && error.find("computed") != std::string::npos );
+	}
+
 	// writes
 	{
 		DCHECK( client.getStack(frames, &program, e.line) );
@@ -409,7 +472,7 @@ void testPauseAndErrors()
 	WrenchDebugEvent e;
 	DCHECK( client.pause() );
 	DCHECK( waitFor(client, WrenchDebugEvent::Stopped, e) );
-	DCHECK( e.reason == WRD_StopPause && e.line == 4 );
+	DCHECK( e.reason == WRD_StopPause && (e.line == 4 || e.line == 2) ); // each pass meets "while( 1 )" too
 	std::string n = evalText( client, program, "n" );
 	DCHECK( atoi(n.c_str()) > 0 );
 
@@ -421,6 +484,63 @@ void testPauseAndErrors()
 	DCHECK( client.terminate() );
 	DCHECK( waitFor(client, WrenchDebugEvent::Ended, e) );
 	DCHECK( (e.flags & WRD_EndedAborted) != 0 && e.error == WR_ERR_debugger_terminated );
+
+	// every pass of an endless loop with nothing in it meets a line marker:
+	// pause and terminate reach it
+	const char* empty[] =
+	{
+		"var n = 0;\nwhile( 1 )\n{\n}\n",
+		"var n = 0;\nfor( ;; )\n{\n}\n",
+		"var n = 0;\ndo\n{\n} while( 1 );\n",
+	};
+	const int emptyLine[] = { 2, 2, 4 };
+	for ( int l = 0; l < 3; ++l )
+	{
+		DCHECK( compile(empty[l], bytecode, program) );
+		DCHECK( client.upload(bytecode) );
+		DCHECK( client.launch(false) );
+		std::this_thread::sleep_for( std::chrono::milliseconds(50) );
+		DCHECK( client.pause() );
+		DCHECK( waitFor(client, WrenchDebugEvent::Stopped, e) && e.reason == WRD_StopPause && e.line == emptyLine[l] );
+		DCHECK( client.terminate() );
+		DCHECK( waitFor(client, WrenchDebugEvent::Ended, e) && (e.flags & WRD_EndedAborted) );
+	}
+
+	// slow lines: the link is polled every WRENCH_DEBUG_POLL_MS, not after a
+	// fixed number of lines (64 lines of 30 ms took about a second)
+	const char* slow =
+		"while( 1 )\n" // 1
+		"{\n" // 2
+		"  napMs( 30 );\n" // 3
+		"}\n"; // 4
+	DCHECK( compile(slow, bytecode, program) );
+	DCHECK( client.upload(bytecode) );
+	DCHECK( client.launch(false) );
+	std::this_thread::sleep_for( std::chrono::milliseconds(100) );
+	auto asked = std::chrono::steady_clock::now();
+	DCHECK( client.pause() );
+	DCHECK( waitFor(client, WrenchDebugEvent::Stopped, e) && e.reason == WRD_StopPause );
+	long long took = (long long)std::chrono::duration_cast<std::chrono::milliseconds>( std::chrono::steady_clock::now() - asked ).count();
+	DCHECK( took < 600 );
+	DCHECK( client.terminate() );
+	DCHECK( waitFor(client, WrenchDebugEvent::Ended, e) );
+
+	// a native that blocks and polls meanwhile: requests are answered while
+	// it waits, the pause takes effect on the line after the call
+	const char* waiting =
+		"waitPolling( 1500 );\n" // 1
+		"var after = 1;\n"; // 2
+	DCHECK( compile(waiting, bytecode, program) );
+	DCHECK( client.upload(bytecode) );
+	DCHECK( client.launch(false) );
+	std::this_thread::sleep_for( std::chrono::milliseconds(300) );
+	asked = std::chrono::steady_clock::now();
+	DCHECK( client.pause() );
+	took = (long long)std::chrono::duration_cast<std::chrono::milliseconds>( std::chrono::steady_clock::now() - asked ).count();
+	DCHECK( took < 500 );
+	DCHECK( waitFor(client, WrenchDebugEvent::Stopped, e) && e.reason == WRD_StopPause && e.line == 2 );
+	DCHECK( client.terminate() );
+	DCHECK( waitFor(client, WrenchDebugEvent::Ended, e) );
 
 	// runtime errors stop with the frames still intact
 	const char* failing =
@@ -590,6 +710,59 @@ void testBreakOnEntry()
 	alone.stop();
 }
 
+// a terminate for a call of program 0 that yielded ends it once the
+// firmware continues it; a call that was not terminated goes on normally
+void testTerminateYieldedCall()
+{
+	const char* firmware =
+		"var ticks = 0;\n" // 1
+		"function onTick( count )\n" // 2
+		"{\n" // 3
+		"  yield();\n" // 4
+		"  ticks = ticks + 1;\n" // 5
+		"  return count;\n" // 6
+		"}\n"; // 7
+	std::vector<uint8_t> bytecode;
+	WrenchDebugProgram program;
+	DCHECK( compile(firmware, bytecode, program) );
+
+	TestTarget target;
+	target.start( &bytecode );
+	WrenchDebugClient client( target.pipe().client() );
+	WrenchDebugTargetInfo info;
+	DCHECK( client.connect(info) );
+	auto waitUntil = []( const std::function<bool()>& done )
+	{
+		for ( int i = 0; i < 300 && !done(); ++i )
+		{
+			std::this_thread::sleep_for( std::chrono::milliseconds(10) );
+		}
+		return done();
+	};
+	auto ticksAre = [&]( const char* value )
+	{
+		// the host may be inside a call when asked, globals are refused then
+		return waitUntil( [&]() { return evalText(client, program, "ticks") == value; } );
+	};
+	DCHECK( waitUntil([&]() { return target.hostCalls >= 1; }) ); // onTick yielded
+
+	DCHECK( client.terminate() );
+	target.continueYield = true;
+	DCHECK( waitUntil([&]() { return target.continued == 1; }) );
+	DCHECK( target.lastError == WR_ERR_debugger_terminated );
+	DCHECK( ticksAre("0") );
+
+	// the next call yields again; this time it goes on
+	DCHECK( waitUntil([&]() { return target.hostCalls >= 2; }) );
+	target.continueYield = true;
+	DCHECK( waitUntil([&]() { return target.continued == 2; }) );
+	DCHECK( target.lastError == WR_ERR_None );
+	DCHECK( ticksAre("1") );
+
+	client.detach();
+	target.stop();
+}
+
 // firmware that refuses uploads keeps its own program, which can still be
 // debugged
 void testUploadRefused()
@@ -630,8 +803,38 @@ void testUploadRefused()
 	DCHECK( client.setBreakpoints({}) );
 	DCHECK( client.resume() );
 
+	// a launch runs the firmware's program again in its own context, reset:
+	// fresh globals, then the firmware calls in as before
+	DCHECK( client.launch(true) );
+	DCHECK( waitFor(client, WrenchDebugEvent::Stopped, e) && e.reason == WRD_StopEntry && e.line == 1 );
+	DCHECK( evalText(client, program, "ticks") == "0" );
+	DCHECK( client.resume() );
+	DCHECK( waitFor(client, WrenchDebugEvent::Ended, e) && (e.flags & WRD_EndedHostDriven) );
+	int calls = target.hostCalls;
+	for ( int i = 0; i < 300 && target.hostCalls == calls; ++i )
+	{
+		std::this_thread::sleep_for( std::chrono::milliseconds(10) );
+	}
+	DCHECK( target.hostCalls > calls );
+
 	client.detach();
 	target.stop();
+
+	// firmware that does not carry out launches: a debugger can only attach
+	TestTarget fixed;
+	fixed.launchable = false;
+	fixed.start( &bytecode );
+	WrenchDebugClient attached( fixed.pipe().client() );
+	DCHECK( attached.connect(info) );
+	DCHECK( (info.caps & (WRD_CapLoad | WRD_CapLaunch)) == 0 );
+	DCHECK( !attached.launch(false) && attached.lastError() == "not supported by the target" );
+	DCHECK( !attached.upload(otherBytecode) && attached.lastError() == "the target does not accept uploaded programs" );
+	DCHECK( attached.setBreakpoints({ 4 }) );
+	DCHECK( waitFor(attached, WrenchDebugEvent::Stopped, e) && e.line == 4 );
+	DCHECK( attached.setBreakpoints({}) );
+	DCHECK( attached.resume() );
+	attached.detach();
+	fixed.stop();
 }
 
 // the local target imitates the host application described by wrench.json:
@@ -1036,8 +1239,8 @@ void testIncludedFiles()
 	target.stop();
 }
 
-// host driven firmware with two scripts: program 0 from loadBytes(), a
-// second context attached; both are called every tick, each on its stack
+// host driven firmware with two scripts, each in a context it attached
+// (program 0 and 1); both are called every tick, each on its stack
 class TwoProgramTarget
 {
 public:
@@ -1071,7 +1274,8 @@ private:
 		wr_loadAllLibs( w );
 		WrenchDebugServer server( w, m_pipe.server() );
 		server.setHostDriven( true );
-		WRContext* first = server.loadBytes( m_first.data(), (int)m_first.size() );
+		WRContext* first = wr_newContext( w, m_first.data(), (int)m_first.size() );
+		server.attach( first, "first" );
 		wr_executeContext( first );
 		WRContext* second = wr_newContext( w, m_second.data(), (int)m_second.size() );
 		wr_executeContext( second );
@@ -1088,7 +1292,7 @@ private:
 			}
 			WRValue arg;
 			arg.init( counter++ );
-			wr_callFunction( server.context(), "onTick", &arg, 1 );
+			wr_callFunction( first, "onTick", &arg, 1 );
 			if ( second )
 			{
 				wr_callFunction( second, "onTick", &arg, 1 );
@@ -1157,7 +1361,7 @@ void testAttachedPrograms()
 	DCHECK( client.getPrograms(list) && list.size() == 2 );
 	if ( list.size() == 2 )
 	{
-		DCHECK( list[0].id == 0 && (list[0].flags & WRD_ProgramOwned) && list[0].hash == firstProgram.hash() );
+		DCHECK( list[0].id == 0 && list[0].name == "first" && (list[0].flags & WRD_ProgramRan) && list[0].hash == firstProgram.hash() );
 		DCHECK( list[1].id == 1 && list[1].name == "second" && list[1].hash == secondProgram.hash() && list[1].importer == -1 );
 	}
 	WrenchDebugPrograms programs;
@@ -1454,6 +1658,7 @@ bool testDebugger()
 	testPauseAndErrors();
 	testHostDriven();
 	testUploadRefused();
+	testTerminateYieldedCall();
 	testBreakOnEntry();
 	testProtocolRobustness();
 	testProjectStandIn();

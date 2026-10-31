@@ -75,7 +75,31 @@ static bool wr_parseLiteral( const char* digits, const unsigned int base, uint32
 }
 
 //------------------------------------------------------------------------------
+// a bad literal or string ends the compile with the tokenizer's error: the
+// callers report any failed read as an unexpected EOF or token, so nothing
+// more is read and the error is restored at the end (see compile)
 bool WRCompilationContext::getToken( WRExpressionContext& ex, const char* expect )
+{
+	if ( m_tokenErr != WR_ERR_None )
+	{
+		return false;
+	}
+
+	WRError before = m_err;
+	if ( readToken(ex, expect) )
+	{
+		return true;
+	}
+
+	if ( m_err != before )
+	{
+		m_tokenErr = m_err;
+	}
+	return false;
+}
+
+//------------------------------------------------------------------------------
+bool WRCompilationContext::readToken( WRExpressionContext& ex, const char* expect )
 {
 	WRValue& value = ex.value;
 	WRstr& token = ex.token;
@@ -377,7 +401,7 @@ nextToken:
 					{
 						if ( !single || (token.size() > 1) )
 						{
-							m_err = WR_ERR_bad_expression;
+							m_err = WR_ERR_bad_character_literal;
 							return false;
 						}
 						++m_pos;
@@ -586,7 +610,7 @@ nextToken:
 					value.p2 = INIT_AS_INT;
 					if ( !wr_parseLiteral(token.c_str(), 16, value.ui) )
 					{
-						m_err = WR_ERR_bad_expression; // more than 32 bits
+						m_err = WR_ERR_integer_literal_too_large;
 						return false;
 					}
 				}
@@ -614,7 +638,7 @@ nextToken:
 					value.p2 = INIT_AS_INT;
 					if ( !wr_parseLiteral(token.c_str(), 2, value.ui) )
 					{
-						m_err = WR_ERR_bad_expression; // more than 32 bits
+						m_err = WR_ERR_integer_literal_too_large;
 						return false;
 					}
 				}
@@ -641,7 +665,7 @@ nextToken:
 					value.p2 = INIT_AS_INT;
 					if ( !wr_parseLiteral(token.c_str(), 8, value.ui) )
 					{
-						m_err = WR_ERR_bad_expression; // more than 32 bits
+						m_err = WR_ERR_integer_literal_too_large;
 						return false;
 					}
 				}
@@ -705,7 +729,7 @@ nextToken:
 						value.p2 = INIT_AS_INT;
 						if ( !wr_parseLiteral(token.c_str(), 10, value.ui) )
 						{
-							m_err = WR_ERR_bad_expression; // more than 32 bits
+							m_err = WR_ERR_integer_literal_too_large;
 							return false;
 						}
 					}

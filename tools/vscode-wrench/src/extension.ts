@@ -7,6 +7,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as cp from 'child_process';
 import { LanguageClient, LanguageClientOptions, ServerOptions } from 'vscode-languageclient/node';
+import { compileArgs, disassemblyArgs } from './commands';
 
 let client: LanguageClient | undefined;
 let output: vscode.OutputChannel;
@@ -150,7 +151,8 @@ class DisassemblyProvider implements vscode.TextDocumentContentProvider, vscode.
 
 	provideTextDocumentContent(uri: vscode.Uri): string {
 		const source = uri.query ? decodeURIComponent(uri.query) : '';
-		const result = cp.spawnSync(findExecutable(this.context), ['p', '-debug', source], { encoding: 'utf8', timeout: 20000 });
+		const nonStrict = vscode.workspace.getConfiguration('wrench').get<boolean>('nonStrict', false);
+		const result = cp.spawnSync(findExecutable(this.context), disassemblyArgs(source, nonStrict), { encoding: 'utf8', timeout: 20000 });
 		if (result.error) {
 			return `could not run wrench: ${result.error.message}`;
 		}
@@ -223,14 +225,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			return;
 		}
 		const outFile = file.replace(/\.[^./\\]+$/, '') + '.bin';
-		const args = ['c'];
-		if (vscode.workspace.getConfiguration('wrench').get<boolean>('compileDebugInfo', true)) {
-			args.push('-debugsource');
-		}
-		if (vscode.workspace.getConfiguration('wrench').get<boolean>('nonStrict', false)) {
-			args.push('-nostrict');
-		}
-		args.push(file, outFile);
+		const settings = vscode.workspace.getConfiguration('wrench');
+		const args = compileArgs(file, outFile, settings.get<boolean>('compileDebugInfo', true), settings.get<boolean>('nonStrict', false));
 		const result = cp.spawnSync(findExecutable(context), args, { encoding: 'utf8', timeout: 20000 });
 		output.appendLine(`wrench ${args.join(' ')}`);
 		output.append(result.stdout || '');

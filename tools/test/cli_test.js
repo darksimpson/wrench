@@ -1,14 +1,16 @@
-// End to end test of the console debugger "wrench dbg".
-// usage: node cli_test.js [path to wrench executable]
+// End to end test of the console debugger "wrench dbg" and the other
+// commands of the command line tool.
+// usage: node cli_test.js [path to wrench executable] [test name]
 'use strict';
 
 const { spawn, spawnSync, execFileSync } = require('child_process');
+const net = require('net');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const assert = require('assert');
 
-const exe = process.argv[2] || path.join(__dirname, '..', '..', 'win32', 'Debug', 'wrench.exe');
+const exe = path.resolve(process.argv[2] || path.join(__dirname, '..', '..', 'win32', 'Debug', 'wrench.exe'));
 const sample = path.join(__dirname, 'fixtures', 'sample.w');
 
 // run "wrench dbg" with commands on stdin, returns everything it printed
@@ -193,10 +195,275 @@ async function testAttachNeedsRemoteTarget() {
 	assert(/without a file the program comes from the target/.test(out), out);
 }
 
+// run a wrench command, returns { status, out }
+function wrench(args, options) {
+	const r = spawnSync(exe, args, { encoding: 'utf8', timeout: 120000, ...options });
+	assert(!r.error, String(r.error));
+	return { status: r.status, out: r.stdout + r.stderr };
+}
+
+function tempDir(name) {
+	const dir = path.join(os.tmpdir(), `wrench_cli_${name}_${process.pid}`);
+	fs.rmSync(dir, { recursive: true, force: true });
+	fs.mkdirSync(dir, { recursive: true });
+	return dir;
+}
+
+// r and rb fail with a non-zero exit code, a program's own error code
+// (sys::halt) is shown as a number, not as a name of the table
+async function testRunExitCodes() {
+	const dir = tempDir('exit');
+	try {
+		const halt = path.join(dir, 'halt.w');
+		fs.writeFileSync(halt, 'println("before");\nsys::halt(150);\n');
+		let r = wrench(['r', halt]);
+		assert.strictEqual(r.status, 1, r.out);
+		assert(/before/.test(r.out), r.out);
+		assert(/err: user error 150/.test(r.out), r.out);
+		const bin = path.join(dir, 'halt.bin');
+		r = wrench(['c', halt, bin]);
+		assert.strictEqual(r.status, 0, r.out);
+		r = wrench(['rb', bin]);
+		assert.strictEqual(r.status, 1, r.out);
+		assert(/err: user error 150/.test(r.out), r.out);
+		const bad = path.join(dir, 'bad.w');
+		fs.writeFileSync(bad, 'var x = ;\n');
+		r = wrench(['r', bad]);
+		assert.strictEqual(r.status, 2, r.out);
+		assert(/compile error/.test(r.out), r.out);
+		r = wrench(['c', bad, bin]);
+		assert.strictEqual(r.status, 2, r.out);
+		r = wrench(['r', sample]);
+		assert.strictEqual(r.status, 0, r.out);
+		r = wrench(['v']);
+		assert.strictEqual(r.status, 0, r.out);
+		assert(/usage: wrench <command>/.test(r.out), r.out);
+		assert(!/\bca \[/.test(r.out), r.out);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+}
+
+// only the first argument is the command: files may be named like one
+async function testCommandWordIsFirst() {
+	const dir = tempDir('word');
+	try {
+		let r = wrench(['c', sample, 'p'], { cwd: dir });
+		assert.strictEqual(r.status, 0, r.out);
+		assert(fs.existsSync(path.join(dir, 'p')), r.out);
+		assert(!/GlobalStop/.test(r.out), r.out);
+		r = wrench(['ch', sample, 'out.h', 'd'], { cwd: dir });
+		assert.strictEqual(r.status, 0, r.out);
+		assert(/const unsigned char d_bytecode\[\]/.test(fs.readFileSync(path.join(dir, 'out.h'), 'utf8')), r.out);
+		// options of dbgserver are not taken by dbg, and the other way round
+		for (const option of ['-hold', '-noupload', '-v', '-linktimeout', '-context']) {
+			r = wrench(['dbg', option, '100', sample]);
+			assert(new RegExp(`unknown option ${option} for dbg`).test(r.out), r.out);
+			assert.notStrictEqual(r.status, 0, r.out);
+		}
+		r = wrench(['dbgserver', '-attach', '-target', 'tcp:1', sample]);
+		assert(/unknown option -attach for dbgserver/.test(r.out), r.out);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+}
+
+// release creates a missing target folder and writes version.txt beside the
+// source folder, not into the current one
+async function testRelease() {
+	const dir = tempDir('release');
+	try {
+		const src = path.join(dir, 'src');
+		fs.cpSync(path.join(__dirname, '..', '..', 'src'), src, { recursive: true });
+		const work = path.join(dir, 'work');
+		fs.mkdirSync(work);
+		let r = wrench(['release', src, path.join(dir, 'dist')], { cwd: work });
+		assert.strictEqual(r.status, 0, r.out);
+		assert(fs.existsSync(path.join(dir, 'dist', 'wrench.cpp')), r.out);
+		assert(/^#define WRENCH_COMBINED/.test(fs.readFileSync(path.join(dir, 'dist', 'wrench.h'), 'utf8')), r.out);
+		const header = fs.readFileSync(path.join(src, 'wrench.h'), 'utf8');
+		const v = ['MAJOR', 'MINOR', 'BUILD'].map((n) => new RegExp(`#define WRENCH_VERSION_${n} (\\d+)`).exec(header)[1]).join('.');
+		assert.strictEqual(fs.readFileSync(path.join(dir, 'version.txt'), 'utf8'), v);
+		assert(!fs.existsSync(path.join(work, 'version.txt')), 'version.txt written into the current folder');
+		const tcpHeader = fs.readFileSync(path.join(src, 'lib', 'std_tcp.h'), 'utf8');
+		const wrenchCpp = fs.readFileSync(path.join(dir, 'dist', 'wrench.cpp'), 'utf8');
+		assert.strictEqual(wrenchCpp.split(tcpHeader).length, 2, 'std_tcp.h is in wrench.cpp more than once');
+		r = wrench(['release', src, path.join(dir, 'missing', 'dist')], { cwd: work });
+		assert.notStrictEqual(r.status, 0, r.out);
+		assert(/cannot create the folder/.test(r.out), r.out);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+}
+
+// a test script that does not compile is a failure, the following ones
+// still run
+async function testTestsContinueAfterCompileError() {
+	const dir = tempDir('tests');
+	try {
+		fs.writeFileSync(path.join(dir, 'test_files.txt'), 'bad.w\ngood.w\n');
+		fs.writeFileSync(path.join(dir, 'bad.w'), 'var x = ;\n');
+		fs.writeFileSync(path.join(dir, 'good.w'), '/*~\nok\n~*/\nprintln("ok");\n');
+		const r = wrench(['t', dir], { cwd: path.join(__dirname, '..', '..') });
+		assert.notStrictEqual(r.status, 0, r.out);
+		assert(/test \[1\]\[bad\.w\]: [^]*compile error/.test(r.out), r.out);
+		assert(/test \[2\]\[good\.w\]: PASS/.test(r.out), r.out);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+}
+
+// a TCP proxy to a debug server that records the message types of the
+// frames the debugger sends
+function recordingProxy(targetPort) {
+	return new Promise((resolve) => {
+		const types = [];
+		const sockets = [];
+		const server = net.createServer((client) => {
+			const target = net.connect(targetPort, '127.0.0.1');
+			sockets.push(client, target);
+			let buf = Buffer.alloc(0);
+			client.on('data', (d) => {
+				target.write(d);
+				buf = Buffer.concat([buf, d]);
+				// sync 0xA5 0x57, type, seq, u16 length, payload, u16 crc
+				while (buf.length >= 6) {
+					if (buf[0] !== 0xa5 || buf[1] !== 0x57) {
+						buf = buf.subarray(1);
+						continue;
+					}
+					const len = buf[4] | (buf[5] << 8);
+					if (buf.length < 8 + len) {
+						break;
+					}
+					types.push(buf[2]);
+					buf = buf.subarray(8 + len);
+				}
+			});
+			target.on('data', (d) => client.write(d));
+			client.on('close', () => target.end());
+			target.on('close', () => client.end());
+			client.on('error', () => {});
+			target.on('error', () => {});
+		});
+		server.listen(0, '127.0.0.1', () => resolve({
+			port: server.address().port,
+			types,
+			close: () => { sockets.forEach((s) => s.destroy()); server.close(); },
+		}));
+	});
+}
+
+// dbg that cannot use a target (it refuses uploads) leaves it with a
+// Detach, not just a dropped link
+async function testRefusedTargetDetached() {
+	const port = 31000 + Math.floor(Math.random() * 2000);
+	const server = spawn(exe, ['dbgserver', '-target', `tcp:${port}`, '-noupload', '-hold', sample], { stdio: ['ignore', 'pipe', 'pipe'] });
+	await sleep(500);
+	const proxy = await recordingProxy(port);
+	try {
+		const out = await new Promise((resolve) => {
+			const c = spawn(exe, ['dbg', '-target', `tcp:127.0.0.1:${proxy.port}`, sample], { stdio: ['pipe', 'pipe', 'pipe'] });
+			let text = '';
+			c.stdout.on('data', (d) => { text += d.toString(); });
+			c.on('exit', () => resolve(text));
+			c.stdin.end('q\n');
+		});
+		assert(/does not accept uploaded programs/.test(out), out);
+		await sleep(300);
+		assert(proxy.types.includes(0x01), `hello not sent: ${proxy.types}`);
+		assert(proxy.types.includes(0x18), `no detach among ${proxy.types}`);
+	} finally {
+		proxy.close();
+		server.kill();
+	}
+}
+
+// an interactive dbg session: write commands, wait for output
+function session(args) {
+	const client = spawn(exe, ['dbg', ...args], { stdio: ['pipe', 'pipe', 'pipe'] });
+	const s = { out: '', client };
+	client.stdout.on('data', (d) => { s.out += d.toString(); });
+	client.stderr.on('data', (d) => { s.out += d.toString(); });
+	s.exited = new Promise((resolve) => client.on('exit', resolve));
+	s.send = (text) => client.stdin.write(text);
+	s.waitFor = async (re, ms = 5000) => {
+		for (let i = 0; i < ms / 50 && !re.test(s.out); ++i) {
+			await sleep(50);
+		}
+		assert(re.test(s.out), s.out);
+	};
+	return s;
+}
+
+// a stop of a function the firmware calls shows at the idle prompt without
+// another command; 'r' while halted there ends that call, runs the program,
+// and the breakpoint is hit again by the firmware's next call
+async function testStopsWhileIdleAndRestart() {
+	const port = 33000 + Math.floor(Math.random() * 2000);
+	const ticker = path.join(__dirname, 'fixtures', 'ticker.w');
+	const server = spawn(exe, ['dbgserver', '-target', `tcp:${port}`, '-context', ticker, sample], { stdio: ['ignore', 'pipe', 'pipe'] });
+	await sleep(500);
+	const s = session(['-attach', '-target', `tcp:127.0.0.1:${port}`, sample]);
+	try {
+		s.send('b ticker.w:6\n');
+		await s.waitFor(/\[breakpoint\] line 6 in ticker\.w/);
+		s.send('r\n');
+		await s.waitFor(/total=30[^]*\[ended, returned 0\][^]*\[breakpoint\] line 6 in ticker\.w/);
+		assert(!/launch failed/.test(s.out), s.out);
+		s.send('bt\nq\n');
+		await s.exited;
+		assert(/#0 {2}tick {2}line 6 in ticker\.w/.test(s.out.slice(s.out.lastIndexOf('[breakpoint]'))), s.out);
+		assert.strictEqual((s.out.match(/\[breakpoint\] line 6 in ticker\.w/g) || []).length, 2, s.out);
+	} finally {
+		s.client.kill();
+		server.kill();
+	}
+}
+
+// tcp:<port> listens on 127.0.0.1 only, tcp:0.0.0.0:<port> on every
+// interface
+async function testServerListensOnLoopback() {
+	const lan = Object.values(os.networkInterfaces()).flat().find((a) => a && a.family === 'IPv4' && !a.internal);
+	const canConnect = (host, port) => new Promise((resolve) => {
+		const c = net.connect(port, host);
+		c.on('connect', () => { c.destroy(); resolve(true); });
+		c.on('error', () => resolve(false));
+	});
+	let port = 35000 + Math.floor(Math.random() * 2000);
+	let server = spawn(exe, ['dbgserver', '-target', `tcp:${port}`, sample], { stdio: ['ignore', 'pipe', 'pipe'] });
+	let out = '';
+	server.stdout.on('data', (d) => { out += d.toString(); });
+	await sleep(500);
+	try {
+		assert(new RegExp(`listening on tcp 127\\.0\\.0\\.1:${port} \\(this machine only\\)`).test(out), out);
+		assert(await canConnect('127.0.0.1', port), 'no connection over loopback');
+		if (lan) {
+			assert(!(await canConnect(lan.address, port)), `tcp:${port} reachable on ${lan.address}`);
+		}
+	} finally {
+		server.kill();
+	}
+	port += 1;
+	server = spawn(exe, ['dbgserver', '-target', `tcp:0.0.0.0:${port}`, sample], { stdio: ['ignore', 'pipe', 'pipe'] });
+	out = '';
+	server.stdout.on('data', (d) => { out += d.toString(); });
+	await sleep(500);
+	try {
+		assert(new RegExp(`listening on tcp 0\\.0\\.0\\.0:${port} \\(every interface\\)`).test(out), out);
+		if (lan) {
+			assert(await canConnect(lan.address, port), `tcp:0.0.0.0:${port} not reachable on ${lan.address}`);
+		}
+	} finally {
+		server.kill();
+	}
+}
+
 (async () => {
-	const tests = [testBinaryFile, testBinaryWithoutSource, testAttachFetchesProgram, testUploadRefused, testAttachToWaitingScript, testCommandRobustness, testPingWhileStopped, testWatchCommands, testImportedModule, testAttachedContext, testAttachNeedsRemoteTarget];
+	const tests = [testBinaryFile, testBinaryWithoutSource, testAttachFetchesProgram, testUploadRefused, testAttachToWaitingScript, testCommandRobustness, testPingWhileStopped, testWatchCommands, testImportedModule, testAttachedContext, testAttachNeedsRemoteTarget,
+		testRunExitCodes, testCommandWordIsFirst, testRelease, testTestsContinueAfterCompileError, testRefusedTargetDetached, testStopsWhileIdleAndRestart, testServerListensOnLoopback];
 	let failed = 0;
-	for (const t of tests) {
+	for (const t of tests.filter((t) => !process.argv[3] || t.name === process.argv[3])) {
 		try {
 			await t();
 			console.log(`PASS ${t.name}`);

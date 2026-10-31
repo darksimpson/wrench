@@ -2,7 +2,6 @@
 #include <string.h>
 #include <stdio.h>
 
-//------------------------------------------------------------------------------
 void println( WRContext* c, const WRValue* argv, const int argn, WRValue& retVal, void* usr )
 {
 	char buf[1024];
@@ -13,18 +12,17 @@ void println( WRContext* c, const WRValue* argv, const int argn, WRValue& retVal
 }
 
 const char* wrenchCode1 = "println(\"into 1\");"
-						  "function handler()"
-						  "{"
-						  "		println(\"I am event 1\");\n"
-						  "		for( var l = 1; l<10; ++l )"
-						  "		{"
-						  "			println( yield(l) );"
-						  "		}"
-						  "}";
+                          "function handler()"
+                          "{"
+                          "    println(\"I am event 1\");\n"
+                          "    for( var l = 1; l<10; ++l )"
+                          "    {"
+                          "        println( yield(l) );"
+                          "    }"
+                          "}";
 const char* wrenchCode2 = "println(\"into 2\"); function handler() { println(\"I am event 2\"); }";
 const char* wrenchCode3 = "println(\"into 3\"); function handler() { println(\"I am event 3\"); }";
 
-//------------------------------------------------------------------------------
 class EventHandler
 {
 public:
@@ -85,7 +83,6 @@ private:
 	unsigned char* m_byteCode;
 };
 
-//------------------------------------------------------------------------------
 int main( int argn, char** argv )
 {
 	WRState* w = wr_newState(); // create the state

@@ -27,7 +27,11 @@ SOFTWARE.
 //------------------------------------------------------------------------------
 // returns : 0 - function  does not exist
 //         : 1 - function is native (callback)
-//         : 2 - function is in wrench (was in source code)
+//         : 2 - function is in wrench (was in source code), in this
+//               context or in a module it imported
+// Lookups by hash (wr_callFunction, a call the VM could not resolve) leave
+// empty entries in the registries, so an entry only counts when it holds
+// a callback or a function
 void wr_isFunction( WRValue* stackTop, const int argn, WRContext* c )
 {
 	if ( argn > 0 )
@@ -35,13 +39,30 @@ void wr_isFunction( WRValue* stackTop, const int argn, WRContext* c )
 		WRValue* arg = stackTop - argn;
 		uint32_t hash = arg->getHash();
 		WRValue* entry = c->w->globalRegistry.exists( hash, false );
-		if ( entry && (entry->p2 & INIT_AS_LIB_CONST) != INIT_AS_LIB_CONST ) // constants are no functions
+		if ( entry
+			&& entry->ccb // a native and a library function share the slot
+			&& (entry->p2 & INIT_AS_LIB_CONST) != INIT_AS_LIB_CONST ) // constants are no functions
 		{
 			stackTop->i = 1;
+			return;
 		}
-		else if ( c->registry.exists(hash, false) )
+
+		entry = c->registry.exists( hash, false );
+		if ( entry && entry->wrf )
 		{
 			stackTop->i = 2;
+			return;
+		}
+
+		// the modules this context imported, in the order a call searches them
+		for( WRContext* import = c->imported; import && import != c; import = import->imported )
+		{
+			entry = import->registry.exists( hash, false );
+			if ( entry && entry->wrf )
+			{
+				stackTop->i = 2;
+				return;
+			}
 		}
 	}
 }

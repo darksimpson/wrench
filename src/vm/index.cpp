@@ -64,17 +64,48 @@ WRValue* wr_valueFromConfirmedStruct( WRValue* value, uint32_t hash )
 }
 
 //------------------------------------------------------------------------------
-void wr_doIndexHash( WRValue* index, WRValue* value, WRValue* target )
+// only an element that is assigned to (O_IndexCreate), or any element in an
+// image from an older compiler, creates: it turns a value that is no
+// container into one, grows an array or adds a key to a hash table. A read
+// gives 0 and leaves the value alone
+static bool wr_indexMayCreate( WRContext* c )
+{
+	return (c->flags & (WRC_IndexConverts | WRC_IndexCreates)) != 0;
+}
+
+//------------------------------------------------------------------------------
+void wr_doIndexHash( WRContext* c, WRValue* index, WRValue* value, WRValue* target )
 {
 	uint32_t hash = index->getHash();
 
 	if ( value->xtype == WR_EX_HASH_TABLE )
 	{
-		int element;
-		WRValue* entry = (WRValue*)(value->va->get(hash, &element));
+		WRValue* entry = value->va->exists( hash, false );
+		if ( !entry )
+		{
+			if ( !wr_indexMayCreate(c) )
+			{
+				target->init(); // reading a missing key
+				return;
+			}
 
-		// need to create a hash ref
-		*(entry + 1) = *index; // might be the first time it was registered
+			entry = (WRValue*)value->va->get( hash );
+			if ( entry == wr_fullHashTableSink() )
+			{
+				// an assignment fails the script (the opcodes that assign
+				// check), a key an older image adds by reading reads 0
+				if ( c->flags & WRC_IndexCreates )
+				{
+					c->w->err = WR_ERR_hash_table_size_exceeded;
+				}
+				target->init();
+				return;
+			}
+
+			// the key is stored with a new entry only: h.name knows just the
+			// hash of "name", it must not replace the key that is there
+			*(entry + 1) = *index;
+		}
 
 		if ( target == value )
 		{
@@ -86,7 +117,7 @@ void wr_doIndexHash( WRValue* index, WRValue* value, WRValue* target )
 			return;
 		}
 
-		target->p2 = INIT_AS_CONTAINER_MEMBER | ENCODE_ARRAY_ELEMENT_TO_P2( element );
+		target->p2 = INIT_AS_CONTAINER_MEMBER | ENCODE_ARRAY_ELEMENT_TO_P2( (uint32_t)(entry - value->va->m_Vdata) );
 		target->vb = (WRGCBase*)(value->va->m_Vdata) - 1;
 	}
 	else // naming an element of a struct "S.element"
@@ -94,6 +125,12 @@ void wr_doIndexHash( WRValue* index, WRValue* value, WRValue* target )
 		WRValue* member = wr_valueFromConfirmedStruct( value, hash );
 		if ( !member )
 		{
+			if ( (c->flags & (WRC_IndexConverts | WRC_IndexCreates)) == WRC_IndexCreates )
+			{
+				// assigning to a member the struct does not have (an image
+				// from an older compiler drops the value silently)
+				c->w->err = WR_ERR_hash_not_found;
+			}
 			target->init();
 		}
 		else if ( target == value )
@@ -111,14 +148,6 @@ void wr_doIndexHash( WRValue* index, WRValue* value, WRValue* target )
 }
 
 //------------------------------------------------------------------------------
-// only an element that is assigned to (O_IndexCreate), or any element in an
-// image from an older compiler, turns a value that is no container into one;
-// a read gives 0 and leaves the value alone
-static bool wr_indexMayCreate( WRContext* c )
-{
-	return (c->flags & (WRC_IndexConverts | WRC_IndexCreates)) != 0;
-}
-
 void doIndex_I_X( WRContext* c, WRValue* index, WRValue* value, WRValue* target )
 {
 	if ( !wr_indexMayCreate(c) )
@@ -157,7 +186,7 @@ void doIndex_I_E( WRContext* c, WRValue* index, WRValue* value, WRValue* target 
 
 		if (EXPECTS_HASH_INDEX(value->xtype))
 		{
-			wr_doIndexHash( index, value, target );
+			wr_doIndexHash( c, index, value, target );
 			return;
 		}
 
@@ -206,13 +235,14 @@ void doIndex_I_E( WRContext* c, WRValue* index, WRValue* value, WRValue* target 
 #endif
 				value->p2 = INIT_AS_HASH_TABLE;
 
-				wr_doIndexHash( I, value, target );
+				wr_doIndexHash( c, I, value, target );
 				return;
 			}
 		}
 		else if ( index->ui >= value->va->m_size )
 		{
-			if ( value->va->m_flags & GCFlag_NoContext )
+			// reading past the end gives 0, only a write grows the array
+			if ( (value->va->m_flags & GCFlag_NoContext) || !wr_indexMayCreate(c) )
 			{
 boundsFailed:
 				target->init();
@@ -252,16 +282,62 @@ void doIndex_E_I( WRContext* c, WRValue* index, WRValue* value, WRValue* target 
 #endif
 	V->p2 = INIT_AS_HASH_TABLE;
 	
-	WRValue* I = &(index->singleValue());
-	doIndex_I_E( c, I, V, target );
+	// keyed by the index itself, a string key stays a string
+	WRValue I = index->deref();
+	wr_doIndexHash( c, &I, V, target );
+}
+
+//------------------------------------------------------------------------------
+// a float index: the key itself in a hash table, the int it truncates to in
+// an array or a string
+static void wr_floatIndexToInt( const WRValue* index, WRValue* to )
+{
+	const float f = index->f;
+	to->p2 = INIT_AS_INT;
+	to->i = (f == f && f > -2147483648.0f && f < 2147483648.0f) ? (int32_t)f : -1; // -1: out of range of any array
+}
+
+void doIndex_F_E( WRContext* c, WRValue* index, WRValue* value, WRValue* target )
+{
+	WRValue I;
+	if ( !EXPECTS_HASH_INDEX(value->deref().xtype) )
+	{
+		wr_floatIndexToInt( index, &I );
+		index = &I;
+	}
+	doIndex_I_E( c, index, value, target );
+}
+
+void doIndex_F_X( WRContext* c, WRValue* index, WRValue* value, WRValue* target )
+{
+	if ( !wr_indexMayCreate(c) )
+	{
+		target->init();
+		return;
+	}
+
+	// the value is no container: it becomes a hash table keyed by the float
+	value->va = c->getSVA( 0, SV_HASH_TABLE, false );
+#ifdef WRENCH_HANDLE_MALLOC_FAIL
+	if ( !value->va )
+	{
+		value->p2 = INIT_AS_INT;
+		return;
+	}
+#endif
+	value->p2 = INIT_AS_HASH_TABLE;
+
+	wr_doIndexHash( c, index, value, target );
 }
 
 //------------------------------------------------------------------------------
 void doIndex_E_E( WRContext* c, WRValue* index, WRValue* value, WRValue* target )
 {
-	WRValue* I = &(index->deref());
+	// a copy: the index can be the scratch value deref() hands out, which
+	// dereferencing the value below may reuse
+	WRValue I = index->deref();
 
-	if ( I->type > WR_FLOAT )
+	if ( I.type > WR_FLOAT )
 	{
 		WRValue* V = &(value->deref());
 		
@@ -271,17 +347,19 @@ void doIndex_E_E( WRContext* c, WRValue* index, WRValue* value, WRValue* target 
 		}
 		else
 		{
-			wr_doIndexHash( I, V, target );
+			wr_doIndexHash( c, &I, V, target );
 		}
+	}
+	else if ( I.type == WR_FLOAT )
+	{
+		doIndex_F_E( c, &I, value, target );
 	}
 	else
 	{
-		doIndex_I_E( c, I, value, target );
+		doIndex_I_E( c, &I, value, target );
 	}
 }
 
-
-void doVoidIndexFunc( WRContext* c, WRValue* index, WRValue* value, WRValue* target ) {}
 
 void doIndex_R_R( WRContext* c, WRValue* index, WRValue* value, WRValue* target ) { wr_index[(index->r->type<<2)|value->r->type](c, index->r, value->r, target); }
 
@@ -293,7 +371,7 @@ void doIndex_R_X( WRContext* c, WRValue* index, WRValue* value, WRValue* target 
 WRStateFunc wr_index[16] = 
 {
 	doIndex_I_X,     doIndex_I_X,     doIndex_X_R,     doIndex_I_E,
-	doVoidIndexFunc, doVoidIndexFunc, doVoidIndexFunc, doVoidIndexFunc,
+	doIndex_F_X,     doIndex_F_X,     doIndex_X_R,     doIndex_F_E,
 	doIndex_R_X,     doIndex_R_X,     doIndex_R_R,     doIndex_R_X, 
 	doIndex_E_I,     doIndex_E_I,     doIndex_X_R,     doIndex_E_E,
 };
@@ -306,11 +384,12 @@ void doIndex_R_I( WRContext* c, WRValue* index, WRValue* value, WRValue* target 
 void doIndex_R_F( WRContext* c, WRValue* index, WRValue* value, WRValue* target ) { wr_index[(index->r->type<<2)|WR_FLOAT](c, index->r, value, target); }
 void doIndex_R_E( WRContext* c, WRValue* index, WRValue* value, WRValue* target ) { wr_index[(index->r->type<<2)|WR_EX](c, index->r, value, target); }
 void doIndex_E_R( WRContext* c, WRValue* index, WRValue* value, WRValue* target ) { wr_index[(WR_EX<<2)|value->r->type](c, index, value->r, target); }
+void doIndex_F_R( WRContext* c, WRValue* index, WRValue* value, WRValue* target ) { wr_index[(WR_FLOAT<<2)|value->r->type](c, index, value->r, target); }
 
 WRStateFunc wr_index[16] = 
 {
 	doIndex_I_X,     doIndex_I_X,     doIndex_I_R,     doIndex_I_E,
-	doVoidIndexFunc, doVoidIndexFunc, doVoidIndexFunc, doVoidIndexFunc,
+	doIndex_F_X,     doIndex_F_X,     doIndex_F_R,     doIndex_F_E,
 	doIndex_R_I,     doIndex_R_F,     doIndex_R_R,     doIndex_R_E, 
 	doIndex_E_I,     doIndex_E_I,     doIndex_E_R,     doIndex_E_E,
 };

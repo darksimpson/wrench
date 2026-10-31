@@ -33,6 +33,7 @@ SOFTWARE.
 #include "utils/json_stream.h"
 #include "utils/wrench_debug_host.h"
 #include "utils/wrench_debug_eval.h"
+#include "utils/wrench_include_host.h"
 
 #include <stdio.h>
 #include <string>
@@ -297,6 +298,8 @@ private:
 
 	// session
 	bool m_attach = false;
+	bool m_uploaded = false; // this session sent program 0 to the target
+	bool m_unresponsive = false; // the local target runs code that cannot answer
 	bool m_started = false;
 	bool m_stopped = false;
 	bool m_running = false;
@@ -467,6 +470,20 @@ int DapServer::embeddedReference( int program, int file )
 	return FirstEmbedded + (int)m_embedded.size() - 1;
 }
 
+// an included file of program 0 on this machine: the file table names it
+// relative to the main file's folder, it is looked for next to the program,
+// then in the project's include folders (as named when it is nowhere)
+static std::string wr_includedPath( const std::string& name, const std::string& programPath, const WrenchProject& project )
+{
+	std::vector<std::string> folders;
+	if ( project.loaded() )
+	{
+		folders = project.includePaths();
+	}
+	std::string found = WrenchIncludeResolver::locate( name, programPath, folders );
+	return found.empty() ? name : found;
+}
+
 // a file the target names that is on this machine: an absolute path, or
 // any path when the program carries no copy of it
 static bool wr_localFile( const WrenchDebugProgram::SourceFile& f )
@@ -553,11 +570,11 @@ Json DapServer::sourceJson( int program, int file )
 	}
 	else
 	{
-		std::string path = included;
+		std::string path = wr_includedPath( included, m_programPath, m_project );
 		try
 		{
 			std::error_code ec;
-			path = std::filesystem::absolute( std::filesystem::u8path(included), ec ).lexically_normal().u8string();
+			path = std::filesystem::absolute( std::filesystem::u8path(path), ec ).lexically_normal().u8string();
 		}
 		catch ( const std::exception& )
 		{
@@ -617,7 +634,7 @@ std::vector<std::pair<int, int> > DapServer::filesForSource( const Json& source,
 	{
 		for ( size_t f = 1; f < files.size(); ++f )
 		{
-			if ( !files[f].name.empty() && wr_samePath(path, files[f].name) )
+			if ( !files[f].name.empty() && wr_samePath(path, wr_includedPath(files[f].name, m_programPath, m_project)) )
 			{
 				found.push_back( std::make_pair(0, (int)f) );
 				break;
@@ -727,16 +744,30 @@ void DapServer::onLaunchOrAttach( const Json& req, bool attach )
 	m_stream.setTrace( args["trace"].asBool(false) );
 
 	// transport: either "target": "tcp:host:port" or the separate fields
+	// (attach has nothing local to attach to, so it defaults to tcp)
 	std::string target = args["target"].asString( "" );
 	if ( target.empty() )
 	{
-		std::string transport = args["transport"].asString( "local" );
+		std::string transport = args["transport"].asString( attach ? "tcp" : "local" );
 		if ( transport == "tcp" )
 		{
-			target = "tcp:" + args["host"].asString( "127.0.0.1" ) + ":" + std::to_string( args["port"].asInt(0) );
+			int port = args["port"].asInt( 0 );
+			if ( port <= 0 || port > 65535 )
+			{
+				respond( req, false, Json::object(), std::string(attach ? "attach" : "launch")
+					+ " over tcp needs the \"port\" attribute: the tcp port the target listens on (e.g. 5050), or a \"target\" like \"tcp:127.0.0.1:5050\"" );
+				return;
+			}
+			target = "tcp:" + args["host"].asString( "127.0.0.1" ) + ":" + std::to_string( port );
 		}
 		else if ( transport == "serial" )
 		{
+			if ( args["serialPort"].asString("").empty() )
+			{
+				respond( req, false, Json::object(), std::string(attach ? "attach" : "launch")
+					+ " over serial needs the \"serialPort\" attribute (e.g. COM3 or /dev/ttyUSB0)" );
+				return;
+			}
 			target = "serial:" + args["serialPort"].asString( "" ) + ":" + std::to_string( args["baudRate"].asInt(115200) );
 		}
 		else
@@ -869,6 +900,12 @@ void DapServer::onLaunchOrAttach( const Json& req, bool attach )
 			}
 		}
 	}
+	else if ( !(m_info.caps & WRD_CapLaunch) )
+	{
+		respond( req, false, Json::object(), "the target runs its own program and takes no launches (its firmware did not call setLaunchable(true)): "
+				"use \"request\": \"attach\" to debug it" );
+		return;
+	}
 	else if ( args["upload"].asBool(true) && !(m_info.caps & WRD_CapLoad) )
 	{
 		respond( req, false, Json::object(), "the target does not accept uploaded programs (its firmware called setAllowUpload(false)): "
@@ -892,6 +929,7 @@ void DapServer::onLaunchOrAttach( const Json& req, bool attach )
 			respond( req, false, Json::object(), "upload failed: " + m_client->lastError() );
 			return;
 		}
+		m_uploaded = true;
 	}
 	else if ( m_info.programHash != m_program.hash() )
 	{
@@ -2093,17 +2131,30 @@ void DapServer::endSession( int exitCode )
 void DapServer::onDisconnect( const Json& req, bool terminateRequest )
 {
 	bool terminate = req["arguments"]["terminateDebuggee"].asBool( !m_attach );
-	if ( m_client && m_client->linkUp() )
+	if ( m_client && m_client->linkUp() && !m_unresponsive )
 	{
+		// the local target answers at once whenever it can; running code
+		// without debug information never looks at requests, so one short
+		// try is enough there, no retries and no detach after it
+		if ( m_link.isLocal() )
+		{
+			m_client->setTimeout( 300, 0 );
+		}
 		if ( terminateRequest || terminate || m_link.isLocal() )
 		{
-			m_client->terminate();
-			WrenchDebugEvent e;
-			for ( int i = 0; i < 40 && m_client->waitEvent(e, 50) && e.type != WrenchDebugEvent::Ended; ++i )
+			if ( m_client->terminate() )
 			{
+				WrenchDebugEvent e;
+				for ( int i = 0; i < 40 && m_client->waitEvent(e, 50) && e.type != WrenchDebugEvent::Ended; ++i )
+				{
+				}
+			}
+			else if ( m_link.isLocal() )
+			{
+				m_unresponsive = true;
 			}
 		}
-		if ( !terminateRequest )
+		if ( !terminateRequest && !m_unresponsive )
 		{
 			m_client->detach();
 		}
@@ -2117,7 +2168,8 @@ void DapServer::onDisconnect( const Json& req, bool terminateRequest )
 	}
 
 	respond( req, true );
-	m_link.close();
+	// a local target stuck in such code is left to the end of the process
+	m_link.close( m_unresponsive ? 0 : 2000 );
 	m_client.reset();
 	m_quit = true;
 }
@@ -2378,6 +2430,18 @@ void DapServer::handleEnded( const WrenchDebugEvent& e )
 		return;
 	}
 
+	// the firmware runs contexts of its own, which stop when they do
+	bool firmwareRuns = false;
+	for ( int p : m_threads )
+	{
+		firmwareRuns = firmwareRuns || p > 0;
+	}
+	if ( firmwareRuns && !m_link.isLocal() )
+	{
+		output( "The program finished, the target keeps running its other programs.\n" );
+		return;
+	}
+
 	endSession( e.error ? (int)e.error : 0 );
 }
 
@@ -2401,7 +2465,11 @@ void DapServer::pollTarget()
 			case WrenchDebugEvent::Ended: handleEnded( e ); break;
 			case WrenchDebugEvent::Loaded:
 			{
-				output( "The target loaded a new program.\n", "important" );
+				// the program this session uploaded is no news
+				if ( !m_uploaded || e.programHash != m_program.hash() )
+				{
+					output( "The target loaded a new program.\n", "important" );
+				}
 				break;
 			}
 			case WrenchDebugEvent::WatchRemoved: onWatchRemoved( e.watch ); break;
@@ -2528,18 +2596,19 @@ int DapServer::run()
 		}
 	}
 
-	if ( m_client && m_client->linkUp() )
+	if ( m_client && m_client->linkUp() && !m_unresponsive )
 	{
 		if ( m_link.isLocal() )
 		{
-			m_client->terminate();
+			m_client->setTimeout( 300, 0 );
+			m_unresponsive = !m_client->terminate();
 		}
 		else
 		{
 			m_client->detach();
 		}
 	}
-	m_link.close();
+	m_link.close( m_unresponsive ? 0 : 2000 );
 	return 0;
 }
 

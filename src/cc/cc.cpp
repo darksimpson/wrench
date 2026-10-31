@@ -76,9 +76,11 @@ WRError WRCompilationContext::compile( const char* source,
 
 	m_lastParam = 0;
 	m_lastCode = 0;
+	m_lineMarkers = 0;
 
 	m_pos = 0;
 	m_err = WR_ERR_None;
+	m_tokenErr = WR_ERR_None;
 	m_EOF = false;
 	m_parsingFor = false;
 	m_parsingNew = false;
@@ -95,6 +97,7 @@ WRError WRCompilationContext::compile( const char* source,
 	m_privateFunctions.clear();
 	m_privateNext = false;
 	m_privateArmed = false;
+	m_memberShadows.clear();
 
 	m_loadedValue.p2 = INIT_AS_REF;
 
@@ -120,6 +123,11 @@ WRError WRCompilationContext::compile( const char* source,
 		parseStatement( 0, ';', O_GlobalStop );
 
 	} while ( !m_EOF && (m_err == WR_ERR_None) );
+
+	if ( m_tokenErr != WR_ERR_None )
+	{
+		m_err = m_tokenErr;
+	}
 
 	if ( m_err == WR_ERR_None )
 	{
@@ -172,14 +180,10 @@ WRError WRCompilationContext::compile( const char* source,
 		return m_err;
 	}
 
-	if ( !m_units[0].bytecode.opcodes.size()
-		 || m_units[0].bytecode.opcodes[m_units[0].bytecode.opcodes.size() - 1] != O_GlobalStop )
-	{
-		// pop final return value
-		pushOpcode( m_units[0].bytecode, O_LiteralZero );
-		pushOpcode( m_units[0].bytecode, O_GlobalStop );
-	}
-
+	// the end of the global code returns 0, even after a return statement:
+	// a jump over that return (if ( x ) { return 1; }) lands here
+	pushOpcode( m_units[0].bytecode, O_LiteralZero );
+	pushOpcode( m_units[0].bytecode, O_GlobalStop );
 	pushOpcode( m_units[0].bytecode, O_Stop );
 
 	link( out, outLen, compilerOptionFlags );
@@ -271,6 +275,59 @@ int WRCompilationContext::findPrivate( const WRarray<WRPrivateName>& names, uint
 		}
 	}
 	return -1;
+}
+
+// "var p" starting a statement in a struct with a parameter p: p becomes a
+// member. The statement declares it under a hidden name, so p in the
+// initializer still reads the parameter
+bool WRCompilationContext::shadowParameter( WRExpression& expression, WRstr& label )
+{
+	if ( m_unitTop == 0 || !expression.bytecode.isStructSpace )
+	{
+		return false;
+	}
+
+	uint32_t hash = wr_hashStr( label );
+	WRBytecode& unitCode = m_units[m_unitTop].bytecode;
+	for( unsigned int a=0; a<m_units[m_unitTop].arguments && a<unitCode.localSpace.count(); ++a )
+	{
+		if ( unitCode.localSpace[a].hash == hash )
+		{
+			WRMemberShadow& shadow = m_memberShadows.append();
+			shadow.argument = (int)a;
+			shadow.label = label;
+			label += "@member";
+			return true;
+		}
+	}
+
+	return false;
+}
+
+// after the statement: the member takes the name, the parameter keeps its
+// slot (and its label for the debugger) under a hash no name has
+void WRCompilationContext::applyMemberShadows( WRBytecode& bytecode )
+{
+	for( unsigned int s=0; s<m_memberShadows.count(); ++s )
+	{
+		WRstr hidden = m_memberShadows[s].label;
+		hidden += "@member";
+		uint32_t hiddenHash = wr_hashStr( hidden );
+		for( unsigned int i=0; i<bytecode.localSpace.count(); ++i )
+		{
+			if ( bytecode.localSpace[i].hash == hiddenHash )
+			{
+				WRstr argument = m_memberShadows[s].label;
+				argument += "@argument";
+				bytecode.localSpace[m_memberShadows[s].argument].hash = wr_hashStr( argument );
+				bytecode.localSpace[i].hash = wr_hashStr( m_memberShadows[s].label );
+				bytecode.localSpace[i].label = m_memberShadows[s].label;
+				break;
+			}
+		}
+	}
+
+	m_memberShadows.clear();
 }
 
 // In strict mode an unknown name may still stand for a function's hash
@@ -540,6 +597,26 @@ void WRCompilationContext::pushDebug( uint16_t code, WRBytecode& bytecode, int p
 	uint16_t codeword = code | ((uint16_t)param & WRD_PayloadMask);
 	unsigned char data[2];
 	pushData( bytecode, wr_pack16(codeword, data), 2 );
+
+	if ( code == WRD_LineNumber )
+	{
+		++m_lineMarkers;
+	}
+}
+
+//------------------------------------------------------------------------------
+// every pass of a loop must meet a line marker, or a debugger could never
+// pause it: a condition that emitted none since markersBefore (a literal,
+// none at all: while ( 1 ), for ( ;; )) gets one for the loop's line where
+// each pass begins
+void WRCompilationContext::pushLoopMarker( WRBytecode& bytecode, int markersBefore, int line )
+{
+	if ( m_addDebugSymbols && m_lineMarkers == markersBefore )
+	{
+		m_lastCode = 0;
+		m_lastParam = -1;
+		pushDebug( WRD_LineNumber, bytecode, line );
+	}
 }
 
 //------------------------------------------------------------------------------
@@ -2201,6 +2278,87 @@ bool WRCompilationContext::operatorFound( WRstr const& token, WRarray<WRExpressi
 	return false;
 }
 
+// how many simple arguments of a call wait for the next one (see
+// parseCallFunction); more cost a Dereference each, nothing else
+static const int c_waitingMax = 4;
+
+// an argument that is one load or one literal changes nothing; "reference"
+// tells a variable or a member (a reference the call reads late) from a literal
+static bool wr_isSimpleArgument( WRBytecode& b, bool* reference )
+{
+	const unsigned int size = b.all.size();
+	*reference = false;
+	if ( !size || b.gotoSource.count() || b.jumpOffsetTargets.count() )
+	{
+		return false;
+	}
+
+	switch( (WROpcode)b.all[0] )
+	{
+		case O_LoadFromLocal:
+		case O_LoadFromGlobal:
+		{
+			*reference = true;
+			return size == 2;
+		}
+
+		case O_LocalIndexHash:
+		case O_GlobalIndexHash:
+		{
+			*reference = true;
+			return size == 6;
+		}
+
+		case O_LiteralZero:
+		{
+			return size == 1;
+		}
+
+		case O_LiteralInt8:
+		{
+			return size == 2;
+		}
+
+		case O_LiteralInt16:
+		{
+			return size == 3;
+		}
+
+		case O_LiteralInt32:
+		case O_LiteralFloat:
+		{
+			return size == 5;
+		}
+
+		case O_LiteralString:
+		{
+			return size >= 3 && size == 3 + ((unsigned int)b.all[1] | ((unsigned int)b.all[2] << 8));
+		}
+
+		default:
+		{
+			return false;
+		}
+	}
+}
+
+// appends the arguments that waited, reading the references among them
+// first when an argument that may change them follows
+void WRCompilationContext::flushWaitingArguments( WRBytecode& bytecode, WRBytecode* waiting, const bool* reference, int& count, bool readNow )
+{
+	for( int i = 0; i < count; ++i )
+	{
+		if ( readNow && reference[i] )
+		{
+			waiting[i].opcodes += O_Dereference;
+			waiting[i].all += O_Dereference;
+		}
+		appendBytecode( bytecode, waiting[i] );
+		waiting[i].clear();
+	}
+	count = 0;
+}
+
 bool WRCompilationContext::parseCallFunction( WRExpression& expression, WRstr functionName, int depth, bool parseArguments )
 {
 	WRstr prefix = expression.context[depth].prefix;
@@ -2214,6 +2372,10 @@ bool WRCompilationContext::parseCallFunction( WRExpression& expression, WRstr fu
 	{
 		WRstr& token2 = expression.context[depth].token;
 		WRValue& value2 = expression.context[depth].value;
+
+		WRBytecode waiting[c_waitingMax]; // simple arguments not appended yet
+		bool waitingReference[c_waitingMax];
+		int waitingCount = 0;
 
 		for(;;)
 		{
@@ -2235,10 +2397,10 @@ bool WRCompilationContext::parseCallFunction( WRExpression& expression, WRstr fu
 			}
 			++argsPushed;
 
-				WRExpression nex( expression.bytecode.localSpace, expression.bytecode.isStructSpace );
-				nex.allowFunctionNameHashLiteral = true;
-				nex.context[0].token = token2;
-				nex.context[0].value = value2;
+			WRExpression nex( expression.bytecode.localSpace, expression.bytecode.isStructSpace );
+			nex.allowFunctionNameHashLiteral = true;
+			nex.context[0].token = token2;
+			nex.context[0].value = value2;
 			m_loadedToken = token2;
 			m_loadedValue = value2;
 			m_loadedQuoted = m_quoted;
@@ -2261,8 +2423,45 @@ bool WRCompilationContext::parseCallFunction( WRExpression& expression, WRstr fu
 					nex.bytecode.all += O_Dereference;
 				}
 			}
-			
-			appendBytecode( expression.context[depth].bytecode, nex.bytecode );
+
+			// a variable or a member is read where the call is made: an
+			// argument after it may change it (i++, an assignment, a call).
+			// The simple arguments (one load or literal, they change nothing)
+			// wait until such an argument comes and the ones that are
+			// references are read before it, or until the last argument
+			bool reference = false;
+			bool simple = wr_isSimpleArgument( nex.bytecode, &reference );
+			if ( !simple
+				 && end == ','
+				 && nex.bytecode.opcodes.size() > 0
+				 && !(prefix.size() && argsPushed == 1) )
+			{
+				// a member of a member, or a reference a larger expression
+				// ends in, followed by another argument: read now
+				uint8_t op = nex.bytecode.opcodes[nex.bytecode.opcodes.size() - 1];
+				if ( op == O_StackIndexHash || op == O_LoadFromLocal || op == O_LoadFromGlobal )
+				{
+					nex.bytecode.opcodes += O_Dereference;
+					nex.bytecode.all += O_Dereference;
+				}
+			}
+
+			if ( simple )
+			{
+				if ( waitingCount == c_waitingMax )
+				{
+					flushWaitingArguments( expression.context[depth].bytecode, waiting, waitingReference, waitingCount, true );
+				}
+				appendBytecode( waiting[waitingCount], nex.bytecode );
+				// the first argument of a library function stays the variable
+				// (array::clear and hash::clear replace it)
+				waitingReference[waitingCount++] = reference && !(prefix.size() && argsPushed == 1);
+			}
+			else
+			{
+				flushWaitingArguments( expression.context[depth].bytecode, waiting, waitingReference, waitingCount, true );
+				appendBytecode( expression.context[depth].bytecode, nex.bytecode );
+			}
 
 			if ( end == ')' )
 			{
@@ -2270,10 +2469,14 @@ bool WRCompilationContext::parseCallFunction( WRExpression& expression, WRstr fu
 			}
 			else if ( end != ',' )
 			{
-				m_err = WR_ERR_unexpected_token;
+				// keep the error of an argument that failed to parse
+				m_err = m_err ? m_err : WR_ERR_unexpected_token;
 				return 0;
 			}
 		}
+
+		// nothing after them changes them
+		flushWaitingArguments( expression.context[depth].bytecode, waiting, waitingReference, waitingCount, false );
 	}
 
 	pushDebug( WRD_LineNumber, expression.context[depth].bytecode, getSourcePosition() );
@@ -2511,6 +2714,7 @@ int WRCompilationContext::parseInitializerBody( WRExpression& expression, int de
 	// knock off the initial create
 	uint16_t initializer = 0;
 	unsigned char idat[2];
+	bool afterNested = false;
 	for(;;)
 	{
 		if ( !getToken(expression.context[depth]) )
@@ -2519,11 +2723,35 @@ int WRCompilationContext::parseInitializerBody( WRExpression& expression, int de
 			return -1;
 		}
 
+		if ( afterNested )
+		{
+			// a nested initializer, element or value, is followed by ',' or
+			// the closing '}'
+			afterNested = false;
+			if ( !m_quoted && token == '}' )
+			{
+				break;
+			}
+			if ( m_quoted || token != ',' )
+			{
+				m_err = (!m_quoted && token == ':') ? WR_ERR_hash_table_invalid_key : WR_ERR_unexpected_token;
+				return -1;
+			}
+			continue;
+		}
+
 		bool subTableValue = false;
 
 		if ( !m_quoted && token == '{' )
 		{
 			subTableValue = true;
+			inArray = true;
+			if ( inHashTable )
+			{
+				m_err = WR_ERR_array_declaration_in_hash;
+				return -1;
+			}
+
 			if ( parseInitializer(expression, depth) == -1 )
 			{
 				return -1;
@@ -2533,6 +2761,7 @@ int WRCompilationContext::parseInitializerBody( WRExpression& expression, int de
 			wr_pack16( initializer++, idat );
 			pushData( expression.context[depth].bytecode, idat, 2 );
 
+			afterNested = true;
 			continue;
 		}
 	
@@ -2597,6 +2826,7 @@ int WRCompilationContext::parseInitializerBody( WRExpression& expression, int de
 				}
 
 				pushOpcode( expression.context[depth].bytecode, O_AssignToHashTableAndPop );
+				afterNested = true;
 				continue;
 			}
 			else
@@ -2885,15 +3115,24 @@ bool WRCompilationContext::parseWhile( WROpcode opcodeToReturn )
 	m_loadedValue = value;
 	m_loadedQuoted = m_quoted;
 
+	int line = getSourcePosition();
+	int markers = m_lineMarkers;
 	if ( parseExpression(nex) != ')' )
 	{
 		m_err = m_err ? m_err : WR_ERR_unexpected_token;
 		return false;
 	}
 
+	if ( !nex.bytecode.all.size() ) // "while ()" would test a value never pushed
+	{
+		m_err = WR_ERR_empty_parens;
+		return false;
+	}
+
 	*m_continueTargets.push() = addRelativeJumpTarget( m_units[m_unitTop].bytecode );
 	setRelativeJumpTarget(m_units[m_unitTop].bytecode, *m_continueTargets.tail() );
 
+	pushLoopMarker( m_units[m_unitTop].bytecode, markers, line );
 	appendBytecode( m_units[m_unitTop].bytecode, nex.bytecode );
 
 	*m_breakTargets.push() = addRelativeJumpTarget( m_units[m_unitTop].bytecode );
@@ -2960,9 +3199,17 @@ bool WRCompilationContext::parseDoWhile( WROpcode opcodeToReturn )
 	//m_loadedToken = token;
 	//m_loadedValue = value;
 
+	int line = getSourcePosition();
+	int markers = m_lineMarkers;
 	if ( parseExpression(nex) != ')' )
 	{
 		m_err = m_err ? m_err : WR_ERR_unexpected_token;
+		return false;
+	}
+
+	if ( !nex.bytecode.all.size() ) // "while ()" would test a value never pushed
+	{
+		m_err = WR_ERR_empty_parens;
 		return false;
 	}
 
@@ -2973,6 +3220,7 @@ bool WRCompilationContext::parseDoWhile( WROpcode opcodeToReturn )
 	}
 	setRelativeJumpTarget(m_units[m_unitTop].bytecode, *m_continueTargets.tail() );
 
+	pushLoopMarker( m_units[m_unitTop].bytecode, markers, line );
 	appendBytecode( m_units[m_unitTop].bytecode, nex.bytecode );
 
 	addRelativeJumpSource( m_units[m_unitTop].bytecode, O_BZ, *m_breakTargets.tail() );
@@ -3248,6 +3496,8 @@ A:
 	}
 	else
 	{
+		int line = getSourcePosition();
+		int markers = m_lineMarkers;
 		if ( !getToken(ex) )
 		{
 			m_err = WR_ERR_unexpected_EOF;
@@ -3270,10 +3520,15 @@ A:
 				return false;
 			}
 
+			pushLoopMarker( m_units[m_unitTop].bytecode, markers, line );
 			appendBytecode( m_units[m_unitTop].bytecode, nex.bytecode );
 
 			// -> false jump break
 			addRelativeJumpSource( m_units[m_unitTop].bytecode, O_BZ, *m_breakTargets.tail() );
+		}
+		else
+		{
+			pushLoopMarker( m_units[m_unitTop].bytecode, markers, line );
 		}
 
 
@@ -3420,7 +3675,9 @@ bool WRCompilationContext::parseEnum( int unitIndex )
 		}
 		else if ( !m_quoted && token == "," )
 		{
-			continue;
+			// a comma only separates entries: "{ , A }", "{ A,, B }"
+			m_err = WR_ERR_unexpected_token;
+			return false;
 		}
 
 		bool isGlobal;
@@ -3511,6 +3768,23 @@ bool WRCompilationContext::parseEnum( int unitIndex )
 		ConstantValue& newVal = m_units[m_unitTop].constantValues.append();
 		newVal.label = checkLabel;
 		newVal.value = value;
+
+		// the entry ends with a comma (also after the last one) or the brace
+		if ( !getToken(ex) )
+		{
+			m_err = WR_ERR_unexpected_EOF;
+			return false;
+		}
+
+		if ( !m_quoted && token == "}" )
+		{
+			break;
+		}
+		else if ( m_quoted || token != "," )
+		{
+			m_err = WR_ERR_unexpected_token;
+			return false;
+		}
 	}
 
 	if ( getToken(ex) && token != ";" )
@@ -3690,6 +3964,12 @@ bool WRCompilationContext::parseSwitch( WROpcode opcodeToReturn )
 	if ( parseExpression(selectionCriteria) != ')' )
 	{
 		m_err = m_err ? m_err : WR_ERR_unexpected_token;
+		return false;
+	}
+
+	if ( !selectionCriteria.bytecode.all.size() ) // "switch ()" would test a value never pushed
+	{
+		m_err = WR_ERR_empty_parens;
 		return false;
 	}
 
@@ -4056,6 +4336,12 @@ bool WRCompilationContext::parseIf( WROpcode opcodeToReturn )
 		return false;
 	}
 
+	if ( !nex.bytecode.all.size() ) // "if ()" would test a value never pushed
+	{
+		m_err = WR_ERR_empty_parens;
+		return false;
+	}
+
 	appendBytecode( m_units[m_unitTop].bytecode, nex.bytecode );
 
 	int conditionFalseMarker = addRelativeJumpTarget( m_units[m_unitTop].bytecode );
@@ -4215,6 +4501,13 @@ bool WRCompilationContext::parseStatementBody( int unitIndex, char end, WROpcode
 
 			pushDebug( WRD_LineNumber, m_units[m_unitTop].bytecode, getSourcePosition() );
 			pushOpcode( m_units[unitIndex].bytecode, opcodeToReturn );
+			if ( opcodeToReturn == O_GlobalStop )
+			{
+				// the byte after GlobalStop is where later calls into the
+				// context return to: it must be a Stop, also for a return
+				// in the middle of the global code
+				pushOpcode( m_units[unitIndex].bytecode, O_Stop );
+			}
 		}
 		else if ( !m_quoted && token == "struct" )
 		{
@@ -4395,6 +4688,11 @@ bool WRCompilationContext::parseStatementBody( int unitIndex, char end, WROpcode
 			else
 			{
 				FinalizeStatementBytecode( m_units[unitIndex], nex.bytecode );
+			}
+
+			if ( m_memberShadows.count() )
+			{
+				applyMemberShadows( m_units[unitIndex].bytecode );
 			}
 		}
 

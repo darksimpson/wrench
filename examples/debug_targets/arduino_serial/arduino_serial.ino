@@ -29,6 +29,8 @@
 static WrenchDebugStreamTransport debugLink( Serial );
 static WRState* w = 0;
 static WrenchDebugServer* debugger = 0;
+static WRContext* script = 0;
+static bool scriptReady = false; // its global code ran to the end, loop() may be called
 static uint32_t nextCall = 0;
 
 // script output: to the debugger console when one is attached
@@ -53,6 +55,14 @@ static void led( WRContext* c, const WRValue* argv, const int argn, WRValue& ret
 	{
 		digitalWrite( LED_BUILTIN, argv[0].asInt() ? HIGH : LOW );
 	}
+}
+
+// the script's global code; it stops on its first line when the debugger
+// launched it that way (or breakOnEntry() is armed)
+static void runScript()
+{
+	scriptReady = script && wr_executeContext( script );
+	nextCall = millis();
 }
 
 void setup()
@@ -81,30 +91,48 @@ void setup()
 	// the global code has finished
 	debugger->setHostDriven( true );
 
+	// a debugger may restart the script and upload new ones, loop() below
+	// carries that out
+	debugger->setLaunchable( true );
+
 	// run the flashed image; a debugger may replace it later
-	WRContext* context = debugger->loadBytes( blink_bytecode, blink_bytecodeSize );
+	script = wr_newContext( w, blink_bytecode, blink_bytecodeSize );
+	debugger->attach( script, "blink.w" );
 
 	// uncomment to halt the script on its first line until a debugger
 	// attaches (a timeout in ms lets it run on without one)
 	// debugger->breakOnEntry();
 
-	if ( context )
-	{
-		wr_executeContext( context );
-	}
+	runScript();
 }
 
 void loop()
 {
-	// service the debugger, also runs a program the debugger launches
-	debugger->tick();
-
-	// call into the script whenever its global code has run; an upload
-	// replaces the context, so always ask the server for the current one
-	WRContext* context = debugger->context();
-	if ( debugger->ready() && (int32_t)(millis() - nextCall) >= 0 )
+	// service the debugger, then do what it asked for: a new program in
+	// place of the old one, a run from the start
+	int events = debugger->tick();
+	if ( events & WRD_TickProgramUploaded )
 	{
-		WRValue* ret = wr_callFunction( context, "loop" );
+		uint8_t* bytes;
+		int size;
+		if ( debugger->takeUpload(bytes, size) )
+		{
+			wr_destroyContext( script );
+			script = wr_newContext( w, bytes, size, true );
+			debugger->attach( script, "blink.w" );
+			scriptReady = false;
+		}
+	}
+	if ( events & WRD_TickRunRequested )
+	{
+		wr_resetContext( script );
+		runScript();
+	}
+
+	// call into the script whenever its global code has run
+	if ( scriptReady && (int32_t)(millis() - nextCall) >= 0 )
+	{
+		WRValue* ret = wr_callFunction( script, "loop" );
 		int delayMs = ret ? ret->asInt() : 1000;
 		nextCall = millis() + (delayMs > 0 ? delayMs : 1);
 	}

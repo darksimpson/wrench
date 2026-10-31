@@ -92,6 +92,68 @@ bool wr_concatStringCheck( WRValue* to, WRValue* from, WRValue* target )
 }
 
 //------------------------------------------------------------------------------
+// += where 'to' is an element of a container (h["k"] += "b") and either side
+// a string: the sum goes into the element, 'to' only points at it. False
+// when it is not that case, the numeric path applies then
+bool wr_concatStringToElement( WRValue* to, WRValue* from )
+{
+	if ( !IS_CONTAINER_MEMBER(to->xtype) )
+	{
+		return false;
+	}
+
+	// copies: deref() can hand back the element itself, which receives the sum
+	WRValue V = to->deref();
+	WRValue F = from->deref();
+	if ( !wr_concatStringCheck(&V, &F, &V) )
+	{
+		return false;
+	}
+
+	wr_valueToEx( to, &V );
+	*from = V;
+	return true;
+}
+
+//------------------------------------------------------------------------------
+static bool wr_isString( const WRValue& V )
+{
+	return V.xtype == WR_EX_ARRAY && V.va->m_type == SV_CHAR;
+}
+
+//------------------------------------------------------------------------------
+// the order of two strings, by their bytes (a prefix comes first): <0, 0 or
+// >0 in "order". False when they are not both strings
+bool wr_stringOrder( const WRValue* a, const WRValue* b, int* order )
+{
+	// one at a time: deref() may hand out a scratch value (never a string)
+	if ( !wr_isString(a->deref()) )
+	{
+		return false;
+	}
+	const WRGCObject* A = a->deref().va;
+	const WRValue& B = b->deref();
+	if ( !wr_isString(B) )
+	{
+		return false;
+	}
+
+	uint32_t len = (A->m_size < B.va->m_size) ? A->m_size : B.va->m_size;
+	int diff = len ? memcmp( A->m_Cdata, B.va->m_Cdata, len ) : 0;
+	*order = diff ? diff : ((A->m_size < B.va->m_size) ? -1 : (A->m_size > B.va->m_size ? 1 : 0));
+	return true;
+}
+
+//------------------------------------------------------------------------------
+// whether the value (or the variable or element it refers to) is an int or
+// a float: a number is never equal to a string, an array, a hash table or a
+// struct, whose hash it might happen to be
+bool wr_holdsNumber( const WRValue* value )
+{
+	return value->deref().type <= WR_FLOAT;
+}
+
+//------------------------------------------------------------------------------
 bool wr_growValueArray( WRGCObject* va, uint32_t newMinIndex )
 {
 	const size_t size_of = (va->m_type == SV_CHAR) ? 1 : sizeof(WRValue);
@@ -450,6 +512,11 @@ void wr_assignToHashTable( WRContext* c, WRValue* index, WRValue* value, WRValue
 	}
 
 	WRValue *entry = (WRValue *)table->va->get( index->getHash() );
+	if ( entry == wr_fullHashTableSink() )
+	{
+		c->w->err = WR_ERR_hash_table_size_exceeded;
+		return;
+	}
 
 	*entry++ = *value;
 	*entry = *index;
@@ -489,7 +556,14 @@ WRSingleTargetFunc wr_negate[4] =
 
 //------------------------------------------------------------------------------
 uint32_t doBitwiseNot_I( WRValue* value ) { return ~value->ui; }
-uint32_t doBitwiseNot_F( WRValue* value ) { return 0; }
+uint32_t doBitwiseNot_F( WRValue* value )
+{
+	// of the int the float truncates to, as the other integer operators;
+	// out of range values clamp
+	const float f = value->f;
+	int32_t i = !(f == f) ? 0 : (f >= 2147483647.0f ? 0x7FFFFFFF : (f <= -2147483648.0f ? (int32_t)0x80000000 : (int32_t)f));
+	return ~(uint32_t)i;
+}
 uint32_t doBitwiseNot_R( WRValue* value ) { return wr_bitwiseNot[ value->r->type ]( value->r ); }
 uint32_t doBitwiseNot_E( WRValue* value )
 {

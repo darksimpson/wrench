@@ -44,6 +44,9 @@
 036_vm_robustness.w
 037_strings_and_empty_tables.w
 038_include.w
+039_compiler_book_fixes.w
+040_vm_book_fixes.w
+041_library_book_fixes.w
 
 # equality of numbers, strings, arrays, hash tables and structs, through an
 # imported assertion library (unit_test_lib.w, not a test by itself)

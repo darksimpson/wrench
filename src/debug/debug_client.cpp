@@ -823,6 +823,10 @@ void WrenchDebugClient::handleFrame( const WrenchDebugFrame& frame )
 		case WRD_MsgEventLoaded:
 		{
 			e.type = WrenchDebugEvent::Loaded;
+			if ( in.remaining() >= 4 )
+			{
+				e.programHash = in.u32();
+			}
 			break;
 		}
 		default:

@@ -78,32 +78,65 @@ WRState* w = wr_newState();
 static MyTransport link;
 WrenchDebugServer debugger( w, &link );
 
-// your firmware calls into the script itself
+// your firmware calls into the script itself, and carries out what the
+// debugger asks for (launch, upload)
 debugger.setHostDriven( true );
+debugger.setLaunchable( true );
 
-// the image in flash, then its global code once
-WRContext* ctx = debugger.loadBytes( bytecode, bytecodeSize );
-wr_executeContext( ctx );
+// the image in flash, handed to the debugger, then its global code once
+WRContext* ctx = wr_newContext( w, bytecode, bytecodeSize );
+debugger.attach( ctx, "blink.w" );
+bool ready = wr_executeContext( ctx );
 
 for ( ;; )
 {
 	// service the debugger
-	debugger.tick();
+	int events = debugger.tick();
 
-	// a program is loaded and its global code has run
-	if ( debugger.ready() )
+	// it sent a new program: that replaces the old one
+	uint8_t* bytes;
+	int size;
+	if ( (events & WRD_TickProgramUploaded) && debugger.takeUpload(bytes, size) )
 	{
-		wr_callFunction( debugger.context(), "loop" );
+		wr_destroyContext( ctx );
+		ctx = wr_newContext( w, bytes, size, true );
+		debugger.attach( ctx, "blink.w" );
+		ready = false;
+	}
+
+	// it launches the program: from the start, with fresh globals
+	if ( events & WRD_TickRunRequested )
+	{
+		wr_resetContext( ctx );
+		ready = wr_executeContext( ctx );
+	}
+
+	// the global code has run
+	if ( ready )
+	{
+		wr_callFunction( ctx, "loop" );
 	}
 }
 ```
 
+* The debug server never runs script code itself: the firmware creates its
+  contexts, runs them and destroys them, the server debugs the ones it is
+  given with `attach()`. The first one is program 0, the one a debugger
+  launches and replaces with uploads.
 * `tick()` must be called regularly while no script runs. It answers the
-  debugger and, when the debugger *launches* a program, runs its global code.
+  debugger and returns what it asks the firmware to do. Without
+  `setLaunchable( true )` it asks for nothing: a debugger can then only
+  attach to what the firmware runs (VS Code's `"request": "attach"`).
+* A launch with "stop on entry" halts the script on its first line once
+  the firmware runs it. The end of the run (also an error, or a terminate
+  from the debugger) is reported to the debugger by the VM itself.
 * While script code runs, the VM polls the link every
-  `WRENCH_DEBUG_POLL_INTERVAL` source lines (64 by default), so the debugger
-  can pause the script and change breakpoints even in an endless script
-  loop. Polling only reads the link: it does not yield to other tasks or
+  `WRENCH_DEBUG_POLL_MS` milliseconds (20 by default), so the debugger can
+  pause the script and change breakpoints even in an endless script loop.
+  A native function that blocks for long should call `debugger.poll()`
+  while it waits, nothing else answers the debugger meanwhile (see
+  the book, docs/book/src/debugging/blocking.md). Polling only reads the
+  link: it does not yield to other tasks or
   feed a watchdog (`idle()` is not called while script code runs), so a
   long running call still trips whatever watchdog or scheduling rules the
   firmware has, debugger attached or not. The comment at the top of
@@ -112,17 +145,15 @@ for ( ;; )
   servicing the link until the debugger resumes. Your firmware is halted
   meanwhile; `WrenchDebugTransport::idle()` runs in that loop (feed a
   watchdog or let other tasks run there).
-* The debugger may upload a new program. The server then replaces its
-  context, which is why the loop asks `context()` every time instead of
-  keeping the pointer. `tick()` returns `WRD_TickProgramLoaded` when that
-  happens. `debugger.setAllowUpload( false )` refuses uploads for builds
-  that must only run their own program; attaching and stepping still work.
+* `debugger.setAllowUpload( false )` refuses uploads for builds that must
+  only run their own program; attaching, stepping and restarting it (a
+  launch with `"upload": false`) still work.
 * Firmware that runs more scripts in contexts of its own hands each one to
   the same server with `debugger.attach( context, "name.w" )`; the
   debugger then sees them all (a thread each in VS Code). The server does
   not own those contexts, destroying one is enough to stop debugging it.
   Modules a debugged script imports are debugged too. See "Several
-  programs" in docs/debugging.md.
+  programs" in the book, docs/book/src/debugging/programs.md.
 * When the server learns that the debugger is gone, it clears the
   breakpoints and a halted script continues (`setAbortOnDisconnect( true )`
   terminates it instead). It learns that from an explicit detach (ending
@@ -134,10 +165,9 @@ for ( ;; )
   halted, the target stays halted (and keeps servicing the link) until a
   debugger connects again and continues or detaches.
   `debugger.setLinkTimeout( ms )` makes a halted target treat a debugger it
-  has not heard from for that long as disconnected. VS Code pings a halted
-  target every second, so a few seconds are enough there; the console
-  debugger `wrench dbg` does not ping, so with it use a generous value or
-  none.
+  has not heard from for that long as disconnected. VS Code and the console
+  debugger `wrench dbg` ping a halted target every second, so a few seconds
+  are enough.
 * `debugger.breakOnEntry()` before running the script halts it on its first
   line until a debugger attaches, to debug from the very start (each example
   has the line, commented out). `breakOnEntry( 30000 )` gives up after 30 s.
@@ -179,10 +209,12 @@ print to the debug port yourself; send script output through
 ## Memory
 
 The server allocates its state once, from the heap in its constructor
-(`malloc`, or the allocator given to `wr_setGlobalAllocator()`): about
-`2 x WRENCH_DEBUG_MAX_PAYLOAD` bytes for its frame buffers plus
-`12 x WRENCH_DEBUG_MAX_HANDLES` and `4 x WRENCH_DEBUG_MAX_BREAKPOINTS` (on a
-32-bit target). Defaults are 1024 / 64 / 32. A small MCU is fine with:
+(`malloc`, or the allocator given to `wr_setGlobalAllocator()`). On a 32-bit
+target that is about `2 x (WRENCH_DEBUG_MAX_PAYLOAD + 8)` bytes for its
+frame buffers plus 12 bytes per handle and per breakpoint, 64 per watch and
+per program, 16 per import call and 184 more: 4040 bytes with the defaults
+(payload 1024, 64 handles, 32 breakpoints), 1384 bytes with the settings
+below, which suit a small MCU:
 
 ```c++
 #define WRENCH_DEBUG_MAX_PAYLOAD 128
@@ -192,10 +224,8 @@ The server allocates its state once, from the heap in its constructor
 
 Uploading a program needs a RAM buffer of the bytecode size; debugging a
 program that runs from flash (attach) needs none. Setting a variable to a
-string from the debugger allocates that string in the VM, and launching a
-program that already ran builds a fresh context for it, as loading one
-does. Breakpoints, stepping, pausing and inspecting values allocate
-nothing.
+string from the debugger allocates that string in the VM. Breakpoints,
+stepping, pausing, watchpoints and inspecting values allocate nothing.
 
 ## Connecting
 

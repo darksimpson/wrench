@@ -293,14 +293,7 @@ static WRContext* wr_rejectBlock( WRState* w, const unsigned char* block, bool t
 //------------------------------------------------------------------------------
 WRContext* wr_createContext( WRState* w, const unsigned char* block, const int blockSize, bool takeOwnership, WRValue* stack )
 {
-	if ( blockSize < 8 )
-	{
-		return wr_rejectBlock( w, block, takeOwnership, WR_ERR_bad_bytecode_CRC );
-	}
-
-	// CRC the code block, at least is it what the compiler intended?
-	uint32_t hash = READ_32_FROM_PC(block + (blockSize - 4));
-	if ( hash != wr_hash_read8(block, (blockSize - 4)) + WRENCH_VERSION_MAJOR )
+	if ( blockSize < 8 || !wr_isBytecodeValid(block, (unsigned int)blockSize) )
 	{
 		return wr_rejectBlock( w, block, takeOwnership, WR_ERR_bad_bytecode_CRC );
 	}
@@ -478,9 +471,13 @@ bool wr_isBytecodeValid( const uint8_t* bytecode, const unsigned int len, uint32
 		return false;
 	}
 
-	// CRC the code block, at least is it what the compiler intended?
+	// CRC the code block, at least is it what the compiler intended? The
+	// salt is the major version of the compiler: this one, or the one
+	// before for an image without the flags that version did not know
 	uint32_t h = READ_32_FROM_PC(bytecode + (len - 4));
-	if ( h != wr_hash_read8(bytecode, (len - 4)) + WRENCH_VERSION_MAJOR )
+	uint32_t crc = wr_hash_read8( bytecode, (len - 4) );
+	if ( h != crc + WRENCH_VERSION_MAJOR
+		 && (h != crc + WRENCH_PREVIOUS_IMAGE_VERSION || (READ_8_FROM_PC(bytecode + 2) & WR_READS_KEEP_VALUES)) )
 	{
 		return false;
 	}
@@ -514,8 +511,59 @@ WRValue* wr_executeContext( WRContext* context )
 		S->err = WR_ERR_execute_function_zero_called_more_than_once;
 		return 0;
 	}
-	
-	return wr_callFunction( context, (WRFunction*)0 );
+
+	WRValue* ret = wr_callFunction( context, (WRFunction*)0 );
+#ifdef WRENCH_INCLUDE_DEBUG_CODE
+	// finished (or failed), not yielded: a debugger reports the end of the run
+	if ( !context->yield_pc && context->debugServer )
+	{
+		context->debugServer->onGlobalCodeEnd( context, ret );
+	}
+#endif
+	return ret;
+}
+
+//------------------------------------------------------------------------------
+bool wr_resetContext( WRContext* context )
+{
+	if ( !context || (context->flags & (WRC_Import | WRC_InNative)) )
+	{
+		return false;
+	}
+
+	// the modules it imported belong to the run that imported them
+	while( context->imported )
+	{
+		WRContext* next = context->imported->imported;
+		wr_destroyContextEx( context->imported );
+		context->imported = next == context ? 0 : next; // the list is circular
+	}
+
+	// globals start over, what they held is garbage now
+	WRValue* globals = (WRValue*)(context + 1);
+	for( int i = 0; i < context->globals; ++i )
+	{
+		globals[i].init();
+	}
+	context->allocatedMemoryHint = 0xFFFFFFFF; // above any limit, so gc() really runs
+	context->gc( 0 );
+
+	context->stopLocation = 0;
+	context->yield_pc = 0;
+	context->yield_stackTop = 0;
+	context->yield_frameBase = 0;
+	context->yield_argv = 0;
+	context->yield_argn = 0;
+	context->yieldArgs = 0;
+	context->flags &= ~WRC_ForceYielded;
+
+#ifdef WRENCH_INCLUDE_DEBUG_CODE
+	if ( context->debugServer )
+	{
+		context->debugServer->onContextReset( context );
+	}
+#endif
+	return true;
 }
 
 //------------------------------------------------------------------------------
@@ -619,7 +667,7 @@ bool wr_runCommand( WRState* w, const char* sourceCode, const int size )
 	{
 		wr_runOnce( w, outBytes, outLen );
 		g_free( outBytes );
-		return true;
+		return w->err == WR_ERR_None; // a runtime error fails it too
 	}
 
 	return false;
@@ -1324,6 +1372,41 @@ WRValue& wr_makeString( WRContext* context, WRValue* val, const char* data, cons
 }
 
 //------------------------------------------------------------------------------
+// the object of a context's collector a value holds, 0 for anything else
+static WRGCBase* wr_collectedObject( const WRValue& value )
+{
+	const WRValue& V = value.deref();
+	if ( (V.xtype == WR_EX_ARRAY || V.xtype == WR_EX_STRUCT || V.xtype == WR_EX_HASH_TABLE)
+		 && V.va && !(V.va->m_flags & GCFlag_NoContext) )
+	{
+		return V.vb;
+	}
+	return 0;
+}
+
+//------------------------------------------------------------------------------
+bool wr_keepValue( const WRValue& value )
+{
+	WRGCBase* object = wr_collectedObject( value );
+	if ( object )
+	{
+		object->m_flags |= GCFlag_Perm; // a root of every collection
+	}
+	return object != 0;
+}
+
+//------------------------------------------------------------------------------
+bool wr_releaseValue( const WRValue& value )
+{
+	WRGCBase* object = wr_collectedObject( value );
+	if ( object )
+	{
+		object->m_flags &= ~GCFlag_Perm;
+	}
+	return object != 0;
+}
+
+//------------------------------------------------------------------------------
 WRValue& wr_makeContainer( WRValue* val, const uint16_t sizeHint )
 {
 	val->va = (WRGCObject*)g_malloc( sizeof(WRGCObject) );
@@ -1482,7 +1565,8 @@ WRValue* wr_getValueFromContainer( WRValue const& container, const char* name )
 		return 0;
 	}
 
-	return (WRValue*)container.va->get( wr_hash(name, (const unsigned int)strlen(name)) );
+	// looking does not add the name
+	return container.va->exists( wr_hash(name, (const unsigned int)strlen(name)), false );
 }
 
 #ifndef WRENCH_WITHOUT_COMPILER
@@ -1844,7 +1928,7 @@ const char* c_errStrings[]=
 	"WR_ERR_hash_table_invalid_key",
 	"WR_ERR_wrench_function_not_found",
 	"WR_ERR_array_must_be_indexed",
-	"WR_ERR_context_not_found",
+	"WR_ERR_scontext_not_found",
 	"WR_ERR_context_not_yielded",
 	"WR_ERR_cannot_call_function_context_yielded",
 
@@ -1890,6 +1974,8 @@ const char* c_errStrings[]=
 	"WR_ERR_include_not_supported",
 	"WR_ERR_include_not_at_top_level",
 	"WR_ERR_include_too_deep",
+	"WR_ERR_bad_character_literal",
+	"WR_ERR_integer_literal_too_large",
 };
 
 #endif

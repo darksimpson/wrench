@@ -24,6 +24,19 @@ SOFTWARE.
 
 #include "wrench.h"
 
+// getIndexOfHit() for a key a script hash table has no room for
+#define WR_HASH_TABLE_FULL 0xFFFFFFFF
+
+// per thread, like the scratch values of operations.cpp
+static WRENCH_THREAD_LOCAL uintptr_t s_fullTableSinkWords[4];
+
+//------------------------------------------------------------------------------
+WRValue* wr_fullHashTableSink()
+{
+	(void)sizeof( char[(2 * sizeof(WRValue) == sizeof(s_fullTableSinkWords)) ? 1 : -1] );
+	return (WRValue*)s_fullTableSinkWords;
+}
+
 //------------------------------------------------------------------------------
 int WRGCObject::init( unsigned int size, const WRGCObjectType type, bool clear )
 {
@@ -196,7 +209,17 @@ void* WRGCObject::get( const uint32_t l, int* index )
 	}
 	else if ( m_type == SV_HASH_TABLE )
 	{
-		s = getIndexOfHit(l, false) << 1;
+		uint32_t hit = getIndexOfHit( l, false );
+		if ( hit == WR_HASH_TABLE_FULL )
+		{
+			// no room for the key: nothing in the table may be overwritten
+			WRValue* sink = wr_fullHashTableSink();
+			sink[0].init();
+			sink[1].init();
+			if ( index ) { *index = 0; }
+			return sink;
+		}
+		s = hit << 1;
 		ret = m_Vdata + s;
 	}
 	else if ( m_type == SV_VOID_HASH_TABLE )
@@ -309,7 +332,13 @@ tryAgain:
 					return (uint32_t)slot;
 				}
 			}
-			// completely full: like an allocation failure
+			// completely full: a script's table says so (the script fails
+			// with WR_ERR_hash_table_size_exceeded), an internal one is
+			// like an allocation failure
+			if ( m_type == SV_HASH_TABLE )
+			{
+				return WR_HASH_TABLE_FULL;
+			}
 #ifdef WRENCH_HANDLE_MALLOC_FAIL
 			g_mallocFailed = true;
 #endif

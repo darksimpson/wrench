@@ -41,6 +41,7 @@ WrenchScheduler::WrenchScheduler( const int stackSizePerThread )
 	m_tasks = 0;
 	m_lastErr = 0;
 	m_lastErrId = 0;
+	m_lastTaskId = 0;
 }
 
 //------------------------------------------------------------------------------
@@ -95,7 +96,6 @@ void WrenchScheduler::tick( int instructionsPerSlice )
 	}
 }
 
-static int wr_idGenerator = 0;
 //------------------------------------------------------------------------------
 int WrenchScheduler::addThread( const uint8_t* byteCode, const int size, const int instructionsThisSlice, const bool takeOwnership )
 {
@@ -124,7 +124,7 @@ int WrenchScheduler::addThread( const uint8_t* byteCode, const int size, const i
 	}
 	task->context = context;
 	task->next = m_tasks;
-	task->id = ++wr_idGenerator;
+	task->id = ++m_lastTaskId;
 	m_tasks = task;
 			  	
 	return task->id;

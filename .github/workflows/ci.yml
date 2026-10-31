@@ -94,6 +94,7 @@ jobs:
           npm ci
           npm run compile
           node scripts/test-grammar.js
+          node ../test/extension_test.js ../../win32/Release/wrench.exe
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x86

@@ -42,7 +42,7 @@
 	define WRENCH_TIME_SLICES in main/wrench_config.h and call
 	wr_setInstructionsPerSlice(): a call that runs too long then returns
 	early with the context yielded, and the firmware resumes it with
-	wr_continue() after a vTaskDelay() (ready() is false while the context
+	wr_continue() after a vTaskDelay() (ready stays false while the context
 	is yielded, so the loop in wrenchTask needs that extra branch; see
 	wr_getYieldInfo() in wrench.h). Or give the script a native that calls
 	vTaskDelay(), or adjust the task watchdog in menuconfig (Component
@@ -377,25 +377,48 @@ static void wrenchTask( void* )
 
 	debugger = new WrenchDebugServer( w, &debugLink );
 	debugger->setHostDriven( true );
+	// a debugger may restart the script and upload new ones, the loop below
+	// carries that out
+	debugger->setLaunchable( true );
 
-	WRContext* context = debugger->loadBytes( blink_bytecode, blink_bytecodeSize );
+	WRContext* script = wr_newContext( w, blink_bytecode, blink_bytecodeSize );
+	debugger->attach( script, "blink.w" );
 
 	// uncomment to halt the script on its first line until a debugger
 	// attaches (a timeout in ms lets it run on without one)
 	// debugger->breakOnEntry();
 
-	if ( context )
-	{
-		wr_executeContext( context );
-	}
+	// ready: the global code ran to the end, loop() may be called
+	bool ready = script && wr_executeContext( script );
 
 	uint32_t nextCall = 0;
 	for ( ;; )
 	{
-		debugger->tick();
-		if ( debugger->ready() && (int32_t)(nowMs() - nextCall) >= 0 )
+		int events = debugger->tick();
+		if ( events & WRD_TickProgramUploaded )
 		{
-			WRValue* ret = wr_callFunction( debugger->context(), "loop" );
+			uint8_t* bytes;
+			int size;
+			if ( debugger->takeUpload(bytes, size) )
+			{
+				wr_destroyContext( script );
+				script = wr_newContext( w, bytes, size, true );
+				debugger->attach( script, "blink.w" );
+				ready = false;
+			}
+		}
+		if ( events & WRD_TickRunRequested )
+		{
+			// from the start, with fresh globals; it stops on its first line
+			// when the debugger launched it that way
+			wr_resetContext( script );
+			ready = script && wr_executeContext( script );
+			nextCall = nowMs();
+		}
+
+		if ( ready && (int32_t)(nowMs() - nextCall) >= 0 )
+		{
+			WRValue* ret = wr_callFunction( script, "loop" );
 			int delayMs = ret ? ret->asInt() : 1000;
 			nextCall = nowMs() + (delayMs > 0 ? delayMs : 1);
 		}

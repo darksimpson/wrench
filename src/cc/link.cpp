@@ -33,7 +33,9 @@ SOFTWARE.
 //------------------------------------------------------------------------------
 void WRCompilationContext::createLocalHashMap( WRUnitContext& unit, unsigned char** buf, int* size )
 {
-	if ( unit.bytecode.localSpace.count() == 0 )
+	// no member beyond the arguments: no table, new gives 0 as for an
+	// empty struct (the VM's table always has a first member)
+	if ( unit.bytecode.localSpace.count() <= unit.arguments )
 	{
 		*size = 0;
 		*buf = 0;

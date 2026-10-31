@@ -37,6 +37,7 @@ SOFTWARE.
 #include <direct.h>
 #else
 #include <unistd.h>
+#include <sys/stat.h>
 #endif
 
 // the test scripts run with their folder as the current directory, so the
@@ -57,6 +58,44 @@ static bool cliSetDir( const char* dir )
 #else
 	return chdir( dir ) == 0;
 #endif
+}
+
+// the folder dir exists afterwards (its parent must exist)
+static bool cliMakeDir( const char* dir )
+{
+	char previousDir[4096];
+	if ( !cliGetDir(previousDir, sizeof(previousDir)) )
+	{
+		return false;
+	}
+	if ( cliSetDir(dir) )
+	{
+		cliSetDir( previousDir );
+		return true;
+	}
+#ifdef _WIN32
+	return _mkdir( dir ) == 0;
+#else
+	return mkdir( dir, 0777 ) == 0;
+#endif
+}
+
+// "major.minor.build" from the WRENCH_VERSION_ defines of a wrench.h text
+static bool cliHeaderVersion( const char* header, WRstr& version )
+{
+	const char* names[3] = { "#define WRENCH_VERSION_MAJOR ", "#define WRENCH_VERSION_MINOR ", "#define WRENCH_VERSION_BUILD " };
+	int parts[3];
+	for( int i=0; i<3; ++i )
+	{
+		const char* at = strstr( header, names[i] );
+		if ( !at )
+		{
+			return false;
+		}
+		parts[i] = atoi( at + strlen(names[i]) );
+	}
+	version.format( "%d.%d.%d", parts[0], parts[1], parts[2] );
+	return true;
 }
 
 #ifdef WRENCH_INCLUDE_DEBUG_CLIENT
@@ -257,7 +296,9 @@ void testArrayMallocFailureHandling()
 	wr_setGlobalAllocator( failAfterNAlloc, failAfterNFree );
 	g_allocationsBeforeFailure = 0;
 
+	context->flags |= WRC_IndexCreates; // an assignment grows the array, a read does not
 	wr_index[(WR_INT << 2) | WR_EX]( context, &index, &array, &target );
+	context->flags &= ~WRC_IndexCreates;
 	assert( g_mallocFailed );
 	assert( va->m_Cdata == old );
 	assert( va->m_size == 2 );
@@ -354,32 +395,6 @@ void blobToHeader( WRstr const& blob, WRstr const& variableName, WRstr& header )
 }
 
 //------------------------------------------------------------------------------
-void blobToAssemblyInc( WRstr const& blob, WRstr const& variableName, WRstr& header )
-{
-	header.format( "\n;******* wrench bytcode automatically generated include file *******\n\n"
-				   ".export %s_bytecode\n"
-				   "%s_bytecode: .export %s_bytecode\n",
-				   variableName.c_str(),
-				   variableName.c_str(),
-				   variableName.c_str() );
-
-	unsigned int p=0;
-	while( p < blob.size() )
-	{
-		header += "\t.byte ";
-		for( int i=0; i<16 && p<blob.size() ; i++ )
-		{
-			header.appendFormat( "$%02X, ", (unsigned char)blob[p++] );
-		}
-
-		header.shave( 2 );
-		header.appendFormat( " ; %d\n", p );
-	}
-
-	header += "\n\n";
-}
-
-//------------------------------------------------------------------------------
 // smush all these files together to make wrench.cpp, in this order!
 const char* sourceOrder[]=
 {
@@ -395,7 +410,6 @@ const char* sourceOrder[]=
 	"/debug/debug.h",
 	"/lib/std_tcp.h",
 	"/lib/std_io_defs.h",
-	"/lib/std_tcp.h",
 	"/cc/cc.cpp",
 	"/cc/link.cpp",
 	"/cc/expression.cpp",
@@ -428,7 +442,6 @@ const char* sourceOrder[]=
 	"/lib/std_serialize.cpp",
 	"/lib/std_container.cpp",
 	"/lib/debug_lib.cpp",
-	"/lib/esp32_lib.cpp",
 	"/lib/arduino_lib.cpp",
 	"/lib/fastled_lib.cpp",
 	""
@@ -451,14 +464,6 @@ int usage()
 	"  defines const int <name>_bytecodeSize and\n"
 	"  const unsigned char <name>_bytecode[]\n"
 	"\n"
-/*
-	"ca [infile] [out file] [name]\n"
-	"  compile infile and output as an inc file for assembly of name \"out file\"\n"
-	"  the exported constants will be:\n"
-	"  [name]_bytecode and\n"
-	"  [name]_bytecodeSize = $xxxx\n"
-	"\n"
-*/
 	"p [compile options] <infile>\n"
 	"  compile infile and print its disassembly\n"
 	"\n"
@@ -505,7 +510,9 @@ int usage()
 	"  run as a debug target that a debugger connects to, optionally\n"
 	"  preloaded with file (source or bytecode)\n"
 	"  -target T\n"
-	"    tcp:<port> or serial:<port>[:<baud>]\n"
+	"    tcp:<port> (this machine only, 127.0.0.1), tcp:<address>:<port> (that\n"
+	"    IPv4 address, tcp:0.0.0.0:<port> for every interface: anyone who\n"
+	"    reaches the port can upload and run code) or serial:<port>[:<baud>]\n"
 	"  -context F\n"
 	"    also run script F in a context of its own, a program the debugger\n"
 	"    sees beside file, like attach(); its global code runs at start, then\n"
@@ -540,11 +547,48 @@ int usage()
 	"  then the internal tests; number runs only that entry of the list\n"
 	"\n"
 	"release <fromdir> <todir>\n"
-	"  write the single file build (wrench.h, wrench.cpp) into the existing\n"
-	"  folder todir, made from the sources in fromdir (src)\n"
+	"  write the single file build (wrench.h, wrench.cpp) into the folder\n"
+	"  todir (created if missing), made from the sources in fromdir (src),\n"
+	"  and the version of fromdir/wrench.h into version.txt beside fromdir\n"
+	"\n"
+	"exit codes:\n"
+	"  0 success, 1 the program stopped with a runtime error (r, rb),\n"
+	"  2 compile error, 255 (-1) bad command line or a file that cannot be\n"
+	"  read or written\n"
 	"\n",
 	(int)WRENCH_VERSION_MAJOR, (int)WRENCH_VERSION_MINOR );
 	return -1;
+}
+
+// what the wrench CLI returns, see the exit codes in usage()
+enum CliExitCode
+{
+	CLI_OK = 0,
+	CLI_RUNTIME_ERROR = 1,
+	CLI_COMPILE_ERROR = 2,
+};
+
+// a VM or compiler error code as text, the codes from WR_USER on are the
+// program's own (sys::halt) and have no name
+static WRstr cliErrorText( int error )
+{
+	WRstr text;
+#ifndef WRENCH_WITHOUT_COMPILER
+	if ( error >= 0 && error < WR_warning_enums_follow )
+	{
+		text = c_errStrings[error];
+		return text;
+	}
+#endif
+	if ( error >= WR_USER )
+	{
+		text.format( "user error %d", error );
+	}
+	else
+	{
+		text.format( "error %d", error );
+	}
+	return text;
 }
 
 //------------------------------------------------------------------------------
@@ -603,7 +647,17 @@ static int compileSourceFile( const char* path, WRstr const& code, int argn, cha
 	options.name = name.c_str();
 	options.include = WrenchIncludeResolver::callback;
 	options.includeUser = &includes;
-	return wr_compileWithOptions( code, code.size(), out, outLen, options, errMsg );
+	WRstr where;
+	WRError err = wr_compileWithOptions( code, code.size(), out, outLen, options, errMsg, 0, 0, &where );
+	if ( err && errMsg )
+	{
+		// an included file by the path it was read from
+		std::string message = errMsg->c_str();
+		std::string file = where.c_str();
+		includes.localize( message, file );
+		*errMsg = message.c_str();
+	}
+	return err;
 }
 
 //------------------------------------------------------------------------------
@@ -651,7 +705,14 @@ int main( int argn, char* argv[] )
 		for ( int a = 2; a < argn; ++a )
 		{
 			std::string arg = argv[a];
-			if ( arg == "-context" && command == "dbgserver" )
+			// options of the other tool mode are not silently ignored
+			bool serverOption = arg == "-context" || arg == "-linktimeout" || arg == "-noupload" || arg == "-hold" || arg == "-v";
+			if ( (serverOption && command != "dbgserver") || (arg == "-attach" && command != "dbg") )
+			{
+				printf( "unknown option %s for %s\n", arg.c_str(), command.c_str() );
+				return usage();
+			}
+			if ( arg == "-context" )
 			{
 				if ( a + 1 >= argn )
 				{
@@ -753,7 +814,14 @@ int main( int argn, char* argv[] )
 	}
 #endif
 
-	if ( SimpleArgs::get(argn, argv, "t") )
+	// only the first argument is the command, the others are options and
+	// files that may be named like a command
+	if ( command == "v" )
+	{
+		usage();
+		return CLI_OK;
+	}
+	else if ( command == "t" )
 	{
 		// wrench t [testdir] [number], in either order: a number picks one
 		// entry of the list, anything else names the test folder
@@ -774,18 +842,24 @@ int main( int argn, char* argv[] )
 		printf("\n");
 		return err;
 	}
-	else if ( SimpleArgs::get(argn, argv, "p") )
+	else if ( command == "p" )
 	{
-		// this is ALPHA and doesn't tell you much yet :)
-		
+		if ( argn < 3 )
+		{
+			return usage();
+		}
 		WRstr infile;
-		infile.fileToBuffer( SimpleArgs::get(argn, argv, -1) );
+		if ( !infile.fileToBuffer(SimpleArgs::get(argn, argv, -1)) )
+		{
+			printf( "Could not open source file [%s]\n", SimpleArgs::get(argn, argv, -1) );
+			return usage();
+		}
 
 		unsigned char* out;
 		int outLen;
 		WRstr errMsg;
 		int err = compileSourceFile( SimpleArgs::get(argn, argv, -1), infile, argn, argv, &out, &outLen, &errMsg );
-		
+
 		if ( err )
 		{
 #ifdef WRENCH_WITHOUT_COMPILER
@@ -793,16 +867,21 @@ int main( int argn, char* argv[] )
 #else
 			printf( "%scompile error [%s]\n", errMsg.c_str(), c_errStrings[err] );
 #endif
-			return -1;
+			return CLI_COMPILE_ERROR;
 		}
 
 		char* listing = 0;
 		wr_disassemble( out, outLen, &listing );
 		printf("%s\n", listing );
 		wr_free( listing );
+		wr_free( out );
 	}
-	else if ( SimpleArgs::get(argn, argv, "d") )
+	else if ( command == "d" )
 	{
+		if ( argn < 3 )
+		{
+			return usage();
+		}
 		const char* filename = SimpleArgs::get(argn, argv, -1);
 		WRstr bytes;
 		if ( !bytes.fileToBuffer(filename) )
@@ -816,9 +895,13 @@ int main( int argn, char* argv[] )
 		printf( "%s\n", listing );
 		wr_free( listing );
 	}
-	else if ( SimpleArgs::get(argn, argv, "r") )
+	else if ( command == "r" )
 	{
 #ifndef WRENCH_WITHOUT_COMPILER
+		if ( argn < 3 )
+		{
+			return usage();
+		}
 		WRstr infile;
 		if ( !infile.fileToBuffer(SimpleArgs::get(argn, argv, -1)) )
 		{
@@ -839,7 +922,7 @@ int main( int argn, char* argv[] )
 		if ( err )
 		{
 			printf( "%scompile error [%s]\n", errMsg.c_str(), c_errStrings[err] );
-			return -1;
+			return CLI_COMPILE_ERROR;
 		}
 
 		gw = wr_newState( 128 );
@@ -847,25 +930,32 @@ int main( int argn, char* argv[] )
 		wr_registerFunction( gw, "println", println );
 		wr_registerFunction( gw, "print", print );
 
-		wr_registerLibraryConstant( gw, "rgb::count", 6 );
-		
 		wr_run( gw, out, outLen );
 
 		wr_free( out );
 
-		if ( wr_getLastError(gw) )
+		int runError = (int)wr_getLastError( gw );
+		if ( runError )
 		{
-			printf( "err: %s\n", c_errStrings[(int)wr_getLastError(gw)] );
+			printf( "err: %s\n", cliErrorText(runError).c_str() );
 		}
 
 		wr_destroyState( gw );
+		if ( runError )
+		{
+			return CLI_RUNTIME_ERROR;
+		}
 #else
 		printf( "compiler not included in this build\n" );
 		return usage();
 #endif
 	}
-	else if ( SimpleArgs::get(argn, argv, "rb") )
+	else if ( command == "rb" )
 	{
+		if ( argn < 3 )
+		{
+			return usage();
+		}
 		WRstr bytes;
 		if ( !bytes.fileToBuffer(SimpleArgs::get(argn, argv, -1)) )
 		{
@@ -879,18 +969,19 @@ int main( int argn, char* argv[] )
 		wr_registerFunction( gw, "print", print );
 
 		wr_run( gw, (const unsigned char *)bytes.c_str(), bytes.size() );
-		if ( wr_getLastError( gw ) )
+		int runError = (int)wr_getLastError( gw );
+		if ( runError )
 		{
-#ifndef WRENCH_WITHOUT_COMPILER
-			printf( "err: %s\n", c_errStrings[(int)wr_getLastError(gw)] );
-#else
-			printf( "err: %d\n", (int)wr_getLastError(gw) );
-#endif
+			printf( "err: %s\n", cliErrorText(runError).c_str() );
 		}
 
 		wr_destroyState( gw );
+		if ( runError )
+		{
+			return CLI_RUNTIME_ERROR;
+		}
 	}
-	else if ( SimpleArgs::get(argn, argv, "c") )
+	else if ( command == "c" )
 	{
 #ifndef WRENCH_WITHOUT_COMPILER
 		if ( argn < 4 )
@@ -915,38 +1006,35 @@ int main( int argn, char* argv[] )
 		if ( err )
 		{
 			printf( "%scompile error [%s]\n", errMsg.c_str(), c_errStrings[err] );
-			return -1;
+			return CLI_COMPILE_ERROR;
 		}
 
 		WRstr str;
 		str.set( (const char*)out, outLen );
-		
-//		printf( "%d:\n%s\n", outLen, str.c_str() );
+		wr_free( out );
 
 		WRstr outname( SimpleArgs::get(argn, argv, -1) );
-		
+
 		if ( !str.bufferToFile(outname) )
 		{
 			printf( "could not write to [%s]\n", outname.c_str() );
+			return -1;
 		}
 
 		printf( "%s -> %s\n", SimpleArgs::get(argn, argv, -2), outname.c_str() );
-
-		wr_free( out );
 #else
 		printf( "compiler not included in this build\n" );
 		return usage();
 #endif
 	}
-	else if ( SimpleArgs::get(argn, argv, "ch") )
+	else if ( command == "ch" )
 	{
 #ifndef WRENCH_WITHOUT_COMPILER
-		if ( argn < 4 )
+		if ( argn < 5 )
 		{
-			printf( "[%d]\n", argn );
 			return usage();
 		}
-		
+
 		unsigned char* out;
 		int outLen;
 
@@ -963,37 +1051,42 @@ int main( int argn, char* argv[] )
 		if ( err )
 		{
 			printf( "%scompile error [%s]\n", errMsg.c_str(), c_errStrings[err] );
-			return -1;
+			return CLI_COMPILE_ERROR;
 		}
 
 		WRstr str;
 		wr_asciiDump( out, outLen, str );
 		printf( "%d:\n%s\n", outLen, str.c_str() );
-		
+
 		WRstr outname( SimpleArgs::get(argn, argv, -2) );
-		
+
 		blobToHeader( WRstr((char *)out, outLen), SimpleArgs::get(argn, argv, -1), code );
-		
+		wr_free( out );
+
 		if ( !code.bufferToFile(outname) )
 		{
 			printf( "could not write to [%s]\n", outname.c_str() );
+			return -1;
 		}
-		else
-		{
-			printf( "%s -> %s as %s\n", SimpleArgs::get(argn, argv, -3), outname.c_str(), SimpleArgs::get(argn, argv, -1) );
-		}
-
-		wr_free( out );
+		printf( "%s -> %s as %s\n", SimpleArgs::get(argn, argv, -3), outname.c_str(), SimpleArgs::get(argn, argv, -1) );
 #else
 		printf( "compiler not included in this build\n" );
 		return usage();
 #endif
 	}
-	else if ( SimpleArgs::get(argn, argv, "release") )
+	else if ( command == "release" )
 	{
-		WRstr version;
-		version.format( "%d.%d.%d", WRENCH_VERSION_MAJOR, WRENCH_VERSION_MINOR, WRENCH_VERSION_BUILD );
-		version.bufferToFile( "version.txt" );
+		if ( argn != 4 )
+		{
+			return usage();
+		}
+		const char* fromDir = argv[2];
+		const char* toDir = argv[3];
+		if ( !cliMakeDir(toDir) )
+		{
+			printf( "cannot create the folder [%s]\n", toDir );
+			return -1;
+		}
 
 		WRstr out = "#ifdef _MSC_VER\n"
 					"#pragma warning(push)\n"
@@ -1005,7 +1098,7 @@ int main( int argn, char* argv[] )
 		WRstr read;
 		for( int s=0; sourceOrder[s][0]; ++s )
 		{
-			name = SimpleArgs::get(argn, argv, -2);
+			name = fromDir;
 			name += sourceOrder[s];
 			if ( !read.fileToBuffer(name) )
 			{
@@ -1019,31 +1112,56 @@ int main( int argn, char* argv[] )
 			   "#pragma warning(pop)\n"
 			   "#endif\n";
 
-		name = SimpleArgs::get(argn, argv, -1);
+		name = toDir;
 		name += "/wrench.cpp";
-		out.bufferToFile( name );
+		if ( !out.bufferToFile(name) )
+		{
+			printf( "could not write to [%s]\n", name.c_str() );
+			return -1;
+		}
 
-		name = SimpleArgs::get(argn, argv, -2);
+		name = fromDir;
 		name += "/wrench.h";
 		if ( !read.fileToBuffer(name) )
 		{
-			printf( "error 2 reading [%s]\n", name.c_str() );
+			printf( "error reading [%s]\n", name.c_str() );
 			return -1;
 		}
+		WRstr header = read;
 		out = "#define WRENCH_COMBINED\n";
 		out += read;
 
-	
-		name = SimpleArgs::get(argn, argv, -1);
+		name = toDir;
 		name += "/wrench.h";
-		out.bufferToFile( name );
+		if ( !out.bufferToFile(name) )
+		{
+			printf( "could not write to [%s]\n", name.c_str() );
+			return -1;
+		}
+
+		// version.txt (make and CI read it) belongs to the source tree: it
+		// sits in the folder that holds fromdir, the repository root for
+		// "release src dist", and carries the version of that wrench.h
+		WRstr version;
+		if ( !cliHeaderVersion(header, version) )
+		{
+			printf( "no WRENCH_VERSION_MAJOR/MINOR/BUILD in [%s/wrench.h]\n", fromDir );
+			return -1;
+		}
+		name = fromDir;
+		name += "/../version.txt";
+		if ( !version.bufferToFile(name) )
+		{
+			printf( "could not write to [%s]\n", name.c_str() );
+			return -1;
+		}
 	}
 	else
 	{
 		return usage();
 	}
 
-	return 0;
+	return CLI_OK;
 }
 
 #ifndef WRENCH_WITHOUT_COMPILER
@@ -1775,6 +1893,111 @@ bool testCompilerLimits()
 	return ok;
 }
 
+// compile errors that were reported wrong or not at all, and the names of
+// included files in the image
+bool testCompilerBookFixes()
+{
+	printf( "test [-][compiler errors and include names]: " );
+	bool ok = true;
+
+	// an empty condition would test a value never pushed
+	ok = ok && compileOnly( "if () { }" ) == WR_ERR_empty_parens;
+	ok = ok && compileOnly( "while () { break; }" ) == WR_ERR_empty_parens;
+	ok = ok && compileOnly( "do { break; } while ();" ) == WR_ERR_empty_parens;
+	ok = ok && compileOnly( "switch () { case 1: break; }" ) == WR_ERR_empty_parens;
+	ok = ok && compileOnly( "for ( ;; ) { break; }" ) == WR_ERR_None;
+
+	// enum entries are separated by commas, one after the last is fine
+	ok = ok && compileOnly( "enum { A B }" ) == WR_ERR_unexpected_token;
+	ok = ok && compileOnly( "enum E { A = 1 B }" ) == WR_ERR_unexpected_token;
+	ok = ok && compileOnly( "enum { A,, B }" ) == WR_ERR_unexpected_token;
+	ok = ok && compileOnly( "enum { , A }" ) == WR_ERR_unexpected_token;
+
+	// var and blank need a name
+	ok = ok && compileOnly( "var = 1;" ) == WR_ERR_unexpected_token;
+	ok = ok && compileOnly( "var 5;" ) == WR_ERR_unexpected_token;
+	ok = ok && compileOnly( "blank = 1;" ) == WR_ERR_unexpected_token;
+	ok = ok && compileOnly( "var a = 1; blank var b; var c[] = { 1 }; function f() { var ::g = 2; }" ) == WR_ERR_None;
+	ok = ok && compileOnly( "enum { A, B, } enum F { C = 2, D }" ) == WR_ERR_None;
+
+	// a bad literal is reported as such wherever it is
+	const char* places[] = { "var a = %s;", "println( %s );", "var a = { %s };", "if ( %s ) { }", "function f() { return 1 + %s; }", 0 };
+	for( int i=0; places[i]; ++i )
+	{
+		WRstr src;
+		src.format( places[i], "'ab'" );
+		ok = ok && compileOnly( src ) == WR_ERR_bad_character_literal;
+		src.format( places[i], "4294967296" );
+		ok = ok && compileOnly( src ) == WR_ERR_integer_literal_too_large;
+		src.format( places[i], "0x100000000" );
+		ok = ok && compileOnly( src ) == WR_ERR_integer_literal_too_large;
+		src.format( places[i], "040000000000" );
+		ok = ok && compileOnly( src ) == WR_ERR_integer_literal_too_large;
+	}
+	ok = ok && compileOnly( "var a = 4294967295; var b = 0xFFFFFFFF; var c = 'a'; var d = '\\n'; var e = 4294967296.0;" ) == WR_ERR_None;
+
+	// too many arguments in a call that is an argument itself
+	WRstr args;
+	for( int i=0; i<256; ++i )
+	{
+		args.appendFormat( "%s%d", i ? "," : "", i );
+	}
+	ok = ok && compileOnly( joined("function f( a ) { return a; } function g() { return 0; } f( g(", args, ") );") ) == WR_ERR_too_many_arguments;
+
+	// a nested initializer is followed by a comma or the closing brace, and
+	// arrays and hash tables do not mix
+	ok = ok && compileOnly( "var a = { \"a\": { 1 }, \"b\": 2, \"c\": { \"x\": 1 }, \"d\": 3 };" ) == WR_ERR_None;
+	ok = ok && compileOnly( "var a = { { 1 } { 2 } };" ) == WR_ERR_unexpected_token;
+	ok = ok && compileOnly( "var a = { \"k\": { 1 } \"j\": 2 };" ) == WR_ERR_unexpected_token;
+	ok = ok && compileOnly( "var a = { \"k\": 1, { 2 } };" ) == WR_ERR_array_declaration_in_hash;
+	ok = ok && compileOnly( "var a = { { 1 }, \"k\": 2 };" ) == WR_ERR_hash_declaration_in_array;
+	ok = ok && compileOnly( "var a = { { 1 }: 2 };" ) == WR_ERR_hash_table_invalid_key;
+
+	// new makes an operand, it cannot follow one
+	ok = ok && compileOnly( "struct S { var a; } var x = 1; var y = x new S;" ) == WR_ERR_unexpected_token;
+
+	// a file found through an include folder is named relative to the main
+	// file's folder, the image holds no path of this machine
+	{
+		char cwd[1024];
+		ok = ok && cliGetDir( cwd, sizeof(cwd) );
+		std::string here = cwd;
+		for( size_t c=0; c<here.size(); ++c )
+		{
+			here[c] = (here[c] == '\\') ? '/' : here[c];
+		}
+		std::string mainPath = std::string( g_testDir.c_str() ) + "/_include_names.w";
+		WrenchIncludeResolver includes;
+		includes.searchPaths.push_back( here + "/" + g_testDir.c_str() + "/include" );
+		std::vector<uint8_t> image;
+		ok = ok && wr_compileWithIncludes( mainPath, "include \"inc_math.w\";\nvar r = mathNext();\n", WR_INCLUDE_GLOBALS | WR_EMBED_DEBUG_CODE,
+			&includes, image ) == WR_ERR_None;
+		std::string bytes( image.begin(), image.end() );
+		ok = ok && bytes.find( std::string("include/inc_math.w") + '\0' ) != std::string::npos;
+		ok = ok && bytes.find( std::string("include/inc_util.w") + '\0' ) != std::string::npos;
+		ok = ok && bytes.find( here ) == std::string::npos;
+
+		// and found again from there
+		ok = ok && !WrenchIncludeResolver::locate( "include/inc_util.w", mainPath, std::vector<std::string>() ).empty();
+		ok = ok && !WrenchIncludeResolver::locate( "inc_util.w", mainPath, includes.searchPaths ).empty();
+		ok = ok && WrenchIncludeResolver::locate( "missing.w", mainPath, includes.searchPaths ).empty();
+
+		// an error message names the file by the path it was read from
+		WrenchIncludeResolver broken;
+		std::string badPath = std::string( g_testDir.c_str() ) + "/sub/bad.w";
+		broken.overrides[badPath] = "var fine = 1;\nvar x = ;\n";
+		std::string message;
+		std::string file;
+		int line = 0;
+		ok = ok && wr_compileWithIncludes( mainPath, "include \"sub/bad.w\";\n", WR_INCLUDE_GLOBALS, &broken, image, &message, &line, 0, &file )
+			== WR_ERR_bad_expression;
+		ok = ok && file == badPath && line == 2 && message.compare( 0, badPath.size() + 3, badPath + ":2\n" ) == 0;
+	}
+
+	printf( ok ? "PASS\n" : "FAIL\n" );
+	return ok;
+}
+
 static WRstr manyStatements( int count )
 {
 	WRstr s;
@@ -1864,6 +2087,90 @@ bool testLongJumps()
 	// a near jump stays 16 bits
 	ok = ok && compileOnly( "var a = 0; while( a < 3 ) { a++; }", WR_INCLUDE_GLOBALS, &listing ) == WR_ERR_None;
 	ok = ok && listing.find( "RelativeJump32" ) == WRstr::npos;
+
+	printf( ok ? "PASS\n" : "FAIL\n" );
+	return ok;
+}
+
+// the text of the listing line that holds 'what', empty when none does
+static WRstr listingLine( WRstr const& listing, const char* what, int after =0 )
+{
+	unsigned int at = listing.find( what );
+	if ( at == WRstr::npos )
+	{
+		return WRstr();
+	}
+	unsigned int start = at;
+	while( start > 0 && listing[start - 1] != '\n' )
+	{
+		--start;
+	}
+	for( ; after > 0; --after )
+	{
+		unsigned int next = listing.find( '\n', start );
+		if ( next == WRstr::npos )
+		{
+			return WRstr();
+		}
+		start = next + 1;
+	}
+	unsigned int end = listing.find( '\n', start );
+	WRstr line;
+	line.set( listing.c_str() + start, (end == WRstr::npos ? listing.size() : end) - start );
+	return line;
+}
+
+//------------------------------------------------------------------------------
+// the disassembler tells code from the data between and before it
+bool testDisassembler()
+{
+	printf( "test [-][disassembler: struct member tables, GlobalStop, debug codewords]: " );
+	bool ok = true;
+
+	const char* src =
+		"struct Pt\n"
+		"{\n"
+		"	var x;\n"
+		"	var y = 7;\n"
+		"};\n"
+		"function add( a, b )\n"
+		"{\n"
+		"	return a + b;\n"
+		"}\n"
+		"var p = new Pt;\n"
+		"p.x = add( 1, 2 );\n"
+		"println( p.x );\n";
+
+	const uint8_t flagSets[3] = { WR_INCLUDE_GLOBALS, WR_INCLUDE_GLOBALS | WR_EMBED_DEBUG_CODE, WR_INCLUDE_GLOBALS | WR_EMBED_DEBUG_CODE | WR_EMBED_SOURCE_CODE };
+	for( int f=0; f<3; ++f )
+	{
+		WRstr listing;
+		ok = ok && compileOnly( src, flagSets[f], &listing ) == WR_ERR_None;
+
+		// nothing is taken for code that is not: the member table of Pt
+		// sits between the global code and Pt's code
+		ok = ok && listing.find( "non-opcode" ) == WRstr::npos && listing.find( "truncated" ) == WRstr::npos;
+		ok = ok && listing.find( "member table @0x" ) != WRstr::npos;
+		ok = ok && listing.find( "slots=2 (data)" ) != WRstr::npos;
+
+		// GlobalStop has no operand, the Stop after it is an instruction
+		WRstr globalStop = listingLine( listing, "GlobalStop" );
+		ok = ok && globalStop.size() && globalStop.find( "[" ) == WRstr::npos;
+		WRstr next = listingLine( listing, "GlobalStop", 1 );
+		ok = ok && next.find( " Stop " ) != WRstr::npos;
+
+		if ( flagSets[f] & WR_EMBED_DEBUG_CODE )
+		{
+			// line markers and calls are decoded, names come from the symbols
+			ok = ok && listing.find( "DebugInfo                      line 10 " ) != WRstr::npos;
+			ok = ok && listingLine( listing, "call fnIdx=0x01" ).find( "; add" ) != WRstr::npos;
+			ok = ok && listing.find( "DebugInfo                      call external" ) != WRstr::npos;
+			ok = ok && listing.find( "unit 1 Pt args=0 locals: x y" ) != WRstr::npos;
+			ok = ok && listing.find( "-> member 0x00 x" ) != WRstr::npos;
+			ok = ok && listing.find( "unit 1 add hash=" ) != WRstr::npos;
+		}
+		ok = ok && ((listing.find( "Embedded Source @0x" ) != WRstr::npos) == ((flagSets[f] & WR_EMBED_SOURCE_CODE) != 0));
+	}
 
 	printf( ok ? "PASS\n" : "FAIL\n" );
 	return ok;
@@ -2119,6 +2426,44 @@ bool testStrFormat()
 	return ok;
 }
 
+// wr_resetContext(): the global code runs again in the same context, what
+// the previous run built (globals, imported modules) is gone
+bool testResetContext()
+{
+	printf( "test [-][wr_resetContext runs the global code again]: " );
+	bool ok = true;
+
+	const char* source =
+		"var runs = 0;\n"
+		"var list[] = { 1, 2, 3 };\n"
+		"runs = runs + 1;\n"
+		"sys::importCompile( \"function seven() { return 7; }\" );\n"
+		"function get() { return runs * 10 + list._count + seven(); }\n";
+
+	WRState* w = wr_newState();
+	wr_loadAllLibs( w );
+	unsigned char* bytes = 0;
+	int len = 0;
+	ok = ok && wr_compile( source, (int)strlen(source), &bytes, &len ) == WR_ERR_None;
+	WRContext* context = ok ? wr_newContext( w, bytes, len, true ) : 0;
+	ok = ok && context && wr_executeContext( context ) && context->imported;
+	WRValue* result = ok ? wr_callFunction( context, "get" ) : 0;
+	ok = ok && result && result->asInt() == 20;
+
+	// not again without a reset; after one the globals start over
+	ok = ok && !wr_executeContext( context ) && wr_getLastError( w ) == WR_ERR_execute_function_zero_called_more_than_once;
+	ok = ok && wr_resetContext( context ) && !context->imported && !context->stopLocation;
+	ok = ok && wr_executeContext( context );
+	result = ok ? wr_callFunction( context, "get" ) : 0;
+	ok = ok && result && result->asInt() == 20;
+
+	ok = ok && !wr_resetContext( 0 );
+	wr_destroyState( w );
+
+	printf( ok ? "PASS\n" : "FAIL\n" );
+	return ok;
+}
+
 bool testVmRobustness()
 {
 	printf( "test [-][vm: callback errors, bad opcodes, copies, stack, threads]: " );
@@ -2259,6 +2604,428 @@ bool testVmRobustness()
 	}
 
 	printf( ok ? "PASS\n" : "FAIL\n" );
+	return ok;
+}
+
+// compiles and runs the global code; the context stays for inspection
+// whether the run failed or not
+static WRContext* runKept( WRState* w, const char* src )
+{
+	unsigned char* out = 0;
+	int outLen = 0;
+	if ( wr_compile(src, (int)strlen(src), &out, &outLen, 0, WR_INCLUDE_GLOBALS) != WR_ERR_None )
+	{
+		return 0;
+	}
+	WRContext* c = wr_newContext( w, out, outLen, true );
+	if ( c )
+	{
+		wr_executeContext( c );
+	}
+	return c;
+}
+
+static int keptGlobal( WRContext* c, const char* name )
+{
+	WRValue* v = c ? wr_getGlobalRef( c, name ) : 0;
+	return v ? v->deref().asInt() : -12345;
+}
+
+static bool inCollector( WRContext* c, const WRGCBase* object )
+{
+	for( WRGCBase* a = c->svAllocated; a; a = a->m_nextGC )
+	{
+		if ( a == object )
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+static void storeCrc( unsigned char* image, int len, int salt )
+{
+	uint32_t crc = wr_hash_read8( image, len - 4 ) + salt;
+	image[len - 4] = (unsigned char)crc;
+	image[len - 3] = (unsigned char)(crc >> 8);
+	image[len - 2] = (unsigned char)(crc >> 16);
+	image[len - 1] = (unsigned char)(crc >> 24);
+}
+
+#ifdef WRENCH_HANDLE_MALLOC_FAIL
+static int g_failNextAllocation = 0;
+static void* failNextAllocation( size_t size )
+{
+	if ( g_failNextAllocation )
+	{
+		g_failNextAllocation = 0;
+		return 0;
+	}
+	return malloc( size );
+}
+#endif
+
+// the first part of a test that failed, for the report
+static void noteFailure( bool ok, const char*& failed, const char* step )
+{
+	if ( !ok && !failed )
+	{
+		failed = step;
+	}
+}
+
+// VM bugs found while writing the book, at the API level (the script level
+// ones are in tests/040_vm_book_fixes.w)
+bool testVmBookFixes()
+{
+	printf( "test [-][vm: modules, full tables, struct members, images, host API]: " );
+	bool ok = true;
+	const char* failed = 0;
+
+	// a module calling a function of its importer fails cleanly
+	{
+		WRState* w = wr_newState();
+		wr_loadAllLibs( w );
+		WRContext* c = runKept( w, "function host() { return 5; }\n"
+									"var r = sys::importCompile( \"function callsHost() { return host(); } function seven() { return 7; }\" );\n"
+									"var s = seven();\n"
+									"var t = callsHost();\n" );
+		ok = ok && c && wr_getLastError( w ) == WR_ERR_function_not_found && keptGlobal( c, "r" ) == 0 && keptGlobal( c, "s" ) == 7;
+		ok = ok && wr_getMissingFunctionHash( w ) == wr_hashStr( "host" );
+
+		// from the module's global code, while the importer's runs
+		c = runKept( w, "function host() { return 5; } var r = sys::importCompile( \"var y = host();\" );" );
+		ok = ok && c && wr_getLastError( w ) == WR_ERR_function_not_found;
+
+		// and after the importer's global code ended
+		c = runKept( w, "function host() { return 5; } sys::importCompile( \"function callsHost() { return host(); }\" ); function viaModule() { return callsHost(); }" );
+		ok = ok && c && wr_getLastError( w ) == WR_ERR_None;
+		ok = ok && c && !wr_callFunction( c, "viaModule" ) && wr_getLastError( w ) == WR_ERR_function_not_found;
+		wr_destroyState( w );
+	}
+	noteFailure( ok, failed, "modules" );
+
+	// a parameter is a value, also when the host passes a reference
+	{
+		WRState* w = wr_newState();
+		WRContext* c = runKept( w, "var g = 1; function bump( n ) { n += 5; return n; }" );
+		WRValue ref;
+		ref.p2 = INIT_AS_REF;
+		ref.r = c ? wr_getGlobalRef( c, "g" ) : 0;
+		WRValue* r = ref.r ? wr_callFunction( c, "bump", &ref, 1 ) : 0;
+		ok = ok && r && r->asInt() == 6 && keptGlobal( c, "g" ) == 1;
+		wr_destroyState( w );
+	}
+	noteFailure( ok, failed, "host reference" );
+
+	// a full hash table fails the assignment, the entries stay intact
+	{
+		WRState* w = wr_newState();
+		WRContext* c = runKept( w, "var h = { 0: 0 }; var n = 0; for( var i = 1; i < 200000; ++i ) { h[i] = i; n = i; }" );
+		WRValue* h = c ? wr_getGlobalRef( c, "h" ) : 0;
+		int n = keptGlobal( c, "n" );
+		ok = ok && h && wr_getLastError( w ) == WR_ERR_hash_table_size_exceeded && n > 1000 && n < 199999;
+		ok = ok && h && h->va->m_size == (uint32_t)n + 1;
+		for( int k = 0; ok && k <= n; ++k )
+		{
+			WRValue* e = h->indexHash( c, (uint32_t)k, false );
+			ok = e && e->deref().asInt() == k;
+		}
+		wr_destroyState( w );
+	}
+	{
+		// hash::add fails the same way
+		WRState* w = wr_newState();
+		wr_loadContainerLib( w );
+		WRContext* c = runKept( w, "var h = { 0: 0 }; var n = 0; for( var i = 1; i < 200000; ++i ) { hash::add( h, i, i ); n = i; }" );
+		int n = keptGlobal( c, "n" );
+		ok = ok && c && wr_getLastError( w ) == WR_ERR_hash_table_size_exceeded && n > 1000 && n < 199999;
+		wr_destroyState( w );
+	}
+	noteFailure( ok, failed, "full table" );
+
+	// assigning to a member a struct does not have is an error
+	{
+		const char* const sources[] =
+		{
+			"struct S { var a; } var s = new S; s.a = 1; var done = 1; s.b = 2; done = 2;",
+			"struct S { var a; } var s = new S; var done = 1; s.b += 2; done = 2;",
+			"struct S { var a; } var s = new S; var done = 1; s[\"b\"] = 2; done = 2;",
+			"struct S { var a; } function f( s ) { s.b++; } var t = new S; var done = 1; f( t ); done = 2;",
+			0
+		};
+		for( int i = 0; sources[i]; ++i )
+		{
+			WRState* w = wr_newState();
+			WRContext* c = runKept( w, sources[i] );
+			ok = ok && c && wr_getLastError( w ) == WR_ERR_hash_not_found && keptGlobal( c, "done" ) == 1;
+			wr_destroyState( w );
+		}
+		WRState* w = wr_newState();
+		WRContext* c = runKept( w, "struct S { var a; } var s = new S; var r = s.b; s.a = 3; var done = s.a;" );
+		ok = ok && c && wr_getLastError( w ) == WR_ERR_None && keptGlobal( c, "done" ) == 3 && keptGlobal( c, "r" ) == 0;
+		wr_destroyState( w );
+	}
+	noteFailure( ok, failed, "struct members" );
+
+	// function 0 does not run the global code a second time
+	{
+		WRState* w = wr_newState();
+		WRContext* c = runKept( w, "var runs = 0; runs = runs + 1; function f() { return 2; }" );
+		WRFunction* missing = c ? wr_getFunction( c, "nope" ) : 0;
+		ok = ok && c && !missing && !wr_callFunction( c, missing );
+		ok = ok && wr_getLastError( w ) == WR_ERR_execute_function_zero_called_more_than_once && keptGlobal( c, "runs" ) == 1;
+		ok = ok && c && !wr_callFunction( c, (int32_t)0 ) && keptGlobal( c, "runs" ) == 1;
+
+		// global code that yielded still continues to its end
+		c = runKept( w, "var steps = 1; yield( 0 ); steps = steps + 10;" );
+		ok = ok && c && c->yield_pc && keptGlobal( c, "steps" ) == 1;
+		ok = ok && c && wr_continue( c ) && keptGlobal( c, "steps" ) == 11;
+		ok = ok && c && !wr_continue( c ) && wr_getLastError( w ) == WR_ERR_context_not_yielded;
+		ok = ok && c && !wr_callFunction( c, (WRFunction*)0 ) && keptGlobal( c, "steps" ) == 11;
+		wr_destroyState( w );
+	}
+	noteFailure( ok, failed, "function 0" );
+
+	// a return in the middle of the global code: a later call returns to a
+	// Stop, it does not run on into the rest of the global code
+	{
+		WRState* w = wr_newState();
+		WRContext* c = runKept( w, "var a = 1; if ( a == 1 ) { return 5; } a = 2; a = 3; function f() { return 7; }" );
+		WRValue* r = c ? wr_callFunction( c, "f" ) : 0;
+		ok = ok && r && r->asInt() == 7 && keptGlobal( c, "a" ) == 1;
+		r = c ? wr_callFunction( c, "f" ) : 0;
+		ok = ok && r && r->asInt() == 7 && keptGlobal( c, "a" ) == 1;
+
+		// a jump over a return at the end lands on the end of the code
+		c = runKept( w, "var b = 0; function g() { return 8; } if ( b == 1 ) { return 1; }" );
+		ok = ok && c && wr_getLastError( w ) == WR_ERR_None && c->stopLocation;
+		r = c ? wr_callFunction( c, "g" ) : 0;
+		ok = ok && r && r->asInt() == 8;
+		wr_destroyState( w );
+	}
+	noteFailure( ok, failed, "global return" );
+
+	// wr_runCommand fails for a runtime error as for a compile error
+	{
+		WRState* w = wr_newState();
+		ok = ok && wr_runCommand( w, "var a = 1; a = a + 1;" );
+		ok = ok && !wr_runCommand( w, "missingNative( 1 );" ) && wr_getLastError( w ) == WR_ERR_function_not_found;
+		ok = ok && !wr_runCommand( w, "var a = 1 + ;" );
+		wr_destroyState( w );
+	}
+	noteFailure( ok, failed, "wr_runCommand" );
+
+	// reading a host container does not add the name
+	{
+		WRValue container;
+		wr_makeContainer( &container );
+		wr_addIntToContainer( &container, "here", 3 );
+		uint32_t entries = container.va->m_size;
+		ok = ok && !wr_getValueFromContainer( container, "missing" ) && container.va->m_size == entries;
+		WRValue* here = wr_getValueFromContainer( container, "here" );
+		ok = ok && here && here->asInt() == 3;
+		wr_destroyContainer( &container );
+	}
+	noteFailure( ok, failed, "host container" );
+
+	// values the host keeps outlive collections until released
+	{
+		WRState* w = wr_newState();
+		wr_setAllocatedMemoryGCHint( w, 0 ); // collect at every chance
+		WRContext* c = runKept( w, "function churn() { for( var i = 0; i < 200; ++i ) { var junk = \"junk\" + i; } return 1; }" );
+		if ( c )
+		{
+			WRValue text;
+			wr_makeString( c, &text, "kept text" );
+			WRValue table;
+			table.init();
+			WRValue* entry = table.indexHash( c, wr_hashStr("k"), true );
+			if ( entry )
+			{
+				entry->init( 5 );
+			}
+			WRValue number( 3 );
+			ok = ok && entry && wr_keepValue( text ) && wr_keepValue( table ) && !wr_keepValue( number );
+			ok = ok && wr_callFunction( c, "churn" ) && wr_callFunction( c, "churn" );
+			ok = ok && inCollector( c, text.vb ) && inCollector( c, table.vb );
+			char buf[32];
+			ok = ok && !strcmp( text.asString(buf, sizeof(buf)), "kept text" );
+			WRValue* found = table.indexHash( c, wr_hashStr("k"), false );
+			ok = ok && found && found->asInt() == 5;
+
+			// a collection right after the release frees it (nothing can
+			// take its address in between)
+			const WRGCBase* released = text.vb;
+			ok = ok && wr_releaseValue( text ) && !(released->m_flags & GCFlag_Perm);
+			c->gc( c->stack );
+			ok = ok && !inCollector( c, released ) && inCollector( c, table.vb );
+		}
+		else
+		{
+			ok = false;
+		}
+		wr_destroyState( w );
+	}
+	noteFailure( ok, failed, "keep values" );
+
+	// an image of 7.x runs with its old behaviour (reads create), an image
+	// that only claims to be one is refused
+	{
+		WRstr path;
+		path.format( "%s/v7_image.bin", g_testDir.c_str() );
+		WRstr image;
+		bool loaded = image.fileToBuffer( path.c_str() ) && image.size() > 8;
+		WRState* w = wr_newState();
+		if ( loaded )
+		{
+			const unsigned char* bytes = (const unsigned char*)image.c_str();
+			ok = ok && wr_isBytecodeValid( bytes, image.size() ) && !(bytes[2] & WR_READS_KEEP_VALUES);
+			WRContext* c = wr_run( w, bytes, image.size() );
+			ok = ok && c && keptGlobal( c, "missing" ) == 0 && keptGlobal( c, "past" ) == 0;
+			ok = ok && keptGlobal( c, "hashCount" ) == 2 && keptGlobal( c, "arrayCount" ) == 6 && keptGlobal( c, "total" ) == 55;
+
+			// the same image saying it has the new flag
+			unsigned char* flagged = (unsigned char*)malloc( image.size() );
+			memcpy( flagged, bytes, image.size() );
+			flagged[2] |= WR_READS_KEEP_VALUES;
+			storeCrc( flagged, image.size(), WRENCH_PREVIOUS_IMAGE_VERSION );
+			ok = ok && !wr_isBytecodeValid( flagged, image.size() ) && !wr_run( w, flagged, image.size() ) && wr_getLastError( w ) == WR_ERR_bad_bytecode_CRC;
+			free( flagged );
+		}
+		else
+		{
+			ok = false;
+		}
+
+		// a new image with the salt of 7.x
+		unsigned char* out = 0;
+		int outLen = 0;
+		ok = ok && wr_compile( "var x = 1;", 10, &out, &outLen ) == WR_ERR_None;
+		if ( out )
+		{
+			ok = ok && wr_isBytecodeValid( out, outLen );
+			storeCrc( out, outLen, WRENCH_PREVIOUS_IMAGE_VERSION );
+			ok = ok && !wr_isBytecodeValid( out, outLen ) && !wr_run( w, out, outLen ) && wr_getLastError( w ) == WR_ERR_bad_bytecode_CRC;
+			storeCrc( out, outLen, WRENCH_VERSION_MAJOR );
+			ok = ok && wr_isBytecodeValid( out, outLen );
+			free( out );
+		}
+		wr_destroyState( w );
+	}
+	noteFailure( ok, failed, "images" );
+
+#ifdef WRENCH_HANDLE_MALLOC_FAIL
+	// a failed allocation fails that call only
+	{
+		WRState* w = wr_newState();
+		WRContext* c = runKept( w, "function make() { var a[] = { 1, 2, 3 }; return a._count; }" );
+		wr_setGlobalAllocator( failNextAllocation, free );
+		g_failNextAllocation = 1;
+		WRValue* r = c ? wr_callFunction( c, "make" ) : 0;
+		ok = ok && c && !r && wr_getLastError( w ) == WR_ERR_malloc_failed;
+		r = c ? wr_callFunction( c, "make" ) : 0;
+		ok = ok && r && r->asInt() == 3;
+		wr_setGlobalAllocator( &malloc, &free );
+		wr_destroyState( w );
+	}
+	noteFailure( ok, failed, "malloc failure" );
+#endif
+
+#ifdef WRENCH_TRAP_DIVISION_BY_ZERO
+	// every division and remainder by zero traps, in every interpreter
+	{
+		const char* const traps[] =
+		{
+			"var z = 0; var t = 5; var r = t / z;",
+			"var z = 0; var t = 5; var r = t % z;",
+			"var z = 0; var t = 5; t /= z;",
+			"var z = 0; var t = 5; t %= z;",
+			"var z = 0; var t = 5; var r = 0; r = t / z;",
+			"var z = 0.0; var t = 5.0; var r = t / z;",
+			"var z = 0.5; var t = 5; var r = t % z;",
+			"function f( a, b ) { return a / b; } var r = f( 5, 0 );",
+			"function f( a, b ) { return a % b; } var r = f( 5, 0 );",
+			"function f( a, b ) { a /= b; return a; } var r = f( 5, 0 );",
+			"function f( a, b ) { a %= b; return a; } var r = f( 5, 0 );",
+			"function f( a, b ) { var c = a / b; return c; } var r = f( 5, 0 );",
+			"var g = 0; function f() { var l = 5; g = l / g; } f();",
+			"var g = 0; function f() { var l = 5; l = g / l; l = l / g; } f();",
+			"var z[] = { 0 }; var t = 5; var r = t / z[0];",
+			"var z[] = { 0 }; var t[] = { 5 }; t[0] /= z[0];",
+			"var z[] = { 0 }; var t[] = { 5 }; t[0] %= z[0];",
+			"var z = 0; var t = 5; var r = (t + 1) / (z + 0);",
+			"var z = 0; var t = 5; var r = (t + 1) % (z + 0);",
+			0
+		};
+		for( int i = 0; traps[i]; ++i )
+		{
+			WRState* w = wr_newState();
+			runKept( w, traps[i] );
+			if ( wr_getLastError(w) != WR_ERR_division_by_zero )
+			{
+				printf( "[no trap: %s] ", traps[i] );
+				ok = false;
+			}
+			wr_destroyState( w );
+		}
+
+		// only the divisor counts
+		const char* const fine[] =
+		{
+			"var z = 0; var t = 5; var r = z / t; var s = z % t; z /= t; z %= t; var done = 1;",
+			"function f( a, b ) { return a / b + a % b; } var r = f( 0, 5 ); var done = 1;",
+			"function f( a, b ) { a /= b; a %= b; var c = a / b; return c; } var r = f( 0, 5 ); var done = 1;",
+			"var g = 5; function f() { var l = 0; var m = l / g; l = l / g; g = l / g; } f(); var done = 1;",
+			"var t = 5; var r = t % 1.5; var done = 1;",
+			0
+		};
+		for( int i = 0; fine[i]; ++i )
+		{
+			WRState* w = wr_newState();
+			WRContext* c = runKept( w, fine[i] );
+			if ( wr_getLastError(w) != WR_ERR_None || keptGlobal(c, "done") != 1 )
+			{
+				printf( "[trapped: %s] ", fine[i] );
+				ok = false;
+			}
+			wr_destroyState( w );
+		}
+	}
+	noteFailure( ok, failed, "division by zero" );
+#endif
+
+#ifdef WRENCH_TIME_SLICES
+	// every scheduler numbers its own tasks
+	{
+		const char* loop = "for(;;) { yield( 0 ); }";
+		unsigned char* out = 0;
+		int outLen = 0;
+		ok = ok && wr_compile( loop, (int)strlen(loop), &out, &outLen ) == WR_ERR_None;
+		if ( out )
+		{
+			{
+				WrenchScheduler first;
+				WrenchScheduler second;
+				int a = first.addThread( out, outLen, 100, false );
+				int b = second.addThread( out, outLen, 100, false );
+				int c = first.addThread( out, outLen, 100, false );
+				ok = ok && a == 1 && b == 1 && c == 2;
+			}
+			free( out );
+		}
+	}
+	noteFailure( ok, failed, "scheduler ids" );
+#endif
+
+	if ( ok )
+	{
+		printf( "PASS\n" );
+	}
+	else
+	{
+		printf( "FAIL (%s)\n", failed ? failed : "?" );
+	}
 	return ok;
 }
 
@@ -2711,6 +3478,433 @@ void testStateContextOpaquePointer()
 }
 #endif
 
+//------------------------------------------------------------------------------
+// library fixes (src/lib) a script cannot check: str::format against the C
+// library, std::rand per state, the msg:: host API and io::getline
+
+int wr_sprintfEx( char* outbuf, const unsigned int outsize, const char* fmt, const unsigned int fmtsize, WRValue* args, const int argn );
+
+// str::format of 'fmt' must give what the C library gave ('expected')
+static bool libFormatMatches( const char* fmt, const char* expected, WRValue* args, const int argn )
+{
+	char out[512];
+	const int len = wr_sprintfEx( out, sizeof(out) - 1, fmt, (unsigned int)strlen(fmt), args, argn );
+	out[(len < (int)sizeof(out) - 1) ? len : (int)sizeof(out) - 1] = 0;
+	if ( len != (int)strlen(expected) || strcmp(out, expected) != 0 )
+	{
+		printf( "\n  [%s]: [%s], the C library [%s] ", fmt, out, expected );
+		return false;
+	}
+	return true;
+}
+
+static bool testLibFormat()
+{
+	printf( "test [-][str::format like the C library]: " );
+	bool ok = true;
+	char expected[512];
+	WRValue args[3];
+
+	// the strings formatted live in this context
+	WRState* w = wr_newState();
+	WRContext* c = runSource( w, "var x = 1;" );
+	if ( !c )
+	{
+		wr_destroyState( w );
+		printf( "FAIL\n" );
+		return false;
+	}
+
+	const int ints[] = { 0, 1, -1, 7, 42, -42, 255, 4096, 123456, -99999, 2147483647, -2147483647 - 1 };
+	const char* signedFormats[] = { "%d", "%i", "%5d", "%-5d|", "%05d", "%+d", "% d", "%+5d", "% 05d", "%-+6d|", "%.3d", "%8.3d", "%-8.3d|", "%08.3d", "%.0d|", "%+.0d|", "% .0d|", "%+05i", "%- 8.4d|", "%.12d", 0 };
+	const char* unsignedFormats[] = { "%u", "%10u", "%x", "%X", "%#x", "%#X", "%o", "%#o", "%#.0o|", "%.0o|", "%.0x|", "%#08x", "%#-8x|", "%.5x", "%10.4X", "%#10.4x", "%-#10o|", "%012o", "%#.12x", 0 };
+	for( unsigned int v = 0; v < sizeof(ints) / sizeof(ints[0]); ++v )
+	{
+		wr_makeInt( args, ints[v] );
+		for( int f = 0; signedFormats[f]; ++f )
+		{
+			snprintf( expected, sizeof(expected), signedFormats[f], ints[v] );
+			ok = libFormatMatches( signedFormats[f], expected, args, 1 ) && ok;
+		}
+		for( int f = 0; unsignedFormats[f]; ++f )
+		{
+			snprintf( expected, sizeof(expected), unsignedFormats[f], (unsigned int)ints[v] );
+			ok = libFormatMatches( unsignedFormats[f], expected, args, 1 ) && ok;
+		}
+	}
+
+	// '*' takes the width and the precision from the arguments, negative
+	// ones are the '-' flag and no precision
+	const char* starFormats[] = { "%*.*d|", "%-*.*d|", "%0*.*x|", "%+*.*i|", "%*.*s|", "%-*.*s|", 0 };
+	const int stars[] = { -6, -1, 0, 3, 6 };
+	for( int f = 0; starFormats[f]; ++f )
+	{
+		const bool text = strchr( starFormats[f], 's' ) != 0;
+		for( unsigned int w = 0; w < sizeof(stars) / sizeof(stars[0]); ++w )
+		{
+			for( unsigned int p = 0; p < sizeof(stars) / sizeof(stars[0]); ++p )
+			{
+				wr_makeInt( args, stars[w] );
+				wr_makeInt( args + 1, stars[p] );
+				if ( text )
+				{
+					wr_makeString( c, args + 2, "hello" );
+					snprintf( expected, sizeof(expected), starFormats[f], stars[w], stars[p], "hello" );
+				}
+				else
+				{
+					wr_makeInt( args + 2, 42 );
+					snprintf( expected, sizeof(expected), starFormats[f], stars[w], stars[p], 42 );
+				}
+				ok = libFormatMatches( starFormats[f], expected, args, 3 ) && ok;
+			}
+		}
+	}
+
+	const char* chars = "Az";
+	const char* charFormats[] = { "%c", "%5c", "%-5c|", "%.3c", 0 };
+	for( int ch = 0; chars[ch]; ++ch )
+	{
+		wr_makeInt( args, chars[ch] );
+		for( int f = 0; charFormats[f]; ++f )
+		{
+			snprintf( expected, sizeof(expected), charFormats[f], chars[ch] );
+			ok = libFormatMatches( charFormats[f], expected, args, 1 ) && ok;
+		}
+	}
+
+	const char* texts[] = { "", "abc", "hello world", 0 };
+	const char* textFormats[] = { "%s", "%10s", "%-10s|", "%.2s", "%10.2s", "%-10.2s|", "%.0s|", "%.10s", "%3s", 0 };
+	for( int t = 0; texts[t]; ++t )
+	{
+		for( int f = 0; textFormats[f]; ++f )
+		{
+			snprintf( expected, sizeof(expected), textFormats[f], texts[t] );
+			wr_makeString( c, args, texts[t] );
+			ok = libFormatMatches( textFormats[f], expected, args, 1 ) && ok;
+		}
+	}
+
+	const float floats[] = { 0.f, -0.f, 1.f, -1.f, 0.5f, 1.5f, 2.5f, 0.125f, 0.1f, 0.3f, 123.456f, -123.456f, 1e-5f, 1.5e-5f, 9.9999e-5f, 0.0001f, 99999.95f, 999999.5f, 1e10f, 3.4e38f, 3.4028235e38f, 1.17549435e-38f, 1.4e-45f, 65536.f, 1e6f, 123456789.f, 0.000123456f, 9.5f, 0.05f, 1234.5f, 0.0625f, 5e-5f };
+	const char* floatFormats[] = { "%f", "%.0f", "%.1f", "%.2f", "%.3f", "%10.3f", "%-10.2f|", "%010.2f", "%+f", "% f", "%F", "%.20f", "%#.0f", "%e", "%.0e", "%#.0e", "%+.1e", "%E", "%12.4e", "%-12.3E|", "%.30e", "%g", "%.0g", "%.1g", "%.2g", "%.3g", "%.10g", "%#g", "%#.3g", "%G", "%10g", "%-10g|", "%+g", "%010g", "% 012.5g", "%.40g", "%#.0g", 0 };
+	for( unsigned int v = 0; v < sizeof(floats) / sizeof(floats[0]); ++v )
+	{
+		wr_makeFloat( args, floats[v] );
+		for( int f = 0; floatFormats[f]; ++f )
+		{
+			// glibc (2.41) drops the zeros of %#g when rounding carries into
+			// a new digit (999999.5 is "1.e+06"), checked below instead
+			const char last = floatFormats[f][strlen(floatFormats[f]) - 1];
+			if ( floats[v] == 999999.5f && strchr(floatFormats[f], '#') && (last == 'g' || last == 'G') )
+			{
+				continue;
+			}
+			snprintf( expected, sizeof(expected), floatFormats[f], (double)floats[v] );
+			ok = libFormatMatches( floatFormats[f], expected, args, 1 ) && ok;
+		}
+	}
+#ifndef WRENCH_FLOAT_SPRINTF
+	// (with WRENCH_FLOAT_SPRINTF the C library formats them)
+	wr_makeFloat( args, 999999.5f );
+	ok = libFormatMatches( "%#g", "1.00000e+06", args, 1 ) && ok;
+	ok = libFormatMatches( "%#.3g", "1.00e+06", args, 1 ) && ok;
+	ok = libFormatMatches( "%#.0g", "1.e+06", args, 1 ) && ok;
+#endif
+
+	// infinity has no zero padding
+	uint32_t infBits = 0x7F800000;
+	float inf;
+	memcpy( &inf, &infBits, sizeof(inf) );
+	const char* infFormats[] = { "%f", "%e", "%g", "%E", "%F", "%G", "%5f", "%-6f|", "%+f", "% f", "%05f", 0 };
+	for( int sign = 0; sign < 2; ++sign )
+	{
+		const float value = sign ? -inf : inf;
+		wr_makeFloat( args, value );
+		for( int f = 0; infFormats[f]; ++f )
+		{
+			snprintf( expected, sizeof(expected), infFormats[f], (double)value );
+			ok = libFormatMatches( infFormats[f], expected, args, 1 ) && ok;
+		}
+	}
+
+	// a C library may print the sign of a nan, this one is positive
+	uint32_t nanBits = 0x7FC00000;
+	float nan;
+	memcpy( &nan, &nanBits, sizeof(nan) );
+	wr_makeFloat( args, nan );
+	args[1] = args[0];
+	args[2] = args[0];
+	ok = libFormatMatches( "%f|%5g|%E", "nan|  nan|NAN", args, 3 ) && ok;
+
+	wr_destroyState( w );
+
+	printf( ok ? "PASS\n" : "FAIL\n" );
+	return ok;
+}
+
+static const char* c_libRandScript =
+	"function seed( v ) { std::srand( v ); }\n"
+	"function draw( n ) { var s = 0; for( var i = 0; i < n; ++i ) { s = s * 31 + std::rand( 1000 ); } return s; }\n";
+
+static void runRandThread( const unsigned char* image, int imageLen, int seed, int* result )
+{
+	WRState* w = wr_newState();
+	wr_loadStdLib( w );
+	WRContext* c = wr_run( w, image, imageLen );
+	WRValue arg;
+	wr_makeInt( &arg, seed );
+	if ( c && wr_callFunction(c, "seed", &arg, 1) )
+	{
+		wr_makeInt( &arg, 20000 );
+		WRValue* r = wr_callFunction( c, "draw", &arg, 1 );
+		*result = r ? r->asInt() : -1;
+	}
+	wr_destroyState( w );
+}
+
+static bool testLibRandPerState()
+{
+	printf( "test [-][std::rand seed per state]: " );
+	bool ok = true;
+
+	unsigned char* image = 0;
+	int imageLen = 0;
+	ok = wr_compile( c_libRandScript, (int)strlen(c_libRandScript), &image, &imageLen ) == WR_ERR_None;
+
+	// two states with the same seed draw the same numbers, in any order
+	WRState* a = wr_newState();
+	WRState* b = wr_newState();
+	wr_loadStdLib( a );
+	wr_loadStdLib( b );
+	WRContext* ca = ok ? wr_run( a, image, imageLen ) : 0;
+	WRContext* cb = ok ? wr_run( b, image, imageLen ) : 0;
+	ok = ok && ca && cb;
+
+	WRValue arg;
+	wr_makeInt( &arg, 77 );
+	ok = ok && wr_callFunction( ca, "seed", &arg, 1 ) && wr_callFunction( cb, "seed", &arg, 1 );
+	wr_makeInt( &arg, 1 );
+	for( int i = 0; ok && i < 10; ++i )
+	{
+		WRValue* ra = wr_callFunction( ca, "draw", &arg, 1 );
+		const int va = ra ? ra->asInt() : -1;
+		WRValue* rb = wr_callFunction( cb, "draw", &arg, 1 );
+		ok = rb && rb->asInt() == va;
+	}
+	ok = ok && wr_randEx( a, 0, 999 ) == wr_randEx( b, 0, 999 );
+
+	// the host generator is a third one
+	const int32_t hostSeed = wr_Seed;
+	wr_randEx( 0, 999 );
+	ok = ok && wr_randEx( a, 0, 999 ) == wr_randEx( b, 0, 999 );
+	wr_Seed = hostSeed;
+
+	wr_destroyState( a );
+	wr_destroyState( b );
+
+	// states on threads draw what they draw alone
+	if ( ok )
+	{
+		int alone[4];
+		int threaded[4];
+		for( int i = 0; i < 4; ++i )
+		{
+			runRandThread( image, imageLen, 1000 + i, alone + i );
+		}
+		std::thread threads[4];
+		for( int i = 0; i < 4; ++i )
+		{
+			threads[i] = std::thread( runRandThread, image, imageLen, 1000 + i, threaded + i );
+		}
+		for( int i = 0; i < 4; ++i )
+		{
+			threads[i].join();
+			ok = ok && threaded[i] == alone[i] && alone[i] != -1;
+		}
+	}
+
+	wr_free( image );
+
+	printf( ok ? "PASS\n" : "FAIL\n" );
+	return ok;
+}
+
+static bool libMsgIs( WRContext* c, const char* key, const char* text )
+{
+	WRValue k;
+	wr_makeString( c, &k, key );
+	WRValue* v = wr_callFunction( c, "get", &k, 1 );
+	int len = 0;
+	return v && v->isString( &len ) && len == (int)strlen(text) && !memcmp( v->array(), text, len );
+}
+
+static bool testLibMessages()
+{
+	printf( "test [-][msg:: values and the host mailbox API]: " );
+	bool ok = true;
+
+	WRState* w = wr_newState();
+	wr_loadAllLibs( w );
+
+	const char* writer =
+		"var parts[] = { 1, 2 };\n"
+		"function put() { msg::write( \"name\", \"pro\" + \"be\" ); msg::write( \"gain\", 2.5 ); msg::write( 7, -3 ); return msg::write( \"parts\", parts ); }\n";
+	const char* reader =
+		"function get( key ) { return msg::read( key ); }\n"
+		"function getSeven() { return msg::read( 7 ); }\n"
+		"function put( key, value ) { return msg::write( key, value ); }\n";
+
+	// what a context wrote outlives it, the strings belong to the state
+	WRContext* a = runSource( w, writer );
+	WRValue* r = a ? wr_callFunction( a, "put" ) : 0;
+	ok = r && r->asInt() == -1;
+	if ( a )
+	{
+		wr_destroyContext( a );
+	}
+
+	WRContext* b = runSource( w, reader );
+	ok = ok && b && libMsgIs( b, "name", "probe" );
+	WRValue key;
+	if ( ok )
+	{
+		wr_makeString( b, &key, "gain" );
+		r = wr_callFunction( b, "get", &key, 1 );
+		ok = r && r->isFloat() && r->asFloat() == 2.5f;
+		r = ok ? wr_callFunction( b, "getSeven" ) : 0;
+		ok = r && r->isInt() && r->asInt() == -3;
+	}
+
+	// the host reads and writes the same mailbox
+	const WRValue* p = wr_msgPeek( w, "name" );
+	unsigned int len = 0;
+	ok = ok && p && p->isString() && !strcmp( (const char*)p->array(&len), "probe" ) && len == 5;
+	ok = ok && !wr_msgPeek( w, "parts" ) && !wr_msgPeek( w, "nothing" );
+
+	WRValue v;
+	wr_makeInt( &v, 42 );
+	ok = ok && wr_msgWrite( w, "count", v );
+	if ( ok )
+	{
+		wr_makeString( b, &key, "count" );
+		r = wr_callFunction( b, "get", &key, 1 );
+		ok = r && r->isInt() && r->asInt() == 42;
+	}
+	wr_makeFloat( &v, -1.25f );
+	ok = ok && wr_msgWrite( w, "count", v ) && (p = wr_msgPeek( w, "count" )) && p->isFloat() && p->asFloat() == -1.25f;
+
+	ok = ok && wr_msgWriteString( w, "greet", "hello", 2 ) && libMsgIs( b, "greet", "he" );
+	ok = ok && wr_msgWriteString( w, "greet", "hello" ) && libMsgIs( b, "greet", "hello" );
+	ok = ok && wr_msgRead( b, "greet", v, true ) && v.isString() && v.arraySize() == 5;
+	ok = ok && !wr_msgPeek( w, "greet" ) && !wr_msgRead( b, "greet", v ) && v.isInt() && v.asInt() == 0;
+
+	WRValue box;
+	wr_makeContainer( &box );
+	ok = ok && !wr_msgWrite( w, "box", box ) && !wr_msgPeek( w, "box" );
+	wr_destroyContainer( &box );
+
+	ok = ok && wr_msgClear( w, "name" ) && !wr_msgClear( w, "name" ) && !wr_msgPeek( w, "name" );
+
+	// strings overwritten by strings and ints, and many of them while the
+	// mailbox grows (sanitizer builds see a leak or a stale string)
+	char name[16];
+	char text[16];
+	for( int i = 0; ok && i < 300; ++i )
+	{
+		snprintf( name, sizeof(name), "k%d", i );
+		snprintf( text, sizeof(text), "v%d", i );
+		ok = wr_msgWriteString( w, name, text ) && wr_msgWriteString( w, "churn", text );
+		wr_makeInt( &v, i );
+		ok = ok && ((i & 1) ? wr_msgWrite( w, "churn", v ) : true);
+	}
+	for( int i = 0; ok && i < 300; ++i )
+	{
+		snprintf( name, sizeof(name), "k%d", i );
+		snprintf( text, sizeof(text), "v%d", i );
+		p = wr_msgPeek( w, name );
+		ok = p && !strcmp( (const char*)p->array(), text );
+	}
+
+	// a script copies what it writes, the host value is a copy as well
+	if ( ok )
+	{
+		WRValue kv[2];
+		wr_makeString( b, kv, "fromScript" );
+		wr_makeString( b, kv + 1, "xyz" );
+		r = wr_callFunction( b, "put", kv, 2 );
+		ok = r && r->asInt() == 0 && (p = wr_msgPeek( w, "fromScript" )) && !strcmp( (const char*)p->array(), "xyz" );
+	}
+
+	// the strings still stored are freed with the state
+	wr_destroyState( w );
+
+	printf( ok ? "PASS\n" : "FAIL\n" );
+	return ok;
+}
+
+#if defined(WRENCH_WIN32_FILE_IO) || defined(WRENCH_LINUX_FILE_IO)
+static bool testLibGetline()
+{
+	printf( "test [-][io::getline line ends and the end of the input]: " );
+	bool ok = true;
+
+	WRstr name;
+	name.format( "%s/_041_getline.txt", g_testDir.c_str() );
+
+	WRstr data( "one\r\n\r\ntwo\nthree\rfour\n" );
+	for( int i = 0; i < 256; ++i )
+	{
+		data += 'a';
+	}
+	data += "\r\nlast";
+
+	FILE* f = fopen( name.c_str(), "wb" );
+	ok = f && fwrite( data.c_str(), data.size(), 1, f ) == 1;
+	if ( f )
+	{
+		fclose( f );
+	}
+
+	WRState* w = wr_newState();
+	WRContext* c = runSource( w, "var x = 1;" );
+	f = ok ? fopen( name.c_str(), "rb" ) : 0;
+	ok = ok && c && f;
+
+	WRstr longLine;
+	for( int i = 0; i < 256; ++i )
+	{
+		longLine += 'a';
+	}
+	const char* lines[] = { "one", "", "two", "three", "four", longLine.c_str(), "last", 0 };
+	WRValue line;
+	for( int i = 0; ok && lines[i]; ++i )
+	{
+		line.init();
+		wr_getlineEx( f, &line, c );
+		int len = 0;
+		ok = line.isString( &len ) && len == (int)strlen(lines[i]) && !memcmp( line.array(), lines[i], len );
+	}
+
+	// the end is the int -1, every time
+	for( int i = 0; ok && i < 2; ++i )
+	{
+		line.init();
+		wr_getlineEx( f, &line, c );
+		ok = line.isInt() && line.asInt() == -1;
+	}
+
+	if ( f )
+	{
+		fclose( f );
+	}
+	remove( name.c_str() );
+	wr_destroyState( w );
+
+	printf( ok ? "PASS\n" : "FAIL\n" );
+	return ok;
+}
+#endif
+
 
 //------------------------------------------------------------------------------
 int runTests( const char* testDir, int number )
@@ -2861,12 +4055,16 @@ int runTests( const char* testDir, int number )
 					
 					if ( err )
 					{
+						// a failure like any other: the remaining tests still
+						// run, and the folder and list are put back below
 	#ifdef WRENCH_WITHOUT_COMPILER
 						printf( "compile error [#%d]\n", err );
 	#else
 						printf( "%scompile error [%s]\n", errMsg.c_str(), c_errStrings[err] );
 	#endif
-						return -1;
+						err = 0;
+						++failures;
+						break;
 					}
 	
 					WRstr logger;
@@ -2962,7 +4160,7 @@ int runTests( const char* testDir, int number )
 	
 					if ( err )
 					{
-						printf( "execute error [%s]\n", c_errStrings[err] );
+						printf( "execute error [%s]\n", cliErrorText(err).c_str() );
 					}
 					else if ( logger != expect )
 					{
@@ -3024,7 +4222,15 @@ int runTests( const char* testDir, int number )
 	{
 		++failures;
 	}
+	if ( !testDisassembler() )
+	{
+		++failures;
+	}
 	if ( !testVmRobustness() )
+	{
+		++failures;
+	}
+	if ( !testVmBookFixes() )
 	{
 		++failures;
 	}
@@ -3032,10 +4238,36 @@ int runTests( const char* testDir, int number )
 	{
 		++failures;
 	}
+	if ( !testResetContext() )
+	{
+		++failures;
+	}
 	if ( !testIncludes() )
 	{
 		++failures;
 	}
+	if ( !testCompilerBookFixes() )
+	{
+		++failures;
+	}
+	if ( !testLibFormat() )
+	{
+		++failures;
+	}
+	if ( !testLibRandPerState() )
+	{
+		++failures;
+	}
+	if ( !testLibMessages() )
+	{
+		++failures;
+	}
+#if defined(WRENCH_WIN32_FILE_IO) || defined(WRENCH_LINUX_FILE_IO)
+	if ( !testLibGetline() )
+	{
+		++failures;
+	}
+#endif
 	testDropClobberedInitializerStores();
 	testDeepHashTableWithWrenchValue();
 	testStateContextOpaquePointer();

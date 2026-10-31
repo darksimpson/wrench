@@ -150,6 +150,8 @@ static SerialDebugTransport debugLink;
 
 static WRState* w = 0;
 static WrenchDebugServer* debugger = 0;
+static WRContext* script = 0;
+static bool scriptReady = false; // its global code ran to the end, loop() may be called
 static uint32_t nextCall = 0;
 
 // own messages go to Serial only when it is not the debug link
@@ -192,6 +194,14 @@ static void led( WRContext* c, const WRValue* argv, const int argn, WRValue& ret
 	}
 }
 
+// the script's global code; it stops on its first line when the debugger
+// launched it that way (or breakOnEntry() is armed)
+static void runScript()
+{
+	scriptReady = script && wr_executeContext( script );
+	nextCall = millis();
+}
+
 void setup()
 {
 	pinMode( LED_BUILTIN, OUTPUT );
@@ -225,30 +235,46 @@ void setup()
 
 	debugger = new WrenchDebugServer( w, &debugLink );
 	debugger->setHostDriven( true );
+	// a debugger may restart the script and upload new ones, loop() below
+	// carries that out
+	debugger->setLaunchable( true );
 
-	WRContext* context = debugger->loadBytes( blink_bytecode, blink_bytecodeSize );
+	script = wr_newContext( w, blink_bytecode, blink_bytecodeSize );
+	debugger->attach( script, "blink.w" );
 
 	// uncomment to halt the script on its first line until a debugger
 	// attaches (a timeout in ms lets it run on without one)
 	// debugger->breakOnEntry();
 
-	if ( context )
-	{
-		wr_executeContext( context );
-	}
+	runScript();
 }
 
 void loop()
 {
 	int events = debugger->tick();
-	if ( events & WRD_TickProgramLoaded )
+	if ( events & WRD_TickProgramUploaded )
 	{
-		logLine( "new program uploaded by the debugger" );
+		uint8_t* bytes;
+		int size;
+		if ( debugger->takeUpload(bytes, size) )
+		{
+			logLine( "new program uploaded by the debugger" );
+			wr_destroyContext( script );
+			script = wr_newContext( w, bytes, size, true );
+			debugger->attach( script, "blink.w" );
+			scriptReady = false;
+		}
+	}
+	if ( events & WRD_TickRunRequested )
+	{
+		// the debugger launches the script: from the start, with fresh globals
+		wr_resetContext( script );
+		runScript();
 	}
 
-	if ( debugger->ready() && (int32_t)(millis() - nextCall) >= 0 )
+	if ( scriptReady && (int32_t)(millis() - nextCall) >= 0 )
 	{
-		WRValue* ret = wr_callFunction( debugger->context(), "loop" );
+		WRValue* ret = wr_callFunction( script, "loop" );
 		int delayMs = ret ? ret->asInt() : 1000;
 		nextCall = millis() + (delayMs > 0 ? delayMs : 1);
 	}

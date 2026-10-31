@@ -301,7 +301,7 @@ bool WrenchLocalTarget::start( int stackSize, const WrenchProject* project )
 	return true;
 }
 
-void WrenchLocalTarget::stop()
+void WrenchLocalTarget::stop( int waitMs )
 {
 	if ( !m_started )
 	{
@@ -312,7 +312,7 @@ void WrenchLocalTarget::stop()
 
 	// running code with debug information notices the closed pipe within a
 	// few lines; code without it cannot be interrupted at all
-	for ( int waited = 0; waited < 2000 && !m_shared->done; waited += 10 )
+	for ( int waited = 0; waited < waitMs && !m_shared->done; waited += 10 )
 	{
 		std::this_thread::sleep_for( std::chrono::milliseconds(10) );
 	}
@@ -332,6 +332,80 @@ void WrenchLocalTarget::stop()
 	m_started = false;
 }
 
+bool WrenchHostProgram::load( const uint8_t* bytes, int size, const std::string& name )
+{
+	unload();
+	m_name = name;
+	uint8_t* copy = (uint8_t*)wr_malloc( size > 0 ? size : 1 );
+	memcpy( copy, bytes, size > 0 ? size : 0 );
+	return attach( wr_newContext(m_w, copy, size, true) );
+}
+
+void WrenchHostProgram::unload()
+{
+	if ( m_context )
+	{
+		wr_destroyContext( m_context );
+		m_context = nullptr;
+	}
+}
+
+bool WrenchHostProgram::attach( WRContext* context )
+{
+	m_context = context;
+	m_ran = false;
+	return context && m_server.attach( context, m_name.empty() ? nullptr : m_name.c_str() ) == 0;
+}
+
+bool WrenchHostProgram::handle( int tickFlags )
+{
+	bool ran = false;
+	int flags = tickFlags | m_pending;
+	m_pending = 0;
+	while ( flags )
+	{
+		// an upload first, a launch that came with it runs the new program
+		uint8_t* bytes;
+		int size;
+		if ( (flags & WRD_TickProgramUploaded) && m_server.takeUpload(bytes, size) )
+		{
+			unload();
+			attach( wr_newContext(m_w, bytes, size, true) );
+		}
+		if ( (flags & WRD_TickRunRequested) && m_context )
+		{
+			run();
+			ran = true;
+		}
+		flags = m_pending;
+		m_pending = 0;
+	}
+	return ran;
+}
+
+WRValue* WrenchHostProgram::run()
+{
+	if ( !m_context )
+	{
+		return nullptr;
+	}
+	if ( m_ran )
+	{
+		wr_resetContext( m_context );
+	}
+	m_ran = true;
+
+	// a yield gives the debugger its turn, what it asks for meanwhile waits
+	// for the end of this run
+	WRValue* ret = wr_executeContext( m_context );
+	while ( !ret && m_w->err == WR_ERR_None && m_context->yield_pc )
+	{
+		m_pending |= m_server.tick();
+		ret = wr_continue( m_context );
+	}
+	return ret;
+}
+
 void WrenchLocalTarget::run( std::shared_ptr<Shared> shared, int stackSize )
 {
 	WRState* w = wr_newState( stackSize > 0 ? stackSize : 512 );
@@ -347,12 +421,16 @@ void WrenchLocalTarget::run( std::shared_ptr<Shared> shared, int stackSize )
 	natives.project = shared->project.loaded() ? &shared->project : 0;
 	wr_installHostNatives( w, &natives );
 
+	// the debugger uploads the program and launches it
+	WrenchHostProgram program( w, server );
+	server.setLaunchable( true );
 	while ( !shared->quit )
 	{
-		server.tick();
+		program.handle( server.tick() );
 		shared->pipe.server()->idle();
 	}
 
+	program.unload();
 	server.detach();
 	wr_destroyState( w );
 	shared->done = true;
@@ -453,11 +531,11 @@ WrenchClientLink::~WrenchClientLink()
 	close();
 }
 
-void WrenchClientLink::close()
+void WrenchClientLink::close( int localWaitMs )
 {
 	if ( m_local )
 	{
-		m_local->stop();
+		m_local->stop( localWaitMs );
 		m_local.reset();
 	}
 	m_owned.reset();
@@ -564,14 +642,18 @@ int wr_debugServerMain( const WrenchTransportSpec& spec, const char* programPath
 	if ( spec.kind == WrenchTransportSpec::Tcp )
 	{
 #ifdef WRENCH_DEBUG_HAS_TCP
+		// tcp:<port> is this machine only (the parse makes it 127.0.0.1):
+		// whoever reaches the port can upload and run code. tcp:0.0.0.0:<port>
+		// opens it to every interface, tcp:<address>:<port> to one
 		WrenchDebugTcpServerTransport* tcp = new WrenchDebugTcpServerTransport();
 		transport.reset( tcp );
-		if ( !tcp->listen(spec.port) )
+		if ( !tcp->listenOn(spec.host.c_str(), spec.port) )
 		{
-			fprintf( stderr, "cannot listen on port %d\n", spec.port );
+			fprintf( stderr, "cannot listen on %s port %d (an IPv4 address of this machine is needed)\n", spec.host.c_str(), spec.port );
 			return -1;
 		}
-		printf( "wrench debug server listening on tcp port %d\n", spec.port );
+		printf( "wrench debug server listening on tcp %s:%d%s\n", spec.host.c_str(), spec.port,
+			spec.host == "0.0.0.0" ? " (every interface)" : (spec.host == "127.0.0.1" ? " (this machine only)" : "") );
 #else
 		fprintf( stderr, "built without TCP support\n" );
 		return -1;
@@ -595,7 +677,7 @@ int wr_debugServerMain( const WrenchTransportSpec& spec, const char* programPath
 	}
 	else
 	{
-		fprintf( stderr, "dbgserver needs tcp:<port> or serial:<port>[:<baud>]\n" );
+		fprintf( stderr, "dbgserver needs tcp:[<address>:]<port> or serial:<port>[:<baud>]\n" );
 		return -1;
 	}
 	fflush( stdout );
@@ -612,6 +694,8 @@ int wr_debugServerMain( const WrenchTransportSpec& spec, const char* programPath
 	}
 	WrenchDebugServer server( w, transport.get() );
 	g_dbgServer = &server;
+	WrenchHostProgram program( w, server );
+	server.setLaunchable( true );
 	server.setAllowUpload( allowUpload );
 	if ( !allowUpload )
 	{
@@ -639,9 +723,9 @@ int wr_debugServerMain( const WrenchTransportSpec& spec, const char* programPath
 			return -1;
 		}
 
-		uint8_t* copy = (uint8_t*)g_malloc( bytecode.size() );
-		memcpy( copy, bytecode.data(), bytecode.size() );
-		if ( !server.loadBytes(copy, (int)bytecode.size(), true) )
+		std::string name = programPath;
+		size_t slash = name.find_last_of( "/\\" );
+		if ( !program.load(bytecode.data(), (int)bytecode.size(), name.substr(slash == std::string::npos ? 0 : slash + 1)) )
 		{
 			fprintf( stderr, "invalid program %s\n", programPath );
 			wr_destroyState( w );
@@ -701,7 +785,7 @@ int wr_debugServerMain( const WrenchTransportSpec& spec, const char* programPath
 			server.breakOnEntry();
 			printf( "started, halted on the first line until a debugger attaches\n" );
 			fflush( stdout );
-			wr_executeContext( server.context() );
+			program.run();
 			printf( "global code finished: %s\n", wr_debugErrorText((uint8_t)wr_getLastError(w)).c_str() );
 			fflush( stdout );
 		}
@@ -721,8 +805,11 @@ int wr_debugServerMain( const WrenchTransportSpec& spec, const char* programPath
 			{
 				wr_callFunction( ticking[t], "tick" );
 				WRError err = wr_getLastError( w );
-				if ( err == WR_ERR_None )
+				if ( err == WR_ERR_None || err == WR_ERR_debugger_terminated )
 				{
+					// a call the debugger ended (kill, or r while halted in
+					// it) is not the script's fault: firmware calls again
+					w->err = WR_ERR_None;
 					++t;
 					continue;
 				}
@@ -740,14 +827,15 @@ int wr_debugServerMain( const WrenchTransportSpec& spec, const char* programPath
 			{
 				printf( "client attached\n" );
 			}
-			if ( flags & WRD_TickProgramLoaded )
+			if ( flags & WRD_TickProgramUploaded )
 			{
 				printf( "program uploaded\n" );
 			}
-			if ( flags & WRD_TickProgramRan )
-			{
-				printf( "program finished: %s\n", wr_debugErrorText((uint8_t)wr_getLastError(w)).c_str() );
-			}
+			fflush( stdout );
+		}
+		if ( program.handle(flags) && verbose )
+		{
+			printf( "program finished: %s\n", wr_debugErrorText((uint8_t)wr_getLastError(w)).c_str() );
 			fflush( stdout );
 		}
 		if ( attached != server.clientAttached() )

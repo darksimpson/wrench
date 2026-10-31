@@ -28,6 +28,8 @@ SOFTWARE.
 
 extern bool CompareEQI( int a, int b );
 extern bool CompareEQF( float a, float b );
+extern bool CompareGTI( int a, int b );
+extern bool CompareLTI( int a, int b );
 
 //------------------------------------------------------------------------------
 void unaryPost_E( WRValue* value, WRValue* stack, int add )
@@ -61,13 +63,19 @@ void FuncAssign_E_E( WRValue* to, WRValue* from, WRFuncIntCall intCall, WRFuncFl
 		wr_FuncAssign[(WR_EX<<2)|V.type]( to, &V, intCall, floatCall );
 		*from = to->deref();
 	}
-	else if ( wr_concatStringCheck(to, from, to) )
+	else if ( !(intCall == wr_addI && wr_concatStringToElement(to, from))
+			&& wr_concatStringCheck(to, from, to) )
 	{
 		*from = *to;
 	}
 }
 void FuncAssign_E_X( WRValue* to, WRValue* from, WRFuncIntCall intCall, WRFuncFloatCall floatCall )
 {
+	if ( intCall == wr_addI && wr_concatStringToElement(to, from) )
+	{
+		return; // the sum is in the element
+	}
+
 	if ( wr_concatStringCheck(to, from, to) )
 	{
 		*from = *to;
@@ -236,17 +244,31 @@ WRTargetCallbackFunc wr_funcBinary[16] =
 
 bool Compare_E_E( WRValue* to, WRValue* from, WRCompareFuncIntCall intCall, WRCompareFuncFloatCall floatCall )
 {
+	// two strings order by their bytes
+	int order;
+	if ( (intCall == CompareGTI || intCall == CompareLTI) && wr_stringOrder(to, from, &order) )
+	{
+		return intCall( order, 0 );
+	}
 	WRValue V1 = to->singleValue();
 	WRValue& V2 = from->singleValue();
 	return wr_Compare[(V1.type<<2)|V2.type](&V1, &V2, intCall, floatCall);
 }
 bool Compare_E_X( WRValue* to, WRValue* from, WRCompareFuncIntCall intCall, WRCompareFuncFloatCall floatCall )
 {
+	if ( intCall == CompareEQI && !wr_holdsNumber(to) )
+	{
+		return false; // a number is no string or container
+	}
 	WRValue& V = to->singleValue();
 	return wr_Compare[(V.type<<2)|from->type](&V, from, intCall, floatCall);
 }
 bool Compare_X_E( WRValue* to, WRValue* from, WRCompareFuncIntCall intCall, WRCompareFuncFloatCall floatCall )
 {
+	if ( intCall == CompareEQI && !wr_holdsNumber(from) )
+	{
+		return false; // a number is no string or container
+	}
 	WRValue& V = from->singleValue();
 	return wr_Compare[(to->type<<2)|V.type](to, &V, intCall, floatCall );
 }

@@ -182,8 +182,12 @@ void wr_write_file( WRValue* stackTop, const int argn, WRContext* c )
 }
 
 //------------------------------------------------------------------------------
+// returns 0 when the file was deleted, -1 when it was not
 void wr_delete_file( WRValue* stackTop, const int argn, WRContext* c )
 {
+	stackTop->init();
+	stackTop->i = -1;
+
 	if ( argn == 1 )
 	{
 		// the scoped string must outlive the call, a temporary would free it
@@ -193,11 +197,82 @@ void wr_delete_file( WRValue* stackTop, const int argn, WRContext* c )
 		{
 #if defined(WRENCH_WIN32_FILE_IO)
 			WRCrtGuard guard;
-			_unlink( filename );
+			stackTop->i = (_unlink( filename ) == 0) ? 0 : -1;
 #endif
 #if defined(WRENCH_LINUX_FILE_IO)
-			unlink( filename );
+			stackTop->i = (unlink( filename ) == 0) ? 0 : -1;
 #endif
+		}
+	}
+}
+
+//------------------------------------------------------------------------------
+// the line end after 'ch' ("\n", "\r\n" or a lone "\r") is consumed whole
+static bool wr_isLineEnd( FILE* in, const int ch )
+{
+	if ( ch == '\r' )
+	{
+		const int next = fgetc( in );
+		if ( next != '\n' && next != EOF )
+		{
+			ungetc( next, in );
+		}
+		return true;
+	}
+
+	return ch == '\n';
+}
+
+//------------------------------------------------------------------------------
+// reads one line from 'in' without its line end, at most 256 characters (a
+// longer line goes on in the next call). When the input has ended and not
+// a single character is left the result is the int -1, never a string, so
+// an empty line ("") and the end of the input can be told apart
+void wr_getlineEx( FILE* in, WRValue* stackTop, WRContext* c )
+{
+	char buf[256];
+	int pos = 0;
+	for (;;)
+	{
+		int ch = fgetc( in );
+		if ( ch == EOF && pos == 0 )
+		{
+			stackTop->init();
+			stackTop->i = -1;
+			return;
+		}
+
+		const bool end = (ch == EOF) || wr_isLineEnd( in, ch );
+		if ( !end )
+		{
+			buf[pos++] = (char)ch;
+		}
+
+		if ( end || pos >= (int)sizeof(buf) )
+		{
+			if ( !end )
+			{
+				// a line of exactly the buffer size must not be followed by
+				// an empty one, its line end belongs to it; anything else
+				// stays in the stream for the next call
+				ch = fgetc( in );
+				if ( ch != EOF && !wr_isLineEnd(in, ch) )
+				{
+					ungetc( ch, in );
+				}
+			}
+
+			stackTop->va = c->getSVA( pos, SV_CHAR, false );
+#ifdef WRENCH_HANDLE_MALLOC_FAIL
+			if ( !stackTop->va )
+			{
+				stackTop->init();
+				return;
+			}
+#endif
+			stackTop->p2 = INIT_AS_ARRAY;
+			memcpy( stackTop->va->m_Cdata, buf, pos );
+			return;
 		}
 	}
 }
@@ -205,31 +280,7 @@ void wr_delete_file( WRValue* stackTop, const int argn, WRContext* c )
 //------------------------------------------------------------------------------
 void wr_getline( WRValue* stackTop, const int argn, WRContext* c )
 {
-	char buf[256];
-	int pos = 0;
-	for (;;)
-	{
-		// stop before reading a character there is no room for, so it
-		// stays in the stream instead of being lost
-		const bool full = pos >= (int)sizeof(buf);
-		int in = full ? EOF : fgetc( stdin );
-
-		if ( full || in == EOF || in == '\n' || in == '\r' )
-		{
-			stackTop->va = c->getSVA( pos, SV_CHAR, false );
-#ifdef WRENCH_HANDLE_MALLOC_FAIL
-			if ( !stackTop->va )
-			{
-				return;
-			}
-#endif
-			stackTop->p2 = INIT_AS_ARRAY;
-			memcpy( stackTop->va->m_Cdata, buf, pos );
-			break;
-		}
-
-		buf[pos++] = in;
-	}
+	wr_getlineEx( stdin, stackTop, c );
 }
 
 //------------------------------------------------------------------------------
@@ -317,8 +368,14 @@ void wr_ioRead( WRValue* stackTop, const int argn, WRContext* c )
 }
 
 //------------------------------------------------------------------------------
+// returns the number of bytes written, or -1 on an error and for data that
+// is not a string (or raw byte array): there are no bytes to write, which
+// is not the same as writing an empty string
 void wr_ioWrite( WRValue* stackTop, const int argn, WRContext* c )
 {
+	stackTop->init();
+	stackTop->i = -1;
+
 	if ( argn > 1 )
 	{
 		WRValue* args = stackTop - argn;
@@ -410,6 +467,7 @@ void wr_ioFSync(WRValue* stackTop, const int argn, WRContext* c)
 void wr_ioPushConstants( WRState* w )
 {
 	wr_registerLibraryConstant( w, "io::O_RDONLY", (int32_t)O_RDONLY );
+	wr_registerLibraryConstant( w, "io::O_WRONLY", (int32_t)O_WRONLY );
 	wr_registerLibraryConstant( w, "io::O_RDWR", (int32_t)O_RDWR );
 	wr_registerLibraryConstant( w, "io::O_APPEND", (int32_t)O_APPEND );
 	wr_registerLibraryConstant( w, "io::O_CREAT", (int32_t)O_CREAT );

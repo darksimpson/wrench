@@ -1,4 +1,81 @@
-next (unreleased) ----------------------------------------------------------------------
+8.0.0 (unreleased) ---------------------------------------------------------------------
+- version 8.0.0: the image format changed (new opcodes, the image flag WR_READS_KEEP_VALUES),
+  so the major version that salts the image CRC is 8: 7.x VMs refuse 8.0 images instead of
+  meeting opcodes they do not know. The 8.0 VM still runs 7.x images that lack the new flag,
+  with their old behaviour (WRENCH_PREVIOUS_IMAGE_VERSION); images from unreleased pre-8.0
+  builds must be compiled again
+
+Found while writing the book (docs/book, the user documentation, new in this version):
+- behaviour change: parameters are values, changing one (++, +=, assigning another
+  variable) no longer reaches the caller's variable; arguments are read where the call is
+  made (println( i, i++ ) prints the old i). Containers are still shared
+- behaviour change: reading a missing hash key or past the end of an array or string gives
+  0 and creates nothing (images from 8.0 compilers); writes, compound assignments, ++/--
+  and initializers still create
+- behaviour change: strings compare by their bytes with < > <= >=; a number is never == to
+  a string or a container; a float key is a key of its own in a hash table (h[2.5] works),
+  a float index truncates; h.name keeps a string key stored before
+- assigning to a member a struct does not have is WR_ERR_hash_not_found (new images); a
+  full hash table fails assignments and hash::add with WR_ERR_hash_table_size_exceeded
+- new is an expression anywhere (f( new S ), return new S, c ? new S : 0); a struct member
+  named like a constructor parameter is a member initialised from it (var v = v;); a struct
+  with parameters but no member no longer crashes
+- a return in the middle of the global code let later calls of the host run on into the
+  rest of the global code: the compiler puts a Stop after every GlobalStop
+- a module calling a function of its importer crashed, it fails with
+  WR_ERR_function_not_found
+- compile errors instead of wrong code: if (), while (), do .. while () and switch () are
+  WR_ERR_empty_parens; enum entries need commas; var and blank need a name (var = 1;);
+  'ab' is WR_ERR_bad_character_literal and integer literals past 32 bits are
+  WR_ERR_integer_literal_too_large (new codes); errors in literals keep their own code; too
+  many arguments in a nested call is WR_ERR_too_many_arguments
+- var a[n]; with a variable size created no array; a nested initializer in a hash table
+  literal had to come last; ~ on a float gave 0; ._exists was always 0 for arrays
+- += with a string on an element of a container (h["k"] += "b", a[0] += "b", p.name += "x"
+  in either order of string and number) left the element unchanged or stored a hash
+- -debug images name included files relative to the main file (lib/stats.w), no build
+  machine paths
+- WRENCH_TRAP_DIVISION_BY_ZERO traps / % /= %= in every build; WRENCH_HANDLE_MALLOC_FAIL no
+  longer fails every call after one failed allocation
+- host API: wr_callFunction( context, 0 ) after the global code ended is an error instead
+  of running it again; wr_getValueFromContainer does not insert; wr_runCommand is false
+  after a runtime error; new wr_keepValue / wr_releaseValue keep host-held strings and
+  containers from the collector; WrenchScheduler task ids are per scheduler
+- sys::isFunction answers 2 for functions of imported modules (it was 0 before their first
+  call and 1 after); str::mid / str::substr of an empty string give ""; str::isalnum
+- behaviour change: str::format / sprintf / printf / debug::print follow C printf for
+  d i u x X o c s f F e E g G: flags - + space 0 #, width, precision and *; without
+  WRENCH_FLOAT_SPRINTF floats are formatted from their exact value (%f has 6 decimals)
+- behaviour change: msg:: stores ints, floats and strings as they are (strings copied,
+  owned by the state), containers are refused (-1); host API wr_msgWrite,
+  wr_msgWriteString, wr_msgPeek, wr_msgRead, wr_msgClear
+- behaviour change: the std::rand seed is per state (std::srand sets it); wr_Seed and
+  wr_randEx( from, to ) are the host's own generator, wr_randEx( w, from, to ) draws from
+  a state's seed
+- time::ms works on Arduino, ESP-IDF and STM32 HAL (monotonic on Linux), std::time on ESP32;
+  tcp:: functions return -1 for missing arguments; io::O_WRONLY in every backend,
+  io::getline strips \r\n and gives -1 at the end of the input, io::deleteFile returns 0 or
+  -1, io::write of anything but a string is -1
+- Arduino loaders are declared only with ARDUINO, wr_loadFastLEDLib only with
+  WRENCH_ARDUINO_FASTLED; the empty wr_loadEsp32Lib is gone; wire::write writes strings;
+  lcd:: drives the display named by WR_ARDUINO_LCD
+- behaviour change: wrench dbgserver -target tcp:<port> listens on 127.0.0.1 only;
+  tcp:0.0.0.0:<port> and tcp:<address>:<port> listen on a network on purpose
+  (WrenchDebugTcpServerTransport::listenOn)
+- the wrench tool: exit codes 0, 1 runtime error, 2 compile error, -1 command line or file
+  errors; only the first argument is the command; user error codes print as such; release
+  creates its folder and fails loudly; the unused ca command is gone
+- wrench dbg detaches on every exit, shows stops while idle at the prompt, r while halted
+  terminates and launches again, p x._count works; dbg and dbgserver reject each other's
+  options
+- VS Code: attach defaults to tcp on 127.0.0.1 and names a missing port; no "loaded a new
+  program" notice for its own upload; stopping code without debug information is quick;
+  the wrench.json schema knows "include"; Show Disassembly respects wrench.nonStrict;
+  bundle-exe keeps the platforms it does not bundle
+- the disassembler shows struct member tables as data, decodes line markers and the
+  symbols section
+- examples/arduino/hello_world carried a stale image and printed nothing
+
 Language and compiler:
 - behaviour change: && and || short circuit, the right side runs only when the left side
   does not decide the result (results are still 1 or 0)
@@ -89,7 +166,7 @@ Distribution:
 Debugger, rebuilt:
 - new wire protocol (version 2): framed with sync bytes, length and CRC16 so UART links
   recover from noise, request/reply sequence numbers with retransmission, async events
-  (stopped, output, ended, program loaded). Specification in docs/debugging.md
+  (stopped, output, ended, program loaded). Specification in the book (docs/book/src/debugging/protocol.md)
 - WrenchDebugServer replaces WRDebugServerInterface: blocks inside the VM line hook while
   stopped (no forced yields), real frame walking for call stacks (works for code entered
   through wr_callFunction), pause, step in/over/out by frame depth, break on runtime
@@ -154,6 +231,29 @@ Debugger, rebuilt:
   frames and Stopped. VS Code: a thread per attached context, Modules view, module sources
   by reference; wrench dbg: programs, b file.w:line in any program; wrench dbgserver
   -context file.w runs more scripts beside the program
+- API change: the debug server runs no script code and owns no context. loadBytes(),
+  context() and ready() are gone: firmware makes its contexts (wr_newContext), attach()es
+  them (the first is program 0) and runs them. A debugger's launch or upload is a request
+  tick() returns (WRD_TickRunRequested, WRD_TickProgramUploaded with takeUpload()); the
+  firmware opts in with setLaunchable( true ), otherwise debuggers can only attach. The end
+  of program 0's run is reported by the VM, whoever started it
+- endless loops with nothing in them (while( 1 ) {}, for( ;; ) {}, do {} while( 1 );) had
+  no line marker when compiled with debug information: a debugger could neither pause nor
+  terminate them. Every pass of a loop meets one now
+- the debug server polls the link every WRENCH_DEBUG_POLL_MS (20) while script code runs,
+  reading the clock every WRENCH_DEBUG_POLL_LINES (8) lines, instead of every 64 lines
+  (WRENCH_DEBUG_POLL_INTERVAL is gone): slow lines no longer delay the debugger by seconds
+- WrenchDebugServer::poll() for a native that blocks: the debugger is answered while it
+  waits, a pause or terminate takes effect when it returns
+- a terminate ends a call of program 0 that yielded (a function the firmware called, not
+  only the global code) once the firmware continues it, and no longer aborts whatever other
+  script code happens to run next
+- wr_resetContext(): a context's global code can run again, with fresh globals and without
+  the modules it imported, keeping the pointer; restarting a firmware program works now
+- VS Code: the uploaded program ending no longer ends the session while the target runs
+  contexts of its own (it stays attached like wrench dbg); expressions take a private
+  global by the name the variables view shows (::count@util.w), Add to Watch and Break on
+  Value Change on one failed with "unexpected character '@'"
 - WRstr::insert grows its buffer by half, building a long text piece by piece (the
   disassembler on a large program) was quadratic
 

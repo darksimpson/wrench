@@ -711,12 +711,304 @@ void wr_decodeOperands( const uint8_t op,
 }
 
 //------------------------------------------------------------------------------
-void wr_disassembleRange( WRstr& out,
-							  const uint8_t* base,
-							  const uint8_t* begin,
-							  const uint8_t* end,
-							  const bool includeComments )
+// the symbols block of a debug image (see WRCompilationContext::link): u16
+// units, each u8 locals, u8 arguments, its name and its locals' names (zero
+// terminated); then, when there are files, u16 files, each its name and u32
+// length of its embedded text, and u16 segments, each u32 virtual line, u16
+// file, u32 line
+struct WRDisassemblySymbols
 {
+	const uint8_t* begin;
+	const uint8_t* end;
+};
+
+//------------------------------------------------------------------------------
+static bool wr_skipString( const uint8_t*& p, const uint8_t* end )
+{
+	while( p < end && *p )
+	{
+		++p;
+	}
+	if ( p >= end )
+	{
+		return false;
+	}
+	++p;
+	return true;
+}
+
+//------------------------------------------------------------------------------
+// the entry of unit (0 the global code, 1.. the functions), 0 if there is none
+static const uint8_t* wr_symbolsUnit( const WRDisassemblySymbols& symbols, const int unit )
+{
+	if ( !symbols.begin || symbols.begin + 2 > symbols.end )
+	{
+		return 0;
+	}
+	int units = (int)(uint16_t)READ_16_FROM_PC( symbols.begin );
+	const uint8_t* p = symbols.begin + 2;
+	for( int u=0; u<units; ++u )
+	{
+		if ( p + 2 > symbols.end )
+		{
+			return 0;
+		}
+		if ( u == unit )
+		{
+			return p;
+		}
+		int locals = p[0];
+		p += 2;
+		for( int s=0; s<=locals; ++s ) // its name, then the locals
+		{
+			if ( !wr_skipString(p, symbols.end) )
+			{
+				return 0;
+			}
+		}
+	}
+	return 0;
+}
+
+//------------------------------------------------------------------------------
+// name of a unit, or of its local slot, 0 when the symbols do not say
+static const char* wr_symbolsName( const WRDisassemblySymbols& symbols, const int unit, const int local =-1 )
+{
+	const uint8_t* p = wr_symbolsUnit( symbols, unit );
+	if ( !p || local >= (int)p[0] )
+	{
+		return 0;
+	}
+	p += 2;
+	for( int s=-1; s<local; ++s )
+	{
+		if ( !wr_skipString(p, symbols.end) )
+		{
+			return 0;
+		}
+	}
+	const uint8_t* name = p;
+	return wr_skipString( p, symbols.end ) ? (const char*)name : 0;
+}
+
+//------------------------------------------------------------------------------
+// the file table after the units, 0 when there is none
+static const uint8_t* wr_symbolsFiles( const WRDisassemblySymbols& symbols )
+{
+	int units = (symbols.begin && symbols.begin + 2 <= symbols.end) ? (int)(uint16_t)READ_16_FROM_PC( symbols.begin ) : 0;
+	const uint8_t* p = units ? wr_symbolsUnit( symbols, units - 1 ) : 0;
+	if ( !p )
+	{
+		return 0;
+	}
+	int locals = p[0];
+	p += 2;
+	for( int s=0; s<=locals; ++s )
+	{
+		if ( !wr_skipString(p, symbols.end) )
+		{
+			return 0;
+		}
+	}
+	return (p + 2 <= symbols.end) ? p : 0;
+}
+
+//------------------------------------------------------------------------------
+// the segments after the file table, count set to their number
+static const uint8_t* wr_symbolsSegments( const WRDisassemblySymbols& symbols, int& count )
+{
+	count = 0;
+	const uint8_t* p = wr_symbolsFiles( symbols );
+	if ( !p )
+	{
+		return 0;
+	}
+	int files = (int)(uint16_t)READ_16_FROM_PC( p );
+	p += 2;
+	for( int f=0; f<files; ++f )
+	{
+		if ( !wr_skipString(p, symbols.end) || p + 4 > symbols.end )
+		{
+			return 0;
+		}
+		p += 4;
+	}
+	if ( p + 2 > symbols.end )
+	{
+		return 0;
+	}
+	count = (int)(uint16_t)READ_16_FROM_PC( p );
+	p += 2;
+	if ( p + count * 10 > symbols.end )
+	{
+		count = 0;
+		return 0;
+	}
+	return p;
+}
+
+//------------------------------------------------------------------------------
+// "name:line" of a virtual line that lies in an included file
+static void wr_appendIncludedLine( WRstr& note, const WRDisassemblySymbols& symbols, const int virtualLine )
+{
+	int count = 0;
+	const uint8_t* segments = wr_symbolsSegments( symbols, count );
+	int file = 0;
+	int line = virtualLine;
+	for( int s=0; s<count; ++s )
+	{
+		const uint8_t* seg = segments + s * 10;
+		int start = (int)READ_32_FROM_PC( seg );
+		if ( start > virtualLine )
+		{
+			break;
+		}
+		file = (int)(uint16_t)READ_16_FROM_PC( seg + 4 );
+		line = (int)READ_32_FROM_PC( seg + 6 ) + (virtualLine - start);
+	}
+	if ( file == 0 )
+	{
+		return;
+	}
+	const uint8_t* p = wr_symbolsFiles( symbols ) + 2;
+	for( int f=0; f<file; ++f )
+	{
+		if ( !wr_skipString(p, symbols.end) )
+		{
+			return;
+		}
+		p += 4;
+	}
+	const uint8_t* name = p;
+	if ( wr_skipString(p, symbols.end) )
+	{
+		note.appendFormat( "%s:%d", (const char*)name, line );
+	}
+}
+
+//------------------------------------------------------------------------------
+static void wr_disassembleSymbols( WRstr& out, const uint8_t* base, const WRDisassemblySymbols& symbols, const uint32_t sourceHash )
+{
+	out.appendFormat( "Debug Symbols @0x%04X (0x%04X bytes)\n",
+					  (unsigned int)(symbols.begin - base),
+					  (unsigned int)(symbols.end - symbols.begin) );
+	out += "-------------\n";
+	out.appendFormat( "  source hash=0x%08X\n", (unsigned int)sourceHash );
+
+	int units = (symbols.begin + 2 <= symbols.end) ? (int)(uint16_t)READ_16_FROM_PC( symbols.begin ) : 0;
+	for( int u=0; u<units; ++u )
+	{
+		const uint8_t* entry = wr_symbolsUnit( symbols, u );
+		const char* name = wr_symbolsName( symbols, u );
+		if ( !entry || !name )
+		{
+			out += "  (truncated)\n";
+			return;
+		}
+		out.appendFormat( "  unit %d %s args=%u locals:", u, name, (unsigned int)entry[1] );
+		for( int l=0; l<(int)entry[0]; ++l )
+		{
+			const char* local = wr_symbolsName( symbols, u, l );
+			out.appendFormat( " %s", local ? local : "?" );
+		}
+		out += "\n";
+	}
+
+	const uint8_t* p = wr_symbolsFiles( symbols );
+	if ( p )
+	{
+		int files = (int)(uint16_t)READ_16_FROM_PC( p );
+		p += 2;
+		for( int f=0; f<files; ++f )
+		{
+			const uint8_t* name = p;
+			if ( !wr_skipString(p, symbols.end) || p + 4 > symbols.end )
+			{
+				out += "  (truncated)\n";
+				return;
+			}
+			out.appendFormat( "  file %d %s source=0x%08X bytes\n", f, (const char*)name, (unsigned int)READ_32_FROM_PC(p) );
+			p += 4;
+		}
+		int count = 0;
+		const uint8_t* seg = wr_symbolsSegments( symbols, count );
+		for( int s=0; s<count; ++s, seg += 10 )
+		{
+			out.appendFormat( "  lines from %d: file %d line %d\n",
+							  (int)READ_32_FROM_PC( seg ),
+							  (int)(uint16_t)READ_16_FROM_PC( seg + 4 ),
+							  (int)READ_32_FROM_PC( seg + 6 ) );
+		}
+	}
+	out += "\n";
+}
+
+//------------------------------------------------------------------------------
+// an O_DebugInfo codeword; lineHigh carries the upper bits a LineHigh word
+// gives the next line marker
+static void wr_decodeDebugInfo( const uint16_t codeword, const WRDisassemblySymbols& symbols, int& lineHigh, WRstr& ops, WRstr& note )
+{
+	ops.clear();
+	note.clear();
+	int payload = codeword & WRD_PayloadMask;
+	switch( codeword & WRD_TypeMask )
+	{
+		case WRD_LineNumber:
+		{
+			int line = payload | lineHigh;
+			lineHigh = 0;
+			ops.appendFormat( "line %d", line );
+			wr_appendIncludedLine( note, symbols, line );
+			break;
+		}
+
+		case WRD_LineHigh:
+		{
+			lineHigh = payload << 14;
+			ops.appendFormat( "line high bits=0x%04X", (unsigned int)payload );
+			break;
+		}
+
+		case WRD_Return:
+		{
+			ops += "return";
+			break;
+		}
+
+		default: // WRD_FunctionCall
+		{
+			if ( payload == WRD_ExternalFunction )
+			{
+				ops += "call external";
+			}
+			else if ( payload == WRD_GlobalStopFunction )
+			{
+				ops += "call global stop";
+			}
+			else
+			{
+				// the unit number: function index + 1
+				ops.appendFormat( "call fnIdx=0x%02X", (unsigned int)(payload - 1) );
+				const char* name = wr_symbolsName( symbols, payload );
+				if ( name )
+				{
+					note += name;
+				}
+			}
+			break;
+		}
+	}
+}
+
+//------------------------------------------------------------------------------
+void wr_disassembleRange( WRstr& out,
+						  const uint8_t* base,
+						  const uint8_t* begin,
+						  const uint8_t* end,
+						  const bool includeComments,
+						  const WRDisassemblySymbols& symbols )
+{
+	int lineHigh = 0;
 	const uint8_t* pc = begin;
 	while( pc < end )
 	{
@@ -733,7 +1025,10 @@ void wr_disassembleRange( WRstr& out,
 			break;
 		}
 
-		int opLen = wr_operandSizeForOpcode( pc, end, op );
+		// GlobalStop has no operand: the VM steps over the Stop after it
+		// (which the compiler always emits) only to leave its stop location
+		// there
+		int opLen = (op == O_GlobalStop) ? 0 : wr_operandSizeForOpcode( pc, end, op );
 		if ( opLen < 0 || (pc + opLen) > end )
 		{
 			out.appendFormat( "  %04X: %02X                                  %-30s ; truncated\n",
@@ -748,7 +1043,14 @@ void wr_disassembleRange( WRstr& out,
 
 		WRstr ops;
 		WRstr note;
-		wr_decodeOperands( op, pc, opLen, (int)(inst - base), ops, note );
+		if ( op == O_DebugInfo && opLen == 2 )
+		{
+			wr_decodeDebugInfo( (uint16_t)READ_16_FROM_PC(pc), symbols, lineHigh, ops, note );
+		}
+		else
+		{
+			wr_decodeOperands( op, pc, opLen, (int)(inst - base), ops, note );
+		}
 
 		out.appendFormat( "  %04X: ", (unsigned int)(inst - base) );
 		wr_appendBytes( out, inst, opLen + 1 );
@@ -768,6 +1070,77 @@ void wr_disassembleRange( WRstr& out,
 
 		pc += opLen;
 	}
+}
+
+//------------------------------------------------------------------------------
+// where the code of a unit that starts at 'start' ends: at the next unit, or
+// at the member table of a struct (a unit 'new' refers to), which sits right
+// before that struct's code
+static const uint8_t* wr_unitEnd( const WRContext* context, const uint8_t* start, const uint8_t* codeEnd )
+{
+	const uint8_t* end = codeEnd;
+	for( int i=0; i<context->numLocalFunctions; ++i )
+	{
+		const WRFunction* f = context->localFunctions + i;
+		const uint8_t* next = context->bottom + f->functionOffset;
+		if ( next > start && next < end )
+		{
+			end = next;
+		}
+		const uint8_t* table = context->bottom + f->namespaceOffset;
+		if ( f->namespaceOffset && table > start && table < end )
+		{
+			end = table;
+		}
+	}
+	return end;
+}
+
+//------------------------------------------------------------------------------
+// the member table of a struct, data between two units: u8 members, u8
+// arguments, u16 slots, each slot u32 member name hash and u8 member index
+static void wr_disassembleMemberTable( WRstr& out, const WRContext* context, const int index, const uint8_t* codeEnd, const WRDisassemblySymbols& symbols )
+{
+	const WRFunction* f = context->localFunctions + index;
+	const uint8_t* table = context->bottom + f->namespaceOffset;
+	if ( table + 4 > codeEnd )
+	{
+		return;
+	}
+	unsigned int members = table[0];
+	unsigned int arguments = table[1];
+	unsigned int slots = (uint16_t)READ_16_FROM_PC( table + 2 );
+	const char* name = wr_symbolsName( symbols, index + 1 );
+	out.appendFormat( "unit %d%s%s member table @0x%04X: members=%u args=%u slots=%u (data)\n",
+					  index,
+					  name ? " " : "",
+					  name ? name : "",
+					  (unsigned int)(table - context->bottom),
+					  members,
+					  arguments,
+					  slots );
+	out.appendFormat( "  %04X: ", (unsigned int)(table - context->bottom) );
+	wr_appendBytes( out, table, 4 );
+	out += "\n";
+	const uint8_t* slot = table + 4;
+	for( unsigned int s=0; s<slots && slot + 5 <= codeEnd; ++s, slot += 5 )
+	{
+		out.appendFormat( "  %04X: ", (unsigned int)(slot - context->bottom) );
+		wr_appendBytes( out, slot, 5 );
+		uint32_t hash = (uint32_t)READ_32_FROM_PC( slot );
+		if ( hash == WRENCH_NULL_HASH )
+		{
+			out += "empty\n";
+			continue;
+		}
+		const char* member = wr_symbolsName( symbols, index + 1, (int)(arguments + slot[4]) );
+		out.appendFormat( "hash=0x%08X -> member 0x%02X%s%s\n",
+						  (unsigned int)hash,
+						  (unsigned int)slot[4],
+						  member ? " " : "",
+						  member ? member : "" );
+	}
+	out += "\n";
 }
 
 //------------------------------------------------------------------------------
@@ -801,14 +1174,45 @@ void wr_disassemble( const uint8_t* bytecode, const unsigned int len, WRstr& out
 					  (unsigned int)(context->codeStart - context->bottom),
 					  (unsigned int)(codeEnd - context->bottom) );
 
+	// the sections between the tables and the code, as the VM skips them:
+	// the names of the globals, the debug symbols, the embedded source
+	const uint8_t* globalNames = context->bottom + 3 + (context->numLocalFunctions * WR_FUNCTION_CORE_SIZE);
+	const uint8_t* section = globalNames;
+	if ( compilerFlags & WR_INCLUDE_GLOBALS )
+	{
+		section += context->globals * 4;
+	}
+	WRDisassemblySymbols symbols;
+	symbols.begin = 0;
+	symbols.end = 0;
+	uint32_t sourceHash = 0;
+	if ( (compilerFlags & (WR_EMBED_DEBUG_CODE | WR_EMBED_SOURCE_CODE)) && section + 6 <= context->codeStart )
+	{
+		sourceHash = (uint32_t)READ_32_FROM_PC( section );
+		uint16_t symbolsSize = (uint16_t)READ_16_FROM_PC( section + 4 );
+		symbols.begin = section + 6;
+		symbols.end = symbols.begin + symbolsSize;
+		if ( symbols.end > context->codeStart )
+		{
+			symbols.end = context->codeStart;
+		}
+		section = symbols.end;
+	}
+	const uint8_t* source = ((compilerFlags & WR_EMBED_SOURCE_CODE) && section + 4 <= context->codeStart) ? section : 0;
+
 	if ( compilerFlags & WR_INCLUDE_GLOBALS )
 	{
 		out += "Globals Table\n";
 		out += "-------------\n";
-		const uint8_t* gsym = context->bottom + 3 + (context->numLocalFunctions * WR_FUNCTION_CORE_SIZE);
-		for( unsigned int g=0; g<context->globals; ++g, gsym += 4 )
+		for( unsigned int g=0; g<context->globals; ++g )
 		{
-			out.appendFormat( "  g[0x%02X] hash=0x%08X\n", g, (unsigned int)READ_32_FROM_PC(gsym) );
+			out.appendFormat( "  g[0x%02X] hash=0x%08X", g, (unsigned int)READ_32_FROM_PC(globalNames + g * 4) );
+			const char* name = wr_symbolsName( symbols, 0, (int)g );
+			if ( name )
+			{
+				out.appendFormat( " %s", name );
+			}
+			out += "\n";
 		}
 		out += "\n";
 	}
@@ -821,57 +1225,78 @@ void wr_disassemble( const uint8_t* bytecode, const unsigned int len, WRstr& out
 		for( int i=0; i<context->numLocalFunctions; ++i )
 		{
 			const WRFunction* f = context->localFunctions + i;
-			out.appendFormat( "  0x%02X 0x%08X 0x%02X 0x%02X  0x%02X   0x%04X\n",
+			out.appendFormat( "  0x%02X 0x%08X 0x%02X 0x%02X  0x%02X   0x%04X",
 							  i,
 							  (unsigned int)f->hash,
 							  (unsigned int)f->arguments,
 							  (unsigned int)f->frameSpaceNeeded,
 							  (unsigned int)f->frameBaseAdjustment,
 							  (unsigned int)f->functionOffset );
+			const char* name = wr_symbolsName( symbols, i + 1 );
+			if ( name )
+			{
+				out.appendFormat( " %s", name );
+			}
+			out += "\n";
 		}
 		out += "\n";
 	}
 
-	const uint8_t* globalStart = context->codeStart;
-	const uint8_t* globalEnd = codeEnd;
-	for( int i=0; i<context->numLocalFunctions; ++i )
+	if ( symbols.begin )
 	{
-		const uint8_t* candidate = context->bottom + context->localFunctions[i].functionOffset;
-		if ( candidate > globalStart && candidate < globalEnd )
-		{
-			globalEnd = candidate;
-		}
+		wr_disassembleSymbols( out, context->bottom, symbols, sourceHash );
+	}
+	if ( source )
+	{
+		out.appendFormat( "Embedded Source @0x%04X (0x%08X bytes, not listed)\n\n",
+						  (unsigned int)(source + 4 - context->bottom),
+						  (unsigned int)READ_32_FROM_PC(source) );
 	}
 
+	const uint8_t* globalStart = context->codeStart;
 	out.appendFormat( "unit global @0x%04X\n", (unsigned int)(globalStart - context->bottom) );
-	wr_disassembleRange( out, context->bottom, globalStart, globalEnd, includeComments );
+	wr_disassembleRange( out, context->bottom, globalStart, wr_unitEnd(context, globalStart, codeEnd), includeComments, symbols );
 	out += "\n";
 
-	for( int i=0; i<context->numLocalFunctions; ++i )
+	// in the order of the image: a struct's member table comes right
+	// before its code
+	for( const uint8_t* from = context->codeStart; ; )
 	{
-		const WRFunction* f = context->localFunctions + i;
-		const uint8_t* unitStart = context->bottom + f->functionOffset;
-		const uint8_t* unitEnd = codeEnd;
-
-		for( int j=0; j<context->numLocalFunctions; ++j )
+		int next = -1;
+		const uint8_t* nextStart = codeEnd;
+		for( int i=0; i<context->numLocalFunctions; ++i )
 		{
-			const WRFunction* n = context->localFunctions + j;
-			const uint8_t* candidate = context->bottom + n->functionOffset;
-			if ( candidate > unitStart && candidate < unitEnd )
+			const uint8_t* start = context->bottom + context->localFunctions[i].functionOffset;
+			if ( start > from && start < nextStart )
 			{
-				unitEnd = candidate;
+				next = i;
+				nextStart = start;
 			}
 		}
+		if ( next < 0 )
+		{
+			break;
+		}
+		from = nextStart;
 
-		out.appendFormat( "unit %d hash=0x%08X args=%u frame=%u baseAdj=%u @0x%04X\n",
-						  i,
+		const WRFunction* f = context->localFunctions + next;
+		if ( f->namespaceOffset )
+		{
+			wr_disassembleMemberTable( out, context, next, codeEnd, symbols );
+		}
+
+		const char* name = wr_symbolsName( symbols, next + 1 );
+		out.appendFormat( "unit %d%s%s hash=0x%08X args=%u frame=%u baseAdj=%u @0x%04X\n",
+						  next,
+						  name ? " " : "",
+						  name ? name : "",
 						  (unsigned int)f->hash,
 						  (unsigned int)f->arguments,
 						  (unsigned int)f->frameSpaceNeeded,
 						  (unsigned int)f->frameBaseAdjustment,
-						  (unsigned int)(unitStart - context->bottom) );
+						  (unsigned int)(nextStart - context->bottom) );
 
-		wr_disassembleRange( out, context->bottom, unitStart, unitEnd, includeComments );
+		wr_disassembleRange( out, context->bottom, nextStart, wr_unitEnd(context, nextStart, codeEnd), includeComments, symbols );
 		out += "\n";
 	}
 

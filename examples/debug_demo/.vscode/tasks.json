@@ -1,0 +1,35 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "wrench dbgserver",
+			"detail": "a debug target on tcp port 5050 that runs sensor.w and takes uploads of main.w",
+			"type": "process",
+			"command": "${workspaceFolder}/../../wrench",
+			"windows": {
+				"command": "${workspaceFolder}/../../win32/Release/wrench.exe"
+			},
+			"args": [ "dbgserver", "-target", "tcp:5050", "-context", "sensor.w", "-v", "main.w" ],
+			"options": {
+				"cwd": "${workspaceFolder}"
+			},
+			"isBackground": true,
+			// VS Code waits for "endsPattern" before it starts the debug session;
+			// the pattern itself never matches, the server reports no problems
+			"problemMatcher": {
+				"owner": "wrench",
+				"pattern": {
+					"regexp": "^no problems$",
+					"file": 1,
+					"location": 2,
+					"message": 3
+				},
+				"background": {
+					"activeBegins": true,
+					"beginsPattern": "^wrench debug server",
+					"endsPattern": "^attached .* as program"
+				}
+			}
+		}
+	]
+}

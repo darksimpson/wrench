@@ -56,6 +56,519 @@ inline void addChar( char* out, char c, unsigned int& pos, const unsigned int ma
 }
 
 //------------------------------------------------------------------------------
+// one conversion of a format, as C printf reads it:
+// %[flags][width][.precision][length]conversion
+struct WRFormatSpec
+{
+	unsigned int width;
+	int precision; // -1 when none was given
+	char conversion;
+	bool left; // '-'
+	bool plus; // '+'
+	bool space; // ' '
+	bool zero; // '0'
+	bool alt; // '#'
+};
+
+// widths and precisions are capped, absurd ones would only waste memory
+#define WR_FORMAT_MAX_COLUMNS 4096
+
+//------------------------------------------------------------------------------
+// writes everything of a field before a body of 'bodyLen' characters: the
+// padding, the sign (0 for none), a prefix ("0x") and 'zeros' zeros; with
+// 'zeroPad' the padding is zeros after the sign and the prefix. Returns the
+// number of spaces that go after the body (left justified)
+static unsigned int wr_fieldStart( char* out, unsigned int& pos, const unsigned int max, const WRFormatSpec& spec, const char sign, const char* prefix, unsigned int zeros, const unsigned int bodyLen, const bool zeroPad )
+{
+	unsigned int total = zeros + bodyLen + (sign ? 1 : 0);
+	for( const char* p = prefix; p && *p; ++p )
+	{
+		++total;
+	}
+
+	unsigned int pad = (spec.width > total) ? spec.width - total : 0;
+	if ( !spec.left )
+	{
+		if ( zeroPad )
+		{
+			zeros += pad;
+		}
+		else
+		{
+			for( ; pad; --pad )
+			{
+				addChar( out, ' ', pos, max );
+			}
+		}
+		pad = 0;
+	}
+
+	if ( sign )
+	{
+		addChar( out, sign, pos, max );
+	}
+
+	for( const char* p = prefix; p && *p; ++p )
+	{
+		addChar( out, *p, pos, max );
+	}
+
+	for( ; zeros; --zeros )
+	{
+		addChar( out, '0', pos, max );
+	}
+
+	return pad;
+}
+
+//------------------------------------------------------------------------------
+static void wr_fieldEnd( char* out, unsigned int& pos, const unsigned int max, unsigned int pad )
+{
+	for( ; pad; --pad )
+	{
+		addChar( out, ' ', pos, max );
+	}
+}
+
+//------------------------------------------------------------------------------
+// d i u x X o, and b (binary) and p (pointer: "0x" and upper case hex
+// digits) which C does not have like this
+static void wr_formatInt( char* out, unsigned int& pos, const unsigned int max, const WRFormatSpec& spec, uint32_t val )
+{
+	const char c = spec.conversion;
+
+	char sign = 0;
+	if ( c == 'd' || c == 'i' )
+	{
+		if ( val & 0x80000000 )
+		{
+			sign = '-';
+			val = 0u - val; // the magnitude, also right for INT_MIN
+		}
+		else if ( spec.plus )
+		{
+			sign = '+';
+		}
+		else if ( spec.space )
+		{
+			sign = ' ';
+		}
+	}
+
+	unsigned int base = 10;
+	if ( c == 'o' )
+	{
+		base = 8;
+	}
+	else if ( c == 'x' || c == 'X' || c == 'p' )
+	{
+		base = 16;
+	}
+	else if ( c == 'b' )
+	{
+		base = 2;
+	}
+
+	const bool nonZero = val != 0;
+
+	// least significant first; a precision of 0 prints no digit for 0
+	char digits[32];
+	unsigned int len = 0;
+	if ( nonZero || spec.precision != 0 )
+	{
+		do
+		{
+			const unsigned int d = val % base;
+			val /= base;
+			digits[len++] = (char)((d < 10) ? ('0' + d) : (((c == 'x') ? 'a' : 'A') + d - 10));
+		} while( val );
+	}
+
+	// the precision is the minimum number of digits
+	unsigned int zeros = (spec.precision > (int)len) ? (unsigned int)spec.precision - len : 0;
+
+	const char* prefix = 0;
+	if ( c == 'p' )
+	{
+		prefix = "0x";
+	}
+	else if ( spec.alt )
+	{
+		if ( c == 'o' )
+		{
+			// the first digit is a zero
+			if ( !zeros && (!len || digits[len - 1] != '0') )
+			{
+				zeros = 1;
+			}
+		}
+		else if ( nonZero )
+		{
+			prefix = (c == 'x') ? "0x" : (c == 'X') ? "0X" : (c == 'b') ? "0b" : 0;
+		}
+	}
+
+	// with a precision the 0 flag is ignored
+	const unsigned int pad = wr_fieldStart( out, pos, max, spec, sign, prefix, zeros, len, spec.zero && spec.precision < 0 );
+	while( len )
+	{
+		addChar( out, digits[--len], pos, max );
+	}
+	wr_fieldEnd( out, pos, max, pad );
+}
+
+//------------------------------------------------------------------------------
+// s and c: 'len' characters of 'text', a precision cuts a string
+static void wr_formatText( char* out, unsigned int& pos, const unsigned int max, const WRFormatSpec& spec, const char* text, unsigned int len )
+{
+	if ( spec.conversion == 's' && spec.precision >= 0 && (unsigned int)spec.precision < len )
+	{
+		len = (unsigned int)spec.precision;
+	}
+
+	const unsigned int pad = wr_fieldStart( out, pos, max, spec, 0, 0, 0, len, false );
+	for( unsigned int l = 0; l < len; ++l )
+	{
+		addChar( out, text[l], pos, max );
+	}
+	wr_fieldEnd( out, pos, max, pad );
+}
+
+#ifdef WRENCH_FLOAT_SPRINTF
+
+// the C library formats the number, the field is done here
+#define WR_FORMAT_MAX_FLOAT_PRECISION 80
+
+//------------------------------------------------------------------------------
+// f F e E g G
+static void wr_formatFloat( char* out, unsigned int& pos, const unsigned int max, const WRFormatSpec& spec, const float value )
+{
+	char cspec[8];
+	int s = 0;
+	cspec[s++] = '%';
+	if ( spec.plus )
+	{
+		cspec[s++] = '+';
+	}
+	if ( spec.space )
+	{
+		cspec[s++] = ' ';
+	}
+	if ( spec.alt )
+	{
+		cspec[s++] = '#';
+	}
+	cspec[s++] = '.';
+	cspec[s++] = '*';
+	cspec[s++] = spec.conversion;
+	cspec[s] = 0;
+
+	int precision = (spec.precision < 0) ? 6 : spec.precision;
+	if ( precision > WR_FORMAT_MAX_FLOAT_PRECISION )
+	{
+		precision = WR_FORMAT_MAX_FLOAT_PRECISION;
+	}
+
+	// suck in whatever lib we need for this; the largest float with the
+	// largest precision fits
+	char buf[128];
+	int len = snprintf( buf, sizeof(buf), cspec, precision, (double)value );
+	if ( len < 0 )
+	{
+		len = 0;
+	}
+	else if ( len > (int)sizeof(buf) - 1 )
+	{
+		len = (int)sizeof(buf) - 1;
+	}
+
+	const char* body = buf;
+	char sign = 0;
+	if ( len && (buf[0] == '-' || buf[0] == '+' || buf[0] == ' ') )
+	{
+		sign = buf[0];
+		++body;
+		--len;
+	}
+
+	// infinity and nan are padded with spaces
+	const bool finite = (value == value) && (value - value == 0);
+
+	const unsigned int pad = wr_fieldStart( out, pos, max, spec, sign, 0, 0, (unsigned int)len, spec.zero && finite );
+	for( int l = 0; l < len; ++l )
+	{
+		addChar( out, body[l], pos, max );
+	}
+	wr_fieldEnd( out, pos, max, pad );
+}
+
+#else
+
+// Without the C library the digits come from the exact value of the float,
+// so the result is what a correct C library prints (glibc does), rounded
+// half to even. A float is m * 2^e with an integer m below 2^24 and e from
+// -149 to 104: its decimal digits are those of the integer m * 2^e, or of
+// m * 5^-e moved -e places to the right of the point. That is at most 113
+// digits
+
+#define WR_FLOAT_DIGITS 116
+
+//------------------------------------------------------------------------------
+// the decimal digits of m * 2^e ('0' to '9', most significant first, no
+// leading zero) and the number of digits before the point; 0 has none
+static int wr_floatToDigits( uint32_t m, const int e, char* digits, int& point )
+{
+	// least significant first while multiplying
+	int n = 0;
+	for( ; m; m /= 10 )
+	{
+		digits[n++] = (char)(m % 10);
+	}
+
+	if ( !n )
+	{
+		point = 1;
+		return 0;
+	}
+
+	const unsigned int factor = (e > 0) ? 2 : 5;
+	for( int k = (e > 0) ? e : -e; k > 0; --k )
+	{
+		unsigned int carry = 0;
+		for( int i = 0; i < n; ++i )
+		{
+			const unsigned int v = (unsigned int)digits[i] * factor + carry;
+			digits[i] = (char)(v % 10);
+			carry = v / 10;
+		}
+		if ( carry )
+		{
+			digits[n++] = (char)carry;
+		}
+	}
+
+	for( int i = 0; i < n / 2; ++i )
+	{
+		const char t = digits[i];
+		digits[i] = digits[n - 1 - i];
+		digits[n - 1 - i] = t;
+	}
+	for( int i = 0; i < n; ++i )
+	{
+		digits[i] += '0';
+	}
+
+	point = n + ((e < 0) ? e : 0);
+	return n;
+}
+
+//------------------------------------------------------------------------------
+// keeps the first 'keep' digits, rounded half to even; a carry out of the
+// first digit adds a digit in front (and moves the point)
+static void wr_roundDigits( char* digits, int& n, int& point, const int keep )
+{
+	if ( keep >= n )
+	{
+		return;
+	}
+
+	bool up = false;
+	if ( keep >= 0 )
+	{
+		const char next = digits[keep];
+		if ( next > '5' )
+		{
+			up = true;
+		}
+		else if ( next == '5' )
+		{
+			// exactly half rounds to the even digit (nothing kept is 0, even)
+			up = (keep > 0) && ((digits[keep - 1] - '0') & 1);
+			for( int i = keep + 1; i < n && !up; ++i )
+			{
+				up = digits[i] != '0';
+			}
+		}
+	}
+
+	n = (keep > 0) ? keep : 0;
+
+	if ( up )
+	{
+		int i = n - 1;
+		for( ; i >= 0 && digits[i] == '9'; --i )
+		{
+			digits[i] = '0';
+		}
+
+		if ( i >= 0 )
+		{
+			++digits[i];
+		}
+		else
+		{
+			memmove( digits + 1, digits, n );
+			digits[0] = '1';
+			++n;
+			++point;
+		}
+	}
+}
+
+//------------------------------------------------------------------------------
+// the i-th digit, zeros on both sides of the ones there are
+static char wr_digitAt( const char* digits, const int n, const int i )
+{
+	return (i >= 0 && i < n) ? digits[i] : '0';
+}
+
+//------------------------------------------------------------------------------
+// f F e E g G
+static void wr_formatFloat( char* out, unsigned int& pos, const unsigned int max, const WRFormatSpec& spec, const float value )
+{
+	uint32_t bits;
+	memcpy( &bits, &value, sizeof(bits) );
+
+	const char c = spec.conversion;
+	const bool upper = (c == 'F' || c == 'E' || c == 'G');
+	const char sign = (bits & 0x80000000) ? '-' : spec.plus ? '+' : spec.space ? ' ' : 0;
+	const int exponent = (int)((bits >> 23) & 0xFF);
+	uint32_t m = bits & 0x7FFFFF;
+
+	if ( exponent == 0xFF )
+	{
+		const char* text = m ? (upper ? "NAN" : "nan") : (upper ? "INF" : "inf");
+		const unsigned int pad = wr_fieldStart( out, pos, max, spec, sign, 0, 0, 3, false );
+		for( int l = 0; l < 3; ++l )
+		{
+			addChar( out, text[l], pos, max );
+		}
+		wr_fieldEnd( out, pos, max, pad );
+		return;
+	}
+
+	int e = -149; // a denormal
+	if ( exponent )
+	{
+		m |= 0x800000;
+		e = exponent - 150;
+	}
+
+	char digits[WR_FLOAT_DIGITS];
+	int point;
+	int n = wr_floatToDigits( m, e, digits, point );
+
+	int precision = (spec.precision < 0) ? 6 : spec.precision;
+	bool expForm = (c == 'e' || c == 'E');
+	bool trim = false;
+	if ( c == 'g' || c == 'G' )
+	{
+		// 'precision' significant digits, in the form the exponent of the
+		// rounded value picks; trailing zeros are dropped unless '#'
+		if ( !precision )
+		{
+			precision = 1;
+		}
+		wr_roundDigits( digits, n, point, precision );
+		const int x = n ? point - 1 : 0;
+		if ( x < -4 || x >= precision )
+		{
+			expForm = true;
+			precision -= 1;
+		}
+		else
+		{
+			precision -= 1 + x;
+		}
+		trim = !spec.alt;
+	}
+	else if ( expForm )
+	{
+		wr_roundDigits( digits, n, point, precision + 1 );
+	}
+	else
+	{
+		wr_roundDigits( digits, n, point, point + precision );
+	}
+
+	// where the fraction starts, and how much of it is printed
+	const int first = expForm ? 1 : point;
+	int fraction = precision;
+	if ( trim )
+	{
+		while( fraction > 0 && wr_digitAt(digits, n, first + fraction - 1) == '0' )
+		{
+			--fraction;
+		}
+	}
+	const bool dot = fraction > 0 || spec.alt;
+
+	const int x = n ? point - 1 : 0;
+	const unsigned int ax = (x < 0) ? -x : x;
+
+	unsigned int bodyLen = (unsigned int)fraction + (dot ? 1 : 0);
+	if ( expForm )
+	{
+		bodyLen += 1 + 2 + ((ax >= 100) ? 3 : 2); // d e+XX
+	}
+	else
+	{
+		bodyLen += (point > 0) ? (unsigned int)point : 1;
+	}
+
+	const unsigned int pad = wr_fieldStart( out, pos, max, spec, sign, 0, 0, bodyLen, spec.zero );
+
+	if ( expForm )
+	{
+		addChar( out, wr_digitAt(digits, n, 0), pos, max );
+	}
+	else if ( point <= 0 )
+	{
+		addChar( out, '0', pos, max );
+	}
+	else
+	{
+		for( int i = 0; i < point; ++i )
+		{
+			addChar( out, wr_digitAt(digits, n, i), pos, max );
+		}
+	}
+
+	if ( dot )
+	{
+		addChar( out, '.', pos, max );
+	}
+
+	for( int i = 0; i < fraction; ++i )
+	{
+		addChar( out, wr_digitAt(digits, n, first + i), pos, max );
+	}
+
+	if ( expForm )
+	{
+		addChar( out, upper ? 'E' : 'e', pos, max );
+		addChar( out, (x < 0) ? '-' : '+', pos, max );
+		if ( ax >= 100 )
+		{
+			addChar( out, (char)('0' + ax / 100), pos, max );
+		}
+		addChar( out, (char)('0' + (ax / 10) % 10), pos, max );
+		addChar( out, (char)('0' + ax % 10), pos, max );
+	}
+
+	wr_fieldEnd( out, pos, max, pad );
+}
+
+#endif
+
+//------------------------------------------------------------------------------
+// formats like C sprintf: the conversions d i u x X o c s f F e E g G and %%,
+// with the flags - + space 0 #, a width and a precision (both may be *),
+// plus b (binary) and p (as "0x" and upper case hex). Length modifiers (l,
+// h, ...) are skipped, every int is 32 bits. A conversion without an
+// argument takes 0 (c prints nothing), an unknown one prints nothing.
+// Writes at most 'outsize' characters, returns the length of the whole
+// result
 int wr_sprintfEx( char* outbuf,
 				  const unsigned int outsize,
 				  const char* fmt,
@@ -68,363 +581,191 @@ int wr_sprintfEx( char* outbuf,
 		return 0;
 	}
 
-	enum
-	{
-		zeroPad         = 1<<0,
-		negativeJustify = 1<<1,
-		secondPass      = 1<<2,
-		negativeSign    = 1<<3,
-		parsingSigned   = 1<<4,
-		altRep			= 1<<5,
-		inPrecision = 1<<6,
-	};
-
-	const unsigned int c_maxColumns = 4096; // cap absurd field widths
-
 	unsigned int pos = 0;
 	const char* fmtend = fmt + fmtsize;
-#ifdef WRENCH_FLOAT_SPRINTF
-	const char* specStart = fmt;
-#endif
-
 	int listPtr = 0;
 
-resetState:
-
-	char padChar = ' ';
-	unsigned int columns = 0;
-	char flags = 0;
-
-	for(;;)
+	while( fmt < fmtend )
 	{
-		if ( fmt >= fmtend )
-		{
-			goto sprintf_end;
-		}
-
-		char c = *fmt++;
-
-		if ( !(secondPass & flags) )
-		{
-			if ( c != '%' ) // literal
-			{
-				addChar( outbuf, c, pos, outsize );
-			}
-			else // possibly % format specifier
-			{
-				flags |= secondPass;
-#ifdef WRENCH_FLOAT_SPRINTF
-				specStart = fmt - 1;
-#endif
-			}
-		}
-		else if ( (flags & inPrecision) && c >= '0' && c <= '9' )
-		{
-			// precision digits do not count toward the width; only a
-			// float conversion uses them (it re-reads the whole specifier)
-		}
-		else if ( c >= '0' && c <= '9' ) // width
-		{
-			columns *= 10;
-			columns += c - '0';
-			if ( !columns ) // leading zero
-			{
-				flags |= zeroPad;
-				padChar = '0';
-			}
-			else if ( columns > c_maxColumns )
-			{
-				columns = c_maxColumns;
-			}
-		}
-		else if ( c == '#' )
-		{
-			flags |= altRep;
-		}
-		else if ( c == '-' ) // left-justify
-		{
-			flags |= negativeJustify;
-		}
-		else if ( c == 'l' || c == 'h' || c == 'L' || c == 'z' || c == 'j' || c == 't' )
-		{
-			// length modifiers are accepted and ignored, every integer is 32 bits
-		}
-		else if ( c == '.' ) // precision follows
-		{
-			flags |= inPrecision;
-		}
-		else if ( c == 'c' ) // character
-		{
-			if ( listPtr < argn )
-			{
-				addChar( outbuf, (char)(args[listPtr++].asInt()), pos, outsize );
-			}
-			goto resetState;
-		}
-		else if ( c == '%' ) // literal %
+		const char c = *fmt++;
+		if ( c != '%' )
 		{
 			addChar( outbuf, c, pos, outsize );
-			goto resetState;
+			continue;
 		}
-		else // string or integer
+
+		WRFormatSpec spec;
+		spec.width = 0;
+		spec.precision = -1;
+		spec.conversion = 0;
+		spec.left = false;
+		spec.plus = false;
+		spec.space = false;
+		spec.zero = false;
+		spec.alt = false;
+
+		for( ; fmt < fmtend; ++fmt )
 		{
-			// large enough for 32 binary digits, or any single value
-			// formatted as text
-			const int c_bufSize = 34;
-			char buf[c_bufSize];
-
-			const char *ptr; // pointer to first char of integer
-			unsigned int len;
-
-			if ( c == 's' ) // string
+			if ( *fmt == '-' )
 			{
-				buf[0] = 0;
-				ptr = buf;
-				len = 0;
-				if ( listPtr < argn )
-				{
-					ptr = (char *)args[listPtr].array(&len);
-					if ( !ptr )
-					{
-						// not a string, format the value as text instead
-						unsigned int valueLen = 0;
-						args[listPtr].asString( buf, c_bufSize, &valueLen );
-						ptr = buf;
-						len = valueLen;
-					}
-					++listPtr;
-				}
-
-				padChar = ' '; // in case some joker uses a 0 in their column spec
-
-copyToString:
-				{
-					const bool hexPrefix = (c == 'p') || ((flags & altRep) && (c == 'x' || c == 'X'));
-
-					// the sign and prefix count toward the field width
-					unsigned int total = len;
-					if ( flags & negativeSign )
-					{
-						++total;
-					}
-					if ( hexPrefix )
-					{
-						total += 2;
-					}
-
-					// Right-justify: spaces go before the sign
-					if ( !(flags & negativeJustify) && padChar != '0' )
-					{
-						for ( ; columns > total; columns-- )
-						{
-							addChar( outbuf, ' ', pos, outsize );
-						}
-					}
-
-					if ( flags & negativeSign )
-					{
-						addChar( outbuf, '-', pos, outsize );
-					}
-
-					if ( hexPrefix )
-					{
-						addChar( outbuf, '0', pos, outsize );
-						addChar( outbuf, 'x', pos, outsize );
-					}
-
-					// zeros go after the sign
-					if ( !(flags & negativeJustify) )
-					{
-						for ( ; columns > total; columns-- )
-						{
-							addChar( outbuf, padChar, pos, outsize );
-						}
-					}
-
-					for (unsigned int l = 0; l < len; ++l )
-					{
-						addChar( outbuf, *ptr++, pos, outsize );
-					}
-
-					// Left-justify
-					for ( ; columns > total; columns-- )
-					{
-						addChar( outbuf, ' ', pos, outsize );
-					}
-				}
-
-				goto resetState;
+				spec.left = true;
+			}
+			else if ( *fmt == '+' )
+			{
+				spec.plus = true;
+			}
+			else if ( *fmt == ' ' )
+			{
+				spec.space = true;
+			}
+			else if ( *fmt == '0' )
+			{
+				spec.zero = true;
+			}
+			else if ( *fmt == '#' )
+			{
+				spec.alt = true;
 			}
 			else
 			{
-				unsigned char base;
-				unsigned char width;
-				unsigned int val;
+				break;
+			}
+		}
 
-				if ( c == 'd' || c == 'i' )
+		if ( fmt < fmtend && *fmt == '*' )
+		{
+			// a negative width from the argument is the '-' flag
+			++fmt;
+			int width = (listPtr < argn) ? args[listPtr++].asInt() : 0;
+			if ( width < 0 )
+			{
+				spec.left = true;
+				width = (width < -WR_FORMAT_MAX_COLUMNS) ? WR_FORMAT_MAX_COLUMNS : -width;
+			}
+			spec.width = (width > WR_FORMAT_MAX_COLUMNS) ? WR_FORMAT_MAX_COLUMNS : (unsigned int)width;
+		}
+		else
+		{
+			for( ; fmt < fmtend && *fmt >= '0' && *fmt <= '9'; ++fmt )
+			{
+				spec.width = spec.width * 10 + (*fmt - '0');
+				if ( spec.width > WR_FORMAT_MAX_COLUMNS )
 				{
-					flags |= parsingSigned;
-					goto parseDecimal;
-				}
-#ifdef WRENCH_FLOAT_SPRINTF
-				else if ( c == 'f' || c == 'g' || c == 'e' || c == 'F' || c == 'G' || c == 'E' )
-				{
-					// rebuild the specifier from the '%' through this
-					// character, leaving out length modifiers
-					char floatSpec[32];
-					char floatOut[64];
-					unsigned int specLen = 0;
-					bool specFits = true;
-					for( const char* s = specStart; s < fmt; ++s )
-					{
-						if ( *s == 'l' || *s == 'h' || *s == 'L' || *s == 'z' || *s == 'j' || *s == 't' )
-						{
-							continue;
-						}
-						if ( specLen >= sizeof(floatSpec) - 1 )
-						{
-							specFits = false;
-							break;
-						}
-						floatSpec[specLen++] = *s;
-					}
-					floatSpec[specLen] = 0;
-
-					const float floatValue = (listPtr < argn) ? args[listPtr].asFloat() : 0.f;
-					if ( listPtr < argn )
-					{
-						++listPtr;
-					}
-
-					if ( specFits )
-					{
-						// suck in whatever lib we need for this
-						int chars = snprintf( floatOut, sizeof(floatOut), floatSpec, floatValue );
-
-						// snprintf reports the length it wanted, not what fit
-						if ( chars < 0 )
-						{
-							chars = 0;
-						}
-						else if ( chars > (int)sizeof(floatOut) - 1 )
-						{
-							chars = (int)sizeof(floatOut) - 1;
-						}
-
-						for( int j=0; j<chars; ++j )
-						{
-							addChar( outbuf, floatOut[j], pos, outsize );
-						}
-					}
-					goto resetState;
-				}
-#else
-				else if ( c == 'f' || c == 'g' || c == 'e' || c == 'F' || c == 'G' || c == 'E' )
-				{
-					// without the C library float formatter the value is
-					// printed the way wrench prints any float, but it is
-					// always consumed so the specifiers after it still line
-					// up with their arguments
-					unsigned int valueLen = 0;
-					if ( listPtr < argn )
-					{
-						valueLen = (unsigned int)wr_ftoa( args[listPtr++].asFloat(), buf, c_bufSize - 1 );
-					}
-					buf[valueLen] = 0;
-					ptr = buf;
-					len = valueLen;
-
-					// the sign goes before any zero padding
-					if ( len && *ptr == '-' )
-					{
-						flags |= negativeSign;
-						++ptr;
-						--len;
-					}
-
-					goto copyToString;
-				}
-#endif
-				else if ( c == 'u' ) // decimal
-				{
-parseDecimal:
-					base  = 10;
-					width = 10;
-					goto convertBase;
-				}
-				else if ( c == 'b' ) // binary
-				{
-					base  = 2;
-					width = 32;
-					goto convertBase;
-				}
-				else if ( c == 'o' ) // octal
-				{
-					base  = 8;
-					width = 11;
-					goto convertBase;
-				}
-				else if ( c == 'x' || c == 'X' || c == 'p' ) // hexadecimal or pointer (pointer is treated as 'X')
-				{
-					base = 16;
-					width = 8;
-convertBase:
-					if ( listPtr < argn )
-					{
-						val = args[listPtr++].asInt();
-					}
-					else
-					{
-						val = 0;
-					}
-
-					if ( (flags & parsingSigned) && (val & 0x80000000) )
-					{
-						flags |= negativeSign;
-						val = 0u - val; // magnitude, also correct for INT_MIN
-					}
-
-					// Convert to given base, filling buffer backwards from least to most significant
-					char* p = buf + width;
-					*p = 0;
-					ptr = p; // keep track of one past left-most non-zero digit
-					do
-					{
-						char d = val % base;
-						val /= base;
-
-						if ( d )
-						{
-							ptr = p;
-						}
-
-						d += '0';
-						if ( d > '9' ) // handle bases higher than 10
-						{
-							d += 'A' - ('9' + 1);
-							if ( c == 'x' ) // lowercase
-							{
-								d += 'a' - 'A';
-							}
-						}
-
-						*--p = d;
-
-					} while ( p != buf );
-
-					--ptr; // was one past char we want
-					len = (buf + width) - ptr;
-					goto copyToString;
-				}
-				else // invalid format specifier
-				{
-					goto resetState;
+					spec.width = WR_FORMAT_MAX_COLUMNS;
 				}
 			}
 		}
-	}
 
-sprintf_end:
+		if ( fmt < fmtend && *fmt == '.' )
+		{
+			++fmt;
+			spec.precision = 0;
+			if ( fmt < fmtend && *fmt == '*' )
+			{
+				// a negative precision from the argument is none at all
+				++fmt;
+				const int precision = (listPtr < argn) ? args[listPtr++].asInt() : 0;
+				spec.precision = (precision < 0) ? -1 : (precision > WR_FORMAT_MAX_COLUMNS) ? WR_FORMAT_MAX_COLUMNS : precision;
+			}
+			else
+			{
+				for( ; fmt < fmtend && *fmt >= '0' && *fmt <= '9'; ++fmt )
+				{
+					spec.precision = spec.precision * 10 + (*fmt - '0');
+					if ( spec.precision > WR_FORMAT_MAX_COLUMNS )
+					{
+						spec.precision = WR_FORMAT_MAX_COLUMNS;
+					}
+				}
+			}
+		}
+
+		// length modifiers are accepted and ignored, every integer is 32 bits
+		while( fmt < fmtend && (*fmt == 'l' || *fmt == 'h' || *fmt == 'L' || *fmt == 'z' || *fmt == 'j' || *fmt == 't' || *fmt == 'q') )
+		{
+			++fmt;
+		}
+
+		if ( fmt >= fmtend )
+		{
+			break; // the format ends inside the specifier
+		}
+
+		spec.conversion = *fmt++;
+
+		switch( spec.conversion )
+		{
+			case '%':
+			{
+				addChar( outbuf, '%', pos, outsize );
+				break;
+			}
+
+			case 'c':
+			{
+				if ( listPtr < argn )
+				{
+					const char ch = (char)args[listPtr++].asInt();
+					wr_formatText( outbuf, pos, outsize, spec, &ch, 1 );
+				}
+				break;
+			}
+
+			case 's':
+			{
+				// large enough for any single value formatted as text
+				char buf[34];
+				const char* text = buf;
+				unsigned int len = 0;
+				if ( listPtr < argn )
+				{
+					text = (const char*)args[listPtr].array( &len );
+					if ( !text )
+					{
+						// not a string, format the value as text instead
+						args[listPtr].asString( buf, sizeof(buf), &len );
+						text = buf;
+					}
+					++listPtr;
+				}
+				wr_formatText( outbuf, pos, outsize, spec, text, len );
+				break;
+			}
+
+			case 'd':
+			case 'i':
+			case 'u':
+			case 'x':
+			case 'X':
+			case 'o':
+			case 'b':
+			case 'p':
+			{
+				const uint32_t val = (listPtr < argn) ? (uint32_t)args[listPtr++].asInt() : 0;
+				wr_formatInt( outbuf, pos, outsize, spec, val );
+				break;
+			}
+
+			case 'f':
+			case 'F':
+			case 'e':
+			case 'E':
+			case 'g':
+			case 'G':
+			{
+				// always consumed, so the specifiers after it line up with
+				// their arguments
+				const float val = (listPtr < argn) ? args[listPtr++].asFloat() : 0.f;
+				wr_formatFloat( outbuf, pos, outsize, spec, val );
+				break;
+			}
+
+			default:
+			{
+				break; // not a conversion, print nothing for it
+			}
+		}
+	}
 
 	return pos;
 }
@@ -566,8 +907,9 @@ void wr_mid( WRValue* stackTop, const int argn, WRContext* c )
 	WRValue* args = stackTop - argn;
 	unsigned int len;
 	const char* data = (char *)(args[0].array(&len));
-	
-	if( !data || len <= 0 )
+
+	// an empty string gives an empty string, like left/right/trim
+	if( !data )
 	{
 		return;
 	}
@@ -1073,6 +1415,7 @@ void wr_loadStringLib( WRState* w )
 	wr_registerLibraryFunction( w, "str::isspace", wr_isspace );
 	wr_registerLibraryFunction( w, "str::isdigit", wr_isdigit );
 	wr_registerLibraryFunction( w, "str::isalpha", wr_isalpha );
+	wr_registerLibraryFunction( w, "str::isalnum", wr_isalnum );
 	wr_registerLibraryFunction( w, "str::mid", wr_mid );
 	wr_registerLibraryFunction( w, "str::chr", wr_strchr );
 	wr_registerLibraryFunction( w, "str::tolower", wr_tolower );

@@ -66,6 +66,40 @@ bool wr_readTextFile( const std::string& path, std::string& out );
 // no entry in c_errStrings
 std::string wr_debugErrorText( uint8_t error );
 
+// what firmware does for a debugger that launches, restarts and uploads
+// (WrenchDebugServer::setLaunchable()): program 0 is a context it makes,
+// runs and swaps for what the debugger sends
+class WrenchHostProgram
+{
+public:
+	WrenchHostProgram( WRState* w, WrenchDebugServer& server ) : m_w( w ), m_server( server ) {}
+	~WrenchHostProgram() { unload(); }
+
+	// make program 0 of a copy of the bytecode and attach it, without
+	// running it
+	bool load( const uint8_t* bytes, int size, const std::string& name = std::string() );
+	void unload();
+
+	// carry out what tick() returned; true when the program ran
+	bool handle( int tickFlags );
+
+	// run its global code (again) to the end, servicing the link while it
+	// yields; the result of wr_executeContext()
+	WRValue* run();
+
+	WRContext* context() const { return m_context; }
+
+private:
+	bool attach( WRContext* context );
+
+	WRState* m_w;
+	WrenchDebugServer& m_server;
+	WRContext* m_context = nullptr;
+	std::string m_name;
+	bool m_ran = false;
+	int m_pending = 0; // tick() flags that came while run() serviced the link
+};
+
 // runs a WrenchDebugServer on its own thread over an in-process pipe, so
 // local debugging uses exactly the same protocol as a remote target
 class WrenchLocalTarget
@@ -77,7 +111,9 @@ public:
 	// project: the host application to imitate (its libraries and natives),
 	// null for a plain wrench host
 	bool start( int stackSize = 0, const WrenchProject* project = nullptr );
-	void stop();
+	// waits up to waitMs for running code to notice, code without debug
+	// information never does: its thread is then left to the end of the process
+	void stop( int waitMs = 2000 );
 
 	WrenchDebugTransport* clientTransport() { return m_shared->pipe.client(); }
 
@@ -102,7 +138,7 @@ private:
 
 // a parsed transport description:
 // local
-// tcp:<host>:<port> (client) or tcp:<port> (server side)
+// tcp:<host>:<port>, tcp:<port> for 127.0.0.1 (a server listens there)
 // serial:<port>[:<baud>]
 struct WrenchTransportSpec
 {
@@ -130,7 +166,7 @@ public:
 	~WrenchClientLink();
 
 	bool open( const WrenchTransportSpec& spec, std::string& error, int connectTimeoutMs = 5000, const WrenchProject* project = nullptr );
-	void close();
+	void close( int localWaitMs = 2000 ); // see WrenchLocalTarget::stop()
 
 	WrenchDebugTransport* transport() { return m_transport; }
 	bool isLocal() const { return m_local != nullptr; }

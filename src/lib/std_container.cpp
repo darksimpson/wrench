@@ -392,6 +392,12 @@ void wr_hashAdd( WRValue* stackTop, const int argn, WRContext* c )
 	uint32_t hash = args[2].getHash(); // key
 	int element;
 	WRValue* entry = (WRValue*)( H->va->get(hash, &element) );
+	if ( entry == wr_fullHashTableSink() )
+	{
+		// no room for another key: fail like an assignment does
+		c->w->err = WR_ERR_hash_table_size_exceeded;
+		return;
+	}
 
 	*entry = args[1].deref();
 	*(entry + 1) = args[2].deref();

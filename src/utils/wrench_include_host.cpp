@@ -99,6 +99,50 @@ void WrenchIncludeResolver::setMain( const std::string& path )
 {
 	std::string name = normalize( path );
 	m_seen[identity(name)] = name;
+	m_mainName = name;
+	m_mainDir.clear();
+	try
+	{
+		std::error_code ec;
+		m_mainDir = std::filesystem::absolute( std::filesystem::u8path(name), ec ).lexically_normal().parent_path().generic_u8string();
+	}
+	catch ( const std::exception& )
+	{
+	}
+}
+
+std::string WrenchIncludeResolver::locate( const std::string& name, const std::string& mainPath, const std::vector<std::string>& searchPaths )
+{
+	try
+	{
+		std::error_code ec;
+		std::filesystem::path p = std::filesystem::u8path( name );
+		if ( p.is_absolute() )
+		{
+			return std::filesystem::is_regular_file( p, ec ) ? name : std::string();
+		}
+		std::vector<std::filesystem::path> dirs;
+		if ( !mainPath.empty() )
+		{
+			dirs.push_back( std::filesystem::absolute(std::filesystem::u8path(mainPath), ec).parent_path() );
+		}
+		for ( const std::string& dir : searchPaths )
+		{
+			dirs.push_back( std::filesystem::u8path(dir) );
+		}
+		for ( const std::filesystem::path& dir : dirs )
+		{
+			std::filesystem::path candidate = (dir / p).lexically_normal();
+			if ( std::filesystem::is_regular_file(candidate, ec) )
+			{
+				return candidate.generic_u8string();
+			}
+		}
+	}
+	catch ( const std::exception& )
+	{
+	}
+	return std::string();
 }
 
 bool WrenchIncludeResolver::resolve( const std::string& name, const std::string& includer, std::string& text, std::string& resolved )
@@ -113,7 +157,13 @@ bool WrenchIncludeResolver::resolve( const std::string& name, const std::string&
 		}
 		else
 		{
-			std::filesystem::path from = includer.empty() ? std::filesystem::path() : std::filesystem::u8path( includer ).parent_path();
+			// an included file's name is relative to the main file's folder
+			std::filesystem::path from = includer.empty() ? std::filesystem::path() : std::filesystem::u8path( includer );
+			if ( !includer.empty() && !from.is_absolute() && normalize(includer) != m_mainName && !m_mainDir.empty() )
+			{
+				from = std::filesystem::u8path( m_mainDir ) / from;
+			}
+			from = from.parent_path();
 			candidates.push_back( (from / p).generic_u8string() );
 			for ( const std::string& dir : searchPaths )
 			{
@@ -144,13 +194,48 @@ bool WrenchIncludeResolver::resolve( const std::string& name, const std::string&
 		}
 		else
 		{
-			m_seen[id] = path;
-			resolved = path;
+			// named relative to the main file's folder where a relative
+			// path leads there (not across drives), else by its absolute
+			// path. A relative name that is how the main file was named
+			// would read as the main file, it is absolute too
+			std::string named = path;
+			if ( !m_mainDir.empty() )
+			{
+				std::error_code ec;
+				std::filesystem::path full = std::filesystem::absolute( std::filesystem::u8path(path), ec ).lexically_normal();
+				std::filesystem::path relative = full.lexically_relative( std::filesystem::u8path(m_mainDir) );
+				if ( !full.empty() )
+				{
+					named = full.generic_u8string();
+				}
+				if ( !relative.empty() && relative.generic_u8string() != m_mainName )
+				{
+					named = relative.generic_u8string();
+				}
+			}
+			m_seen[id] = named;
+			m_paths[named] = path;
+			resolved = named;
 			filesRead.push_back( path );
 		}
 		return true;
 	}
 	return false;
+}
+
+void WrenchIncludeResolver::localize( std::string& message, std::string& file ) const
+{
+	auto found = m_paths.find( file );
+	if ( found == m_paths.end() || found->second == file )
+	{
+		return;
+	}
+	std::string named = file + ":";
+	if ( message.compare(0, named.size(), named) == 0 )
+	{
+		message = found->second + message.substr( file.size() );
+	}
+	file = found->second;
 }
 
 bool WrenchIncludeResolver::callback( const char* name, const char* includer, WRstr& source, WRstr& resolved, void* usr )
@@ -193,13 +278,19 @@ WRError wr_compileWithIncludes( const std::string& path, const std::string& text
 		out.assign( bytes, bytes + len );
 	}
 	g_free( bytes );
+	std::string said = msg.c_str();
+	std::string in = where.c_str();
+	if ( err && includes )
+	{
+		includes->localize( said, in );
+	}
 	if ( message )
 	{
-		*message = msg.c_str();
+		*message = said;
 	}
 	if ( file )
 	{
-		*file = where.c_str();
+		*file = in;
 	}
 	return err;
 }

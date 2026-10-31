@@ -47,8 +47,8 @@ enum WRContextFlags
 	WRC_ForceYielded = 1<<1, // the last yield was forced by a time slice
 	WRC_Import = 1<<2, // created by wr_import(), runs on its parent's stack
 	WRC_InNative = 1<<3, // a native callback of this context is running, calls back into it cannot yield
-	WRC_IndexConverts = 1<<4, // image from an older compiler: any element or member access turns a non-container into a container
-	WRC_IndexCreates = 1<<5, // set around O_IndexCreate: this element access may turn its value into a container
+	WRC_IndexConverts = 1<<4, // image from an older compiler: any element or member access creates (a container, a key, room in an array)
+	WRC_IndexCreates = 1<<5, // set around O_IndexCreate and O_StackIndexHashCreate: this access is assigned to and may create
 };
 
 //------------------------------------------------------------------------------
@@ -109,7 +109,11 @@ extern WRTargetFunc wr_ANDBinary[16];
 extern WRTargetFunc wr_ORBinary[16];
 extern WRTargetFunc wr_XORBinary[16];
 
-void wr_doIndexHash( WRValue* index, WRValue* value, WRValue* target );
+void wr_doIndexHash( WRContext* c, WRValue* index, WRValue* value, WRValue* target );
+
+// what WRGCObject::get() hands out for a key a hash table has no room for
+// (it is as large as it gets and full): writes to it are lost
+WRValue* wr_fullHashTableSink();
 typedef void (*WRStateFunc)( WRContext* c, WRValue* to, WRValue* from, WRValue* target );
 extern WRStateFunc wr_index[16];
 extern WRStateFunc wr_assignAsHash[4];
@@ -147,6 +151,9 @@ uint32_t wr_hashStr_read8( const char* dat );
 WRValue* wr_newObjectTable( WRContext* context, WRValue* stackTop, const uint8_t* pc, const unsigned char* tableIn );
 
 bool wr_concatStringCheck( WRValue* to, WRValue* from, WRValue* target );
+bool wr_concatStringToElement( WRValue* to, WRValue* from );
+bool wr_stringOrder( const WRValue* a, const WRValue* b, int* order );
+bool wr_holdsNumber( const WRValue* value );
 void wr_valueToEx( const WRValue* ex, WRValue* value );
 
 #define WR_FLOATS_EQUAL(f1,f2) (fabsf((f1) - (f2)) <= (fabsf((f1)*.0000005f)));

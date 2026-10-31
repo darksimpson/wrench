@@ -308,11 +308,7 @@ void wr_DivideAssign_F_F( WRValue* to, WRValue* from )
 	}
 	else
 	{
-#ifdef WRENCH_TRAP_DIVISION_BY_ZERO
-		to->p2 = INIT_AS_INVALID;
-#else
-		to->i = 0;
-#endif
+		to->i = 0; // with WRENCH_TRAP_DIVISION_BY_ZERO the VM stops before
 	}
 
 }
@@ -324,11 +320,7 @@ void wr_DivideAssign_I_I( WRValue* to, WRValue* from )
 	}
 	else
 	{
-#ifdef WRENCH_TRAP_DIVISION_BY_ZERO
-		to->p2 = INIT_AS_INVALID;
-#else
-		to->i = 0;
-#endif
+		to->i = 0; // with WRENCH_TRAP_DIVISION_BY_ZERO the VM stops before
 	}
 }
 void wr_DivideAssign_I_F( WRValue* to, WRValue* from )
@@ -340,11 +332,7 @@ void wr_DivideAssign_I_F( WRValue* to, WRValue* from )
 	}
 	else
 	{
-#ifdef WRENCH_TRAP_DIVISION_BY_ZERO
-		to->p2 = INIT_AS_INVALID;
-#else
-		to->i = 0;
-#endif
+		to->i = 0; // with WRENCH_TRAP_DIVISION_BY_ZERO the VM stops before
 	}
 }
 void wr_DivideAssign_F_I( WRValue* to, WRValue* from )
@@ -355,11 +343,7 @@ void wr_DivideAssign_F_I( WRValue* to, WRValue* from )
 	}
 	else
 	{
-#ifdef WRENCH_TRAP_DIVISION_BY_ZERO
-		to->p2 = INIT_AS_INVALID;
-#else
-		to->i = 0;
-#endif
+		to->i = 0; // with WRENCH_TRAP_DIVISION_BY_ZERO the VM stops before
 	}
 }
 
@@ -374,7 +358,7 @@ WRVoidFunc wr_DivideAssign[16] =
 
 void wr_AddAssign_E_I( WRValue* to, WRValue* from )
 {
-	if ( !wr_concatStringCheck( to, from, to) )
+	if ( !wr_concatStringToElement(to, from) && !wr_concatStringCheck( to, from, to) )
 	{
 		WRValue& V = to->singleValue();
 	
@@ -387,7 +371,7 @@ void wr_AddAssign_E_I( WRValue* to, WRValue* from )
 
 void wr_AddAssign_E_F( WRValue* to, WRValue* from )
 {
-	if ( !wr_concatStringCheck( to, from, to) )
+	if ( !wr_concatStringToElement(to, from) && !wr_concatStringCheck( to, from, to) )
 	{
 		WRValue& V = to->singleValue();
 
@@ -406,7 +390,7 @@ void wr_AddAssign_E_E( WRValue* to, WRValue* from )
 		wr_AddAssign[(WR_EX<<2)|V.type]( to, &V );
 		*from = to->deref();
 	}
-	else
+	else if ( !wr_concatStringToElement(to, from) )
 	{
 		wr_concatStringCheck( to, from, to );
 	}
@@ -561,11 +545,7 @@ void wr_DivideBinary_I_I( WRValue* to, WRValue* from, WRValue* target )
 	}
 	else
 	{
-#ifdef WRENCH_TRAP_DIVISION_BY_ZERO
-		target->p2 = INIT_AS_INVALID;
-#else
-		target->i = 0;
-#endif
+		target->i = 0; // with WRENCH_TRAP_DIVISION_BY_ZERO the VM stops before
 	}
 }
 void wr_DivideBinary_I_F( WRValue* to, WRValue* from, WRValue* target )
@@ -577,11 +557,7 @@ void wr_DivideBinary_I_F( WRValue* to, WRValue* from, WRValue* target )
 	}
 	else
 	{
-#ifdef WRENCH_TRAP_DIVISION_BY_ZERO
-		target->p2 = INIT_AS_INVALID;
-#else
-		target->i = 0;
-#endif
+		target->i = 0; // with WRENCH_TRAP_DIVISION_BY_ZERO the VM stops before
 	}
 }
 void wr_DivideBinary_F_I( WRValue* to, WRValue* from, WRValue* target )
@@ -593,11 +569,7 @@ void wr_DivideBinary_F_I( WRValue* to, WRValue* from, WRValue* target )
 	}
 	else
 	{
-#ifdef WRENCH_TRAP_DIVISION_BY_ZERO
-		target->p2 = INIT_AS_INVALID;
-#else
-		target->i = 0;
-#endif
+		target->i = 0; // with WRENCH_TRAP_DIVISION_BY_ZERO the VM stops before
 	}
 }
 void wr_DivideBinary_F_F( WRValue* to, WRValue* from, WRValue* target )
@@ -609,11 +581,7 @@ void wr_DivideBinary_F_F( WRValue* to, WRValue* from, WRValue* target )
 	}
 	else
 	{
-#ifdef WRENCH_TRAP_DIVISION_BY_ZERO
-		target->p2 = INIT_AS_INVALID;
-#else
-		target->i = 0;
-#endif
+		target->i = 0; // with WRENCH_TRAP_DIVISION_BY_ZERO the VM stops before
 	}
 }
 
@@ -739,9 +707,15 @@ X_INT_BINARY( wr_XOR, wr_iop_xor );
 
 
 
-#define X_COMPARE( NAME, OPERATION ) \
+// ORDERS: two strings compare by their bytes
+#define X_COMPARE( NAME, OPERATION, ORDERS ) \
 bool NAME##_E_E( WRValue* to, WRValue* from )\
 {\
+	int order;\
+	if ( ORDERS && wr_stringOrder(to, from, &order) )\
+	{\
+		return order OPERATION 0;\
+	}\
 	WRValue V1 = to->singleValue();\
 	WRValue& V2 = from->singleValue();\
 	return NAME[(V1.type<<2)|V2.type](&V1, &V2);\
@@ -785,9 +759,9 @@ WRReturnFunc NAME[16] = \
 	NAME##_E_I, NAME##_E_F, NAME##_E_R, NAME##_E_E,\
 };\
 
-X_COMPARE( wr_CompareGT, > );
-X_COMPARE( wr_LogicalAND, && );
-X_COMPARE( wr_LogicalOR, || );
+X_COMPARE( wr_CompareGT, >, true );
+X_COMPARE( wr_LogicalAND, &&, false );
+X_COMPARE( wr_LogicalOR, ||, false );
 
 
 
@@ -803,6 +777,11 @@ X_COMPARE( wr_LogicalOR, || );
 
 bool wr_CompareLT_E_E( WRValue* to, WRValue* from )
 {
+	int order;
+	if ( wr_stringOrder(to, from, &order) )
+	{
+		return order < 0;
+	}
 	WRValue V1 = to->singleValue();
 	WRValue& V2 = from->singleValue();
 	return wr_CompareLT[(V1.type<<2)|V2.type](&V1, &V2);
@@ -854,21 +833,37 @@ bool wr_CompareEQ_E_E( WRValue* to, WRValue* from )
 }
 bool wr_CompareEQ_E_I( WRValue* to, WRValue* from )
 {
+	if ( !wr_holdsNumber(to) )
+	{
+		return false;
+	}
 	WRValue& V = to->singleValue();
 	return wr_CompareEQ[(V.type<<2)|WR_INT](&V, from);
 }
 bool wr_CompareEQ_E_F( WRValue* to, WRValue* from )
 {
+	if ( !wr_holdsNumber(to) )
+	{
+		return false;
+	}
 	WRValue& V = to->singleValue();
 	return wr_CompareEQ[(V.type<<2)|WR_FLOAT](&V, from);
 }
 bool wr_CompareEQ_I_E( WRValue* to, WRValue* from )
 {
+	if ( !wr_holdsNumber(from) )
+	{
+		return false;
+	}
 	WRValue& V = from->singleValue();
 	return wr_CompareEQ[(WR_INT<<2)|V.type](to, &V);
 }
 bool wr_CompareEQ_F_E( WRValue* to, WRValue* from )
 {
+	if ( !wr_holdsNumber(from) )
+	{
+		return false;
+	}
 	WRValue& V = from->singleValue();
 	return wr_CompareEQ[(WR_FLOAT<<2)|V.type](to, &V);
 }

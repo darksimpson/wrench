@@ -91,7 +91,7 @@ enum WrenchDebugMessage
 	WRD_MsgDetach = 0x18, // - clear breakpoints and continue
 	WRD_MsgAddWatch = 0x19, // u8 root (WrenchDebugWatchRoot), u8 program (globals), u16 frame, u16 slot, u8 steps, (u8 kind, u32 value) * steps; reply u8 watch id
 	WRD_MsgRemoveWatch = 0x1A, // u8 watch id, 0 removes all
-	WRD_MsgGetPrograms = 0x1B, // -; reply u8 n, n * program (see docs/debugging.md)
+	WRD_MsgGetPrograms = 0x1B, // -; reply u8 n, n * program (see docs/book/src/debugging/protocol.md)
 
 	// replies, server to client (seq echoes the request)
 	WRD_MsgReplyOk = 0x80, // request specific payload
@@ -182,12 +182,12 @@ enum WrenchDebugFlags
 	WRD_EndedAborted = 1 << 0, // terminated by the debugger
 	WRD_EndedHostDriven = 1 << 1, // target keeps running host code after this
 
-	WRD_ProgramOwned = 1 << 0, // GetPrograms: the server made the context (program 0 after loadBytes or an upload)
+	// GetPrograms flags (1 << 0 is unused)
 	WRD_ProgramImported = 1 << 1, // a debugged program imported it
 	WRD_ProgramRan = 1 << 2, // its global code has run
 
-	WRD_CapLoad = 1 << 0, // target accepts uploaded bytecode
-	WRD_CapLaunch = 1 << 1, // target can execute the program itself
+	WRD_CapLoad = 1 << 0, // target accepts uploaded bytecode (its firmware swaps program 0 for it)
+	WRD_CapLaunch = 1 << 1, // target runs program 0 when asked to (setLaunchable)
 	WRD_CapSetValue = 1 << 2,
 	WRD_CapHostDriven = 1 << 3, // host firmware calls into the script itself
 	WRD_CapWatch = 1 << 4, // watchpoints, the hello reply ends with u8 max watches, u8 max programs

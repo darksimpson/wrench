@@ -93,6 +93,17 @@ inline bool wr_getNextValue( WRValue* iterator, WRValue* value, WRValue* key )
 }
 
 //------------------------------------------------------------------------------
+// a call by name reaches the functions of the modules in the group, never
+// the importer: a module is a program of its own that does not see the
+// script that imported it, and that script's global code (or that of a
+// module still being imported) has not reached its end, so a call into it
+// would have nowhere to return to. Such a call is WR_ERR_function_not_found
+static inline bool wr_importCallable( const WRContext* import )
+{
+	return (import->flags & (uint8_t)WRC_Import) && import->stopLocation;
+}
+
+//------------------------------------------------------------------------------
 WRValue* wr_newObjectTable( WRContext* context, WRValue* stackTop, const uint8_t* pc, const unsigned char* tableIn )
 {
 	const unsigned char* table;
@@ -257,6 +268,24 @@ static void dumpStack( const WRValue* bottom, const WRValue* top )
 #endif
 
 //------------------------------------------------------------------------------
+#ifdef WRENCH_TRAP_DIVISION_BY_ZERO
+// the divisor of a / (or /=) is an int or float 0, that of a % (or %=) is
+// a value that truncates to 0 (the remainder works on ints)
+static bool wr_zeroDivisor( const WRValue* divisor, const bool modulo )
+{
+	const WRValue& V = divisor->singleValue();
+	if ( V.type == WR_INT )
+	{
+		return V.i == 0;
+	}
+	return modulo ? !(V.f >= 1.0f || V.f <= -1.0f) : (V.f == 0.0f);
+}
+#define TRAP_ZERO_DIVISOR( DIVISOR, MODULO ) { if ( wr_zeroDivisor((DIVISOR), (MODULO)) ) { WR_VM_FAIL( WR_ERR_division_by_zero ); } }
+#else
+#define TRAP_ZERO_DIVISOR( DIVISOR, MODULO )
+#endif
+
+//------------------------------------------------------------------------------
 #ifdef WRENCH_HANDLE_MALLOC_FAIL
   WRENCH_THREAD_LOCAL bool g_mallocFailed = false;
   #define MALLOC_FAIL_CHECK {if( g_mallocFailed ) { g_mallocFailed = false; WR_VM_FAIL( WR_ERR_malloc_failed ); } }
@@ -340,8 +369,8 @@ static int orI( int a, int b ) { return a | b; }
 static int xorI( int a, int b ) { return a ^ b; }
 static int andI( int a, int b ) { return a & b; }
 
-static bool CompareGTI( int a, int b ) { return a > b; }
-static bool CompareLTI( int a, int b ) { return a < b; }
+bool CompareGTI( int a, int b ) { return a > b; }
+bool CompareLTI( int a, int b ) { return a < b; }
 static bool CompareANDI( int a, int b ) { return a && b; }
 static bool CompareORI( int a, int b ) { return a || b; }
 static bool CompareANDF( float a, float b ) { return a && b; }
@@ -387,7 +416,18 @@ WRValue* wr_continue( WRContext* context )
 		return 0;
 	}
 
+#ifdef WRENCH_INCLUDE_DEBUG_CODE
+	// global code that yielded ends here, a debugger reports the end of the run
+	bool globalCode = !context->stopLocation;
+	WRValue* ret = wr_callFunction( context, (WRFunction*)0, context->yield_argv, context->yield_argn );
+	if ( globalCode && !context->yield_pc && context->debugServer )
+	{
+		context->debugServer->onGlobalCodeEnd( context, ret );
+	}
+	return ret;
+#else
 	return wr_callFunction( context, (WRFunction*)0, context->yield_argv, context->yield_argn );
+#endif
 }
 
 //------------------------------------------------------------------------------
@@ -778,6 +818,15 @@ WRValue* wr_callFunction( WRContext* context, WRFunction* function, const WRValu
 
 	w->err = WR_ERR_None;
 
+#ifdef WRENCH_HANDLE_MALLOC_FAIL
+	// a failure was reported by the call that met it; only a call back from
+	// a native of this context keeps it, the native's own failure counts
+	if ( !(context->flags & (uint8_t)WRC_InNative) )
+	{
+		g_mallocFailed = false;
+	}
+#endif
+
 	WRValue* stackBase = context->stack + context->stackOffset;
 	WRValue* stackTop;
 #ifdef WRENCH_PROTECT_STACK_FROM_OVERFLOW
@@ -840,6 +889,14 @@ WRValue* wr_callFunction( WRContext* context, WRFunction* function, const WRValu
 		context->gc( stackTop ); // everything below stackTop is initialized
 
 		goto callFunction;
+	}
+
+	if ( context->stopLocation )
+	{
+		// the global code ran to its end already (a function the host looked
+		// up and did not find is no reason to run it again)
+		w->err = WR_ERR_execute_function_zero_called_more_than_once;
+		return 0;
 	}
 
 	pc = context->codeStart;
@@ -1006,7 +1063,7 @@ doYield:
 						while( import != context )
 						{
 							WRValue* I;
-								if ( (I = import->registry.exists(fhash, false)) )
+								if ( wr_importCallable(import) && (I = import->registry.exists(fhash, false)) )
 								{
 									// import shares our stack, tell it where to find it's args
 									uint16_t savedOffset = import->stackOffset;
@@ -1108,7 +1165,7 @@ newObjOut:
 					{
 						while( import != context )
 						{
-							if ( (register0 = import->registry.exists(fhash, false)) )
+							if ( wr_importCallable(import) && (register0 = import->registry.exists(fhash, false)) )
 							{
 								// import shares our stack, tell it where to find it's args
 								uint16_t savedOffset = import->stackOffset;
@@ -1173,6 +1230,23 @@ callFunction:
 							(stackTop++)->p2 = INIT_AS_INT;
 							CHECK_STACK;
 						}
+					}
+				}
+
+				// arguments are values: a variable or an element passed in
+				// arrives as a reference, which a change to the parameter
+				// would write through to the caller's variable
+				for( WRValue* arg = stackTop - function->arguments; arg < stackTop; ++arg )
+				{
+					if ( arg->type == WR_REF )
+					{
+						// most often a variable that holds the value itself
+						const WRValue* referred = arg->r;
+						*arg = (referred->type == WR_REF || IS_CONTAINER_MEMBER(referred->xtype)) ? referred->deref() : *referred;
+					}
+					else if ( IS_CONTAINER_MEMBER(arg->xtype) )
+					{
+						*arg = arg->deref();
 					}
 				}
 
@@ -1327,33 +1401,36 @@ callFunction:
 				register0 = --stackTop; // value
 				register1 = --stackTop; // index
 				wr_assignToHashTable( context, register1, register0, stackTop - 1 );
+				if ( w->err )
+				{
+					WR_VM_FAIL( w->err ); // the table is full
+				}
 				context->gc( stackTop );
 				CONTINUE;
 			}
 			
 			CASE(Remove):
 			{
+				// the result is the container itself (left below the key):
+				// the compiler builds "{}" by adding and removing a key, and
+				// removals chain, h._remove( a )._remove( b )
 				hash = (--stackTop)->getHash();
 				register0 = &((stackTop - 1)->deref());
 				if ( register0->xtype == WR_EX_HASH_TABLE )
 				{
 					register0->va->exists( hash, true );
 				}
-				else if ( register0->xtype == WR_EX_ARRAY )
+				else if ( register0->xtype == WR_EX_ARRAY && hash < register0->va->m_size )
 				{
 					va = register0->va;
-					if ( hash >= va->m_size )
-					{
-						FASTCONTINUE;
-					}
-					else if (va->m_type == SV_VALUE )
+					if (va->m_type == SV_VALUE )
 					{
 						for( uint32_t move = hash; (move+1) < va->m_size; ++move )
 						{
 							va->m_Vdata[move] = va->m_Vdata[move+1];
 						}
 					}
-					else if ( register0->va->m_type == SV_CHAR )
+					else if ( va->m_type == SV_CHAR )
 					{
 						for( uint32_t move = hash; (move+1) < va->m_size; ++move )
 						{
@@ -1374,7 +1451,20 @@ callFunction:
 				{
 					// decide before writing the result: for a temporary table
 					// deref() is the slot that receives it
-					bool found = (register2->xtype == WR_EX_HASH_TABLE) && register2->va->exists( register0->getHash(), false );
+					bool found;
+					if ( register2->xtype == WR_EX_HASH_TABLE )
+					{
+						found = register2->va->exists( register0->getHash(), false ) != 0;
+					}
+					else
+					{
+						// an array or a string: whether the index is in range
+						uint32_t size = (register2->xtype == WR_EX_ARRAY) ? register2->va->m_size
+										: (IS_RAW_ARRAY(register2->xtype) ? (uint32_t)EX_RAW_ARRAY_SIZE_FROM_P2(register2->p2) : 0);
+						WRValue& I = register0->deref();
+						found = (I.type == WR_INT) ? (I.ui < size)
+								: ((I.type == WR_FLOAT) && I.f > -1.0f && I.f < (float)size);
+					}
 					register1->p2 = INIT_AS_INT;
 					register1->i = found ? 1 : 0;
 				}
@@ -1451,6 +1541,11 @@ callFunction:
 				context->flags |= WRC_IndexCreates;
 				wr_index[(register0->type<<2)|register1->type]( context, register0, register1, stackTop++ );
 				context->flags &= ~WRC_IndexCreates;
+				if ( w->err )
+				{
+					// a full hash table, a member the struct does not have
+					WR_VM_FAIL( w->err );
+				}
 				CONTINUE;
 			}
 
@@ -1515,8 +1610,18 @@ callFunction:
 					register0->p2 = INIT_AS_HASH_TABLE;
 					context->gc( stackTop );
 				}
-				register1 = register0;
-				goto hashIndexJump;
+				stackTop->ui = READ_32_FROM_PC(pc);
+				pc += 4;
+				stackTop->p2 = INIT_AS_INT;
+				context->flags |= WRC_IndexCreates;
+				wr_doIndexHash( context, stackTop, register0, stackTop - 1 );
+				context->flags &= ~WRC_IndexCreates;
+				if ( w->err )
+				{
+					// a full hash table, a member the struct does not have
+					WR_VM_FAIL( w->err );
+				}
+				CONTINUE;
 			}
 
 			CASE(StackIndexHash):
@@ -1548,13 +1653,10 @@ hashIndexJump:
 					context->gc(stackTop);
 				}
 
-#ifdef WRENCH_COMPACT
-				goto indexTempLiteralPostLoad;
-#else
 				stackTop->p2 = INIT_AS_INT;
-				wr_doIndexHash( stackTop, register0, stackTop - 1);
+				wr_doIndexHash( context, stackTop, register0, stackTop - 1 );
+				CHECK_STACK;
 				CONTINUE;
-#endif
 			}
 
 			CASE(StackSwap):
@@ -2004,6 +2106,12 @@ NextIterator:
 targetFuncOpSkipLoadNoClobberF:
 				register2 = stackTop++;
 targetFuncOpSkipLoadAndReg2:
+#ifdef WRENCH_TRAP_DIVISION_BY_ZERO
+				if ( intCall == divisionI || intCall == modI )
+				{
+					TRAP_ZERO_DIVISOR( register0, intCall == modI );
+				}
+#endif
 				wr_funcBinary[(register1->type<<2)|register0->type]( register1,
 																	 register0,
 																	 register2,
@@ -2079,6 +2187,12 @@ binaryTableOpAndPop:
 				register1 = --stackTop;
 
 binaryTableOpAndPopCall:
+#ifdef WRENCH_TRAP_DIVISION_BY_ZERO
+				if ( intCall == divisionI || intCall == modI )
+				{
+					TRAP_ZERO_DIVISOR( register1, intCall == modI );
+				}
+#endif
 				wr_FuncAssign[(register0->type<<2)|register1->type]( register0, register1, intCall, floatCall );
 				CONTINUE;
 			}
@@ -2103,6 +2217,12 @@ assignAndPopEx:
 targetFuncStoreGlobalOp:
 				register0 = --stackTop;
 				register1 = --stackTop;
+#ifdef WRENCH_TRAP_DIVISION_BY_ZERO
+				if ( intCall == divisionI )
+				{
+					TRAP_ZERO_DIVISOR( register1, false );
+				}
+#endif
 				wr_funcBinary[(register0->type<<2)|register1->type]( register0, register1, globalSpace + READ_8_FROM_PC(pc++), intCall, floatCall );
 				CONTINUE;
 			}
@@ -2118,6 +2238,12 @@ targetFuncStoreGlobalOp:
 targetFuncStoreLocalOp:
 				register0 = --stackTop;
 				register1 = --stackTop;
+#ifdef WRENCH_TRAP_DIVISION_BY_ZERO
+				if ( intCall == divisionI )
+				{
+					TRAP_ZERO_DIVISOR( register1, false );
+				}
+#endif
 				wr_funcBinary[(register0->type<<2)|register1->type]( register0, register1, frameBase + READ_8_FROM_PC(pc++), intCall, floatCall );
 				CONTINUE;
 			}
@@ -2866,15 +2992,8 @@ compactCompareGG8:
 			{
 				register1 = globalSpace + READ_8_FROM_PC(pc++);
 				register0 = globalSpace + READ_8_FROM_PC(pc++);
-#ifdef WRENCH_TRAP_DIVISION_BY_ZERO
-				wr_DivideBinary[(register0->type<<2)|register1->type]( register0, register1, stackTop );
-				if ( IS_INVALID(stackTop++->p2) )
-				{
-					WR_VM_FAIL( WR_ERR_division_by_zero );
-				}
-#else
+				TRAP_ZERO_DIVISOR( register1, false );
 				wr_DivideBinary[(register0->type<<2)|register1->type]( register0, register1, stackTop++ );
-#endif
 				CHECK_STACK;
 				FASTCONTINUE;
 			}
@@ -2883,15 +3002,8 @@ compactCompareGG8:
 			{
 				register1 = frameBase + READ_8_FROM_PC(pc++);
 				register0 = globalSpace + READ_8_FROM_PC(pc++);
-#ifdef WRENCH_TRAP_DIVISION_BY_ZERO
-				wr_DivideBinary[(register0->type<<2)|register1->type]( register0, register1, stackTop );
-				if ( IS_INVALID(stackTop++->p2) )
-				{
-					WR_VM_FAIL( WR_ERR_division_by_zero );
-				}
-#else
+				TRAP_ZERO_DIVISOR( register1, false );
 				wr_DivideBinary[(register0->type<<2)|register1->type]( register0, register1, stackTop++ );
-#endif
 				CHECK_STACK;
 				FASTCONTINUE;
 			}
@@ -2900,15 +3012,8 @@ compactCompareGG8:
 			{
 				register1 = globalSpace + READ_8_FROM_PC(pc++);
 				register0 = frameBase + READ_8_FROM_PC(pc++);
-#ifdef WRENCH_TRAP_DIVISION_BY_ZERO
-				wr_DivideBinary[(register0->type<<2)|register1->type]( register0, register1, stackTop );
-				if ( IS_INVALID(stackTop++->p2) )
-				{
-					WR_VM_FAIL( WR_ERR_division_by_zero );
-				}
-#else
+				TRAP_ZERO_DIVISOR( register1, false );
 				wr_DivideBinary[(register0->type<<2)|register1->type]( register0, register1, stackTop++ );
-#endif
 				CHECK_STACK;
 				FASTCONTINUE;
 			}
@@ -2917,15 +3022,8 @@ compactCompareGG8:
 			{
 				register1 = frameBase + READ_8_FROM_PC(pc++);
 				register0 = frameBase + READ_8_FROM_PC(pc++);
-#ifdef WRENCH_TRAP_DIVISION_BY_ZERO
-				wr_DivideBinary[(register0->type<<2)|register1->type]( register0, register1, stackTop );
-				if ( IS_INVALID(stackTop++->p2) )
-				{
-					WR_VM_FAIL( WR_ERR_division_by_zero );
-				}
-#else
+				TRAP_ZERO_DIVISOR( register1, false );
 				wr_DivideBinary[(register0->type<<2)|register1->type]( register0, register1, stackTop++ );
-#endif
 				CHECK_STACK;
 				FASTCONTINUE;
 			}
@@ -3303,6 +3401,7 @@ CompareGG8:
 			CASE(BinaryXORSkipLoad): { targetFunc = wr_XORBinary; goto targetFuncOpSkipLoad; }
 			CASE(BinaryModSkipLoad):
 			{
+				TRAP_ZERO_DIVISOR( register0, true );
 				targetFunc = wr_ModBinary;
 targetFuncOpSkipLoad:
 				targetFunc[(register1->type<<2)|register0->type]( register1, register0, stackTop++ );
@@ -3312,10 +3411,11 @@ targetFuncOpSkipLoad:
 			
 			CASE(BinaryMultiplication): { targetFunc = wr_MultiplyBinary; goto targetFuncOp; }
 			CASE(BinarySubtraction): { targetFunc = wr_SubtractBinary; goto targetFuncOp; }
-			CASE(BinaryDivision): { targetFunc = wr_DivideBinary; goto targetFuncOp; }
+			// the divisor of the operations below is the value under the top
+			CASE(BinaryDivision): { TRAP_ZERO_DIVISOR( stackTop - 2, false ); targetFunc = wr_DivideBinary; goto targetFuncOp; }
 			CASE(BinaryRightShift): { targetFunc = wr_RightShiftBinary; goto targetFuncOp; }
 			CASE(BinaryLeftShift): { targetFunc = wr_LeftShiftBinary; goto targetFuncOp; }
-			CASE(BinaryMod): { targetFunc = wr_ModBinary; goto targetFuncOp; }
+			CASE(BinaryMod): { TRAP_ZERO_DIVISOR( stackTop - 2, true ); targetFunc = wr_ModBinary; goto targetFuncOp; }
 			CASE(BinaryOr): { targetFunc = wr_ORBinary; goto targetFuncOp; }
 			CASE(BinaryXOR): { targetFunc = wr_XORBinary; goto targetFuncOp; }
 			CASE(BinaryAnd): { targetFunc = wr_ANDBinary; goto targetFuncOp; }
@@ -3326,20 +3426,14 @@ targetFuncOp:
 				register1 = --stackTop;
 				register0 = stackTop - 1;
 				targetFunc[(register1->type<<2)|register0->type]( register1, register0, register0 );
-#ifdef WRENCH_TRAP_DIVISION_BY_ZERO
-				if ( IS_INVALID(register0->p2) )
-				{
-					WR_VM_FAIL( WR_ERR_division_by_zero );
-				}
-#endif
 				CONTINUE;
 			}
-			
+
 			CASE(SubtractAssign): { voidFunc = wr_SubtractAssign; goto binaryTableOp; }
 			CASE(AddAssign): { voidFunc = wr_AddAssign; goto binaryTableOp; }
-			CASE(ModAssign): { voidFunc = wr_ModAssign; goto binaryTableOp; }
+			CASE(ModAssign): { TRAP_ZERO_DIVISOR( stackTop - 2, true ); voidFunc = wr_ModAssign; goto binaryTableOp; }
 			CASE(MultiplyAssign): { voidFunc = wr_MultiplyAssign; goto binaryTableOp; }
-			CASE(DivideAssign): { voidFunc = wr_DivideAssign; goto binaryTableOp; }
+			CASE(DivideAssign): { TRAP_ZERO_DIVISOR( stackTop - 2, false ); voidFunc = wr_DivideAssign; goto binaryTableOp; }
 			CASE(ORAssign): { voidFunc = wr_ORAssign; goto binaryTableOp; }
 			CASE(ANDAssign): { voidFunc = wr_ANDAssign; goto binaryTableOp; }
 			CASE(XORAssign): { voidFunc = wr_XORAssign; goto binaryTableOp; }
@@ -3352,20 +3446,14 @@ binaryTableOp:
 				register0 = --stackTop;
 				register1 = stackTop - 1;
 				voidFunc[(register0->type<<2)|register1->type]( register0, register1 );
-#ifdef WRENCH_TRAP_DIVISION_BY_ZERO
-				if ( IS_INVALID(register0->p2) )
-				{
-					WR_VM_FAIL( WR_ERR_division_by_zero );
-				}
-#endif
 				CONTINUE;
 			}
-			
+
 			CASE(SubtractAssignAndPop): { voidFunc = wr_SubtractAssign; goto binaryTableOpAndPop; }
 			CASE(AddAssignAndPop): { voidFunc = wr_AddAssign; goto binaryTableOpAndPop; }
-			CASE(ModAssignAndPop): { voidFunc = wr_ModAssign; goto binaryTableOpAndPop; }
+			CASE(ModAssignAndPop): { TRAP_ZERO_DIVISOR( stackTop - 2, true ); voidFunc = wr_ModAssign; goto binaryTableOpAndPop; }
 			CASE(MultiplyAssignAndPop): { voidFunc = wr_MultiplyAssign; goto binaryTableOpAndPop; }
-			CASE(DivideAssignAndPop): { voidFunc = wr_DivideAssign; goto binaryTableOpAndPop; }
+			CASE(DivideAssignAndPop): { TRAP_ZERO_DIVISOR( stackTop - 2, false ); voidFunc = wr_DivideAssign; goto binaryTableOpAndPop; }
 			CASE(ORAssignAndPop): { voidFunc = wr_ORAssign; goto binaryTableOpAndPop; }
 			CASE(ANDAssignAndPop): { voidFunc = wr_ANDAssign; goto binaryTableOpAndPop; }
 			CASE(XORAssignAndPop): { voidFunc = wr_XORAssign; goto binaryTableOpAndPop; }
@@ -3379,35 +3467,21 @@ binaryTableOpAndPop:
 				register0 = --stackTop;
 				register1 = --stackTop;
 				voidFunc[(register0->type<<2)|register1->type]( register0, register1 );
-#ifdef WRENCH_TRAP_DIVISION_BY_ZERO
-				if ( IS_INVALID(register0->p2) )
-				{
-					WR_VM_FAIL( WR_ERR_division_by_zero );
-				}
-#endif
 				CONTINUE;
 			}
-			
+
 			CASE(BinaryAdditionAndStoreGlobal) : { targetFunc = wr_AdditionBinary; goto targetFuncStoreGlobalOp; }
 			CASE(BinarySubtractionAndStoreGlobal): { targetFunc = wr_SubtractBinary; goto targetFuncStoreGlobalOp; }
 			CASE(BinaryMultiplicationAndStoreGlobal): { targetFunc = wr_MultiplyBinary; goto targetFuncStoreGlobalOp; }
 			CASE(BinaryDivisionAndStoreGlobal):
 			{
+				TRAP_ZERO_DIVISOR( stackTop - 2, false );
 				targetFunc = wr_DivideBinary;
-				
+
 targetFuncStoreGlobalOp:
 				register1 = --stackTop;
 				register0 = --stackTop;
-#ifdef WRENCH_TRAP_DIVISION_BY_ZERO
-				WRValue* T = globalSpace + READ_8_FROM_PC(pc++);
-				targetFunc[(register1->type<<2)|register0->type]( register1, register0, T );
-				if ( IS_INVALID(T->p2) )
-				{
-					WR_VM_FAIL( WR_ERR_division_by_zero );
-				}
-#else
 				targetFunc[(register1->type<<2)|register0->type]( register1, register0, globalSpace + READ_8_FROM_PC(pc++) );
-#endif
 				CONTINUE;
 			}
 			
@@ -3416,21 +3490,13 @@ targetFuncStoreGlobalOp:
 			CASE(BinaryMultiplicationAndStoreLocal): { targetFunc = wr_MultiplyBinary; goto targetFuncStoreLocalOp; }
 			CASE(BinaryDivisionAndStoreLocal):
 			{
+				TRAP_ZERO_DIVISOR( stackTop - 2, false );
 				targetFunc = wr_DivideBinary;
-				
+
 targetFuncStoreLocalOp:
 				register1 = --stackTop;
 				register0 = --stackTop;
-#ifdef WRENCH_TRAP_DIVISION_BY_ZERO
-				WRValue* T = frameBase + READ_8_FROM_PC(pc++);
-				targetFunc[(register1->type<<2)|register0->type]( register1, register0, T );
-				if ( IS_INVALID(T->p2) )
-				{
-					WR_VM_FAIL( WR_ERR_division_by_zero );
-				}
-#else
 				targetFunc[(register1->type<<2)|register0->type]( register1, register0, frameBase + READ_8_FROM_PC(pc++) );
-#endif
 				CONTINUE;
 			}
 
