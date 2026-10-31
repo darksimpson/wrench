@@ -4449,8 +4449,9 @@ void testHostSeededGlobalValue( WRState* w )
 	path.format( "%s/024_numbers.w", g_testDir.c_str() );
 	if ( !code.fileToBuffer(path) )
 	{
-		printf( "test [-][host seeded global]: cannot read [%s]\n", path.c_str() );
-		assert(0);
+		// another test folder (wrench t <dir>) may not have it; an assert
+		// would stop a debug build in a dialog
+		printf( "test [-][host seeded global]: FAIL, cannot read [%s]\n", path.c_str() );
 		return;
 	}
 
