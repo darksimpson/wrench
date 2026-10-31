@@ -10,7 +10,7 @@ beside it.
 | `shapes.w` | included from next to `main.w`: `struct Box`, `boxArea()` |
 | `lib/stats.w` | included through `"include": [ "lib" ]` in `wrench.json`; its globals are `private` |
 | `sensor.w` | a second program for `wrench dbgserver -context`: the server calls its `tick()` ten times a second |
-| `wrench.json` | the host the scripts run in: all libraries, `println`, the include folder |
+| `wrench.json` | the host the scripts run in: all libraries, `println`, the include folder, and `label()` of the module in the long form (parameters, a description, the value a stand-in answers) |
 | `.vscode/` | the two launch configurations and the task that starts the debug server |
 
 ## Before you start
@@ -41,11 +41,19 @@ In Run and Debug pick **Demo 1: main.w in a local VM** and press F5.
 4. Right-click `sum@stats.w`, **Break on Value Change**, remove the line
    breakpoints and continue: it stops wherever `sum` changes.
 5. Remove that one too (Breakpoints view), set a breakpoint on line 23 of
-   `main.w`, continue and Step Into. `label()` opens as the read-only
-   document "import 1 (embedded source)", which takes breakpoints like a
-   file. The Modules view (`...` menu of Run and Debug) lists `main.w` and
-   `import 1`.
-6. Continue: the Debug Console shows `total = 68 cm2` and `average = 22`.
+   `main.w`, continue and Step Into. `label()` opens from a read-only
+   copy, `module.w` in a folder named by the module's hash under
+   `wrench-sources` in the temp folder ("import 1 (embedded source)" in the
+   call stack). It takes breakpoints like a file, and they stay: in the
+   next session they are in place before `main.w` imports the module. The
+   Modules view (`...` menu of Run and Debug) lists `main.w` and
+   `import 1`. The editor knows `label()` only from `wrench.json`: hover
+   over a call to it in `main.w` for its description.
+6. Step Out: back on line 23, where the call returned. Step Into twice:
+   line 24, then `statsAverage()`, which runs first because it is an
+   argument of `label()`. Step Out comes back to line 24, and the next Step
+   Into goes on into `label()`.
+7. Continue: the Debug Console shows `total = 68 cm2` and `average = 22`.
 
 ## Demo 2: two programs on one target
 

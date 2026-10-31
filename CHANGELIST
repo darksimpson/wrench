@@ -38,6 +38,7 @@
   imported, so they hit from its first call
 - debug protocol: SetBreakpoints with program 0xFF and a program hash parks breakpoints for
   a program that is not there yet, they are set when it is added (capability bit 0x20)
+- examples/debug_demo: wrench.json declares label() of the run-time module in the long form
 
 Found while writing the book (docs/book, the user documentation, new in this version):
 - behaviour change: parameters are values, changing one (++, +=, assigning another

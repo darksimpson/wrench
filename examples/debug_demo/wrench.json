@@ -1,5 +1,13 @@
 {
 	"libraries": [ "all" ],
-	"functions": [ "println( values... )" ],
+	"functions": [
+		"println( values... )",
+		{
+			"name": "label",
+			"params": [ "name", "value" ],
+			"doc": "Joins a name and a value into \"name = value\". Defined by the module main.w compiles at run time (sys::importCompile), which the editor cannot see.",
+			"returns": "(label without its module)"
+		}
+	],
 	"include": [ "lib" ]
 }
