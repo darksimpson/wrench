@@ -7,7 +7,7 @@ Everything is powered by the `wrench` executable (`wrench lsp` and `wrench dap`)
 ## Editing
 
 - Syntax highlighting for `.w` and `.wrench` files
-- Errors from the wrench compiler as you type (strict `var` mode by default, see `wrench.nonStrict`)
+- Errors from the wrench compiler as you type (`wrench.nonStrict` checks older scripts in non-strict mode)
 - Hover documentation for your functions, variables and the standard library
 - Completion: locals, `::globals`, functions, structs, enums, `math::` / `str::` / ... library members, `._count` style members; after `p.` the members of p's struct when p is only ever given `new S`
 - Signature help, go to definition, find references, highlights, rename, outline and folding
@@ -60,7 +60,7 @@ Scripts must be compiled with debug information to be debuggable. The debugger d
 ## Settings
 
 - `wrench.executablePath`: path to `wrench` / `wrench.exe`. Empty uses the copy bundled in the extension, if the `.vsix` was built with one (a 32-bit Windows build that also runs on 64-bit Windows, and a Linux x86-64 build), then the PATH. Set it on other platforms, for example Linux on ARM or macOS, after building wrench there.
-- `wrench.nonStrict`: allow variables without `var` when checking, compiling and showing the disassembly.
+- `wrench.nonStrict`: non-strict mode for older scripts (`-nostrict`: an assignment declares an unknown variable, no block scope, a second `var` assigns) when checking, compiling and showing the disassembly.
 - `wrench.compileDebugInfo`: embed debug info and source when compiling to bytecode (default on).
 - `wrench.trace.server`: trace the communication with the language server in the "Wrench Language Server" output channel: `off` (default), `messages` or `verbose`.
 

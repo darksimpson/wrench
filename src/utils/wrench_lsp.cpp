@@ -354,9 +354,9 @@ struct Symbol
 	bool isPrivate = false; // private var / private function: its file's own
 	std::string type; // a variable only ever given new <type>: that struct
 	bool untyped = false; // given something else too, or a parameter
-	// strict mode scopes names by block: a variable of a block that ended is
-	// out of view after visibleEnd (unscoped: to the end of its function, or
-	// of the program for a global)
+	// names are scoped by block (not in non-strict mode): a variable of a
+	// block that ended is out of view after visibleEnd (unscoped: to the end
+	// of its function, or of the program for a global)
 	bool scoped = false;
 	Position visibleEnd;
 };
@@ -1042,7 +1042,7 @@ void Document::index( bool blockScope )
 		}
 	}
 
-	// implicit globals: first assignment at the top level (non strict code)
+	// implicit globals: first assignment at the top level (non-strict mode)
 	int depth = 0;
 	for ( size_t k = 0; k < code.size(); ++k )
 	{
@@ -3045,7 +3045,7 @@ void LspServer::dispatch( const Json& msg )
 			bool nonStrict = settings["nonStrict"].asBool( m_nonStrict );
 			if ( nonStrict != m_nonStrict )
 			{
-				// block scope is strict mode only: index everything again
+				// non-strict mode has no block scope: index everything again
 				m_nonStrict = nonStrict;
 				m_included.clear();
 				for ( auto& d : m_docs )

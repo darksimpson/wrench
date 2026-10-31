@@ -102,7 +102,7 @@
 				"wrench.nonStrict": {
 					"type": "boolean",
 					"default": false,
-					"description": "Allow variables without 'var' (compile with -nostrict) when checking, compiling and disassembling files."
+					"description": "Non-strict mode for older scripts (compile with -nostrict: an assignment declares an unknown variable, no block scope, a second 'var' assigns) when checking, compiling and disassembling files."
 				},
 				"wrench.compileDebugInfo": {
 					"type": "boolean",

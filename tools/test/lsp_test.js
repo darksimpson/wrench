@@ -363,7 +363,7 @@ async function testAuditFixes(lsp) {
 	assert(/global/.test(hover.contents.value));
 }
 
-// strict mode scopes names by block: two loops in a row have an i each, a
+// names are scoped by block: two loops in a row have an i each, a
 // name of a block that ended is not offered, var ::g belongs to the program
 async function testBlockScope(lsp) {
 	const docUri = 'file:///c%3A/work/blocks.w';
@@ -504,7 +504,7 @@ async function testBlockScope(lsp) {
 		assert.strictEqual(diags.diagnostics.length, 1);
 		assert.strictEqual(diags.diagnostics[0].range.start.line, 9, JSON.stringify(diags.diagnostics[0]));
 
-		// undeclared variables are errors in strict mode
+		// undeclared variables are errors (not in non-strict mode)
 		lsp.notify('textDocument/didChange', { textDocument: { uri, version: 3 }, contentChanges: [{ text: 'var a = 1;\nb = a;\n' }] });
 		diags = await lsp.waitNotification('textDocument/publishDiagnostics', (p) => p.version === 3);
 		assert.strictEqual(diags.diagnostics.length, 1);

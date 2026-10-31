@@ -580,8 +580,8 @@ private:
 	bool shadowParameter( WRExpression& expression, WRstr& label );
 	void applyMemberShadows( WRBytecode& bytecode );
 
-	// strict mode scopes names by block at compile time: a name is in view
-	// in the block that declared it and the blocks in it. A var for a name
+	// names are scoped by block at compile time (not in non-strict mode): in view
+	// in the block that declared them and the blocks in it. A var for a name
 	// in view is an error, after its block closed (an earlier loop, the
 	// other if branch) it declares the name again, in the same slot; using
 	// a name out of view is an error
@@ -652,7 +652,7 @@ private:
 	bool m_addDebugSymbols;
 	bool m_embedGlobalSymbols;
 	bool m_embedSourceCode;
-	bool m_needVar;
+	bool m_nonStrict; // WR_NON_STRICT_VAR, the compatibility mode for older scripts
 	bool m_exportNextUnit;
 	
 	uint16_t m_lastCode;

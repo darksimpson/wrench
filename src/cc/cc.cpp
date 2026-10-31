@@ -109,7 +109,7 @@ WRError WRCompilationContext::compile( const char* source,
 	m_addDebugSymbols = compilerOptionFlags & WR_EMBED_DEBUG_CODE;
 	m_embedSourceCode = compilerOptionFlags & WR_EMBED_SOURCE_CODE;
 	m_embedGlobalSymbols = compilerOptionFlags & WR_INCLUDE_GLOBALS;
-	m_needVar = !(compilerOptionFlags & WR_NON_STRICT_VAR);
+	m_nonStrict = (compilerOptionFlags & WR_NON_STRICT_VAR) != 0;
 
 	do
 	{
@@ -339,7 +339,7 @@ void WRCompilationContext::applyMemberShadows( WRBytecode& bytecode )
 	m_memberShadows.clear();
 }
 
-// In strict mode an unknown name may still stand for a function's hash
+// An unknown name may still stand for a function's hash
 // ("var f = callback;", "register( callback );"); once every function is
 // known, anything else is a misspelled variable
 void WRCompilationContext::checkNamesAsHashes()
@@ -1358,7 +1358,7 @@ int WRCompilationContext::addLocalSpaceLoad( WRBytecode& bytecode, WRstr& token,
 			}
 		}
 
-			if ( m_needVar && !varSeen )
+			if ( !m_nonStrict && !varSeen )
 			{
 				if ( !addOnly && allowFunctionNameHashLiteral && !isNamedEnumMember(token) )
 				{
@@ -1443,7 +1443,7 @@ int WRCompilationContext::addGlobalSpaceLoad( WRBytecode& bytecode, WRstr& token
 		}
 	}
 
-	if ( m_needVar && !varSeen && i >= m_units[0].bytecode.localSpace.count() )
+	if ( !m_nonStrict && !varSeen && i >= m_units[0].bytecode.localSpace.count() )
 	{
 		if ( !addOnly && allowFunctionNameHashLiteral && !isNamedEnumMember(token) )
 		{
@@ -2622,10 +2622,10 @@ bool WRCompilationContext::pushObjectTable( WRExpressionContext& context,
 
 			m_parsingNew = true;
 
-			bool v = m_needVar;
-			m_needVar = false;
+			bool v = m_nonStrict;
+			m_nonStrict = true; // the member names of new S { a = 1 } are not variables
 			char end = parseExpression( nex );
-			m_needVar = v;
+			m_nonStrict = v;
 
 			m_parsingNew = false;
 
@@ -2771,7 +2771,7 @@ bool WRCompilationContext::declareName( int unit, uint32_t hash )
 		name->unit = unit;
 		name->hash = hash;
 	}
-	else if ( m_needVar && isBlockOpen(name->block) )
+	else if ( !m_nonStrict && isBlockOpen(name->block) )
 	{
 		nameError( WR_ERR_variable_redeclared );
 		return false;
@@ -2784,7 +2784,7 @@ bool WRCompilationContext::declareName( int unit, uint32_t hash )
 //------------------------------------------------------------------------------
 bool WRCompilationContext::nameInView( int unit, uint32_t hash )
 {
-	WRDeclaredName* name = m_needVar ? findDeclaredName( unit, hash ) : 0;
+	WRDeclaredName* name = m_nonStrict ? 0 : findDeclaredName( unit, hash );
 	if ( name && !isBlockOpen(name->block) )
 	{
 		nameError( WR_ERR_variable_out_of_scope );

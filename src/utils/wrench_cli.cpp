@@ -479,7 +479,8 @@ int usage()
 	"    leave out the names of globals (4 bytes each), wr_getGlobalRef()\n"
 	"    cannot find them then\n"
 	"  -nostrict\n"
-	"    do not require 'var' to declare variables\n"
+	"    non-strict mode, for older scripts: an assignment declares an\n"
+	"    unknown variable, no block scope, a second 'var' assigns\n"
 	"  -I <folder>\n"
 	"    also look for include \"file\" in folder (after the including\n"
 	"    file's own folder, before the \"include\" folders of wrench.json),\n"
@@ -2394,11 +2395,12 @@ bool testIncludes()
 	return ok;
 }
 
-// there is no block scope: in strict mode a var for a name whose earlier var
-// is still in view is an error, one from a block that closed is allowed
+// block scope: a var for a name whose earlier var is still in view is an
+// error, one from a block that closed is allowed, using a name out of view
+// is an error; non-strict mode allows all of it
 bool testRedeclaration()
 {
-	printf( "test [-][block scope of names in strict mode]: " );
+	printf( "test [-][block scope of names]: " );
 	bool ok = true;
 
 	const char* errors[] =

@@ -3,7 +3,7 @@
 // tools/test/extension_test.js can check them.
 
 // "wrench p": the disassembly of a source file, compiled with debug code
-// (as the debugger runs it) and as strictly as the editor checks it
+// (as the debugger runs it) and in the mode the editor checks it in
 export function disassemblyArgs(file: string, nonStrict: boolean): string[] {
 	const args = ['p', '-debug'];
 	if (nonStrict) {

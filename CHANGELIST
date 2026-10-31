@@ -4,7 +4,7 @@
   meeting opcodes they do not know. The 8.0 VM still runs 7.x images that lack the new flag,
   with their old behaviour (WRENCH_PREVIOUS_IMAGE_VERSION); images from unreleased pre-8.0
   builds must be compiled again
-- behaviour change: block scope in strict mode (the default). A name declared in a block
+- behaviour change: block scope. A name declared in a block
   (braces, a loop body, an if branch, the header of a for) is out of view after the block:
   using it is the new compile error WR_ERR_variable_out_of_scope. var x; while an earlier
   var x or a parameter x is still in view (the same block or one around it) is the new
@@ -12,8 +12,8 @@
   x. A name from a block that has ended may be declared again (two for ( var i ... ) loops
   in a row, the two branches of an if), and two included files declaring one global are
   the error too. var ::g declares a global of the whole program wherever it is written
-  (a block, a function), also more than once. WR_NON_STRICT_VAR / -nostrict keeps the old
-  behaviour
+  (a block, a function), also more than once. Non-strict mode (WR_NON_STRICT_VAR,
+  -nostrict, wrench.nonStrict), for older scripts, keeps the old behaviour
 - behaviour change: var x; is var x = 0; and sets 0 every time it runs (in a loop body it
   used to keep the value of the previous pass). A global the host seeds before the global
   code runs must be declared blank, a var global without a value is set to 0 now

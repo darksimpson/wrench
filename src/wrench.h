@@ -349,8 +349,8 @@ enum WRError
 	WR_ERR_include_too_deep, // includes nested deeper than WRENCH_MAX_INCLUDE_DEPTH
 	WR_ERR_bad_character_literal, // 'ab': a character literal holds one character
 	WR_ERR_integer_literal_too_large, // an integer literal that does not fit in 32 bits
-	WR_ERR_variable_redeclared, // var x; while an earlier var x is still in view (strict mode)
-	WR_ERR_variable_out_of_scope, // x used after the block that declared it ended (strict mode)
+	WR_ERR_variable_redeclared, // var x; while an earlier var x is still in view (not in non-strict mode)
+	WR_ERR_variable_out_of_scope, // x used after the block that declared it ended (not in non-strict mode)
 
 	WR_warning_enums_follow,
 
@@ -407,7 +407,7 @@ enum WrenchCompilerFlags
 	
 	WR_EMBED_SOURCE_CODE = 1<<2, // include a copy of the source code
 	
-	WR_NON_STRICT_VAR    = 1<<3, // allow assignments without 'var' to declare a variable (off by default: 'var' is required)
+	WR_NON_STRICT_VAR    = 1<<3, // non-strict mode for older scripts: an assignment declares an unknown variable, no block scope, a second 'var' assigns
 
 	// set by the compiler in every image: reading an element or member of a
 	// value that is not a container, a key a hash table does not have or an
