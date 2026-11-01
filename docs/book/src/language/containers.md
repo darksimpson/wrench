@@ -286,7 +286,7 @@ Output:
 ```
 
 `==` compares containers by content: two arrays with equal elements are
-equal even when they are two arrays.
+equal even when they are two different arrays.
 
 Containers are freed by the garbage collector when nothing refers to them
 any more; a container may hold itself.

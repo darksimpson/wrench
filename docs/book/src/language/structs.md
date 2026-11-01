@@ -224,7 +224,7 @@ same with the name as a string.
   `WR_ERR_hash_not_found`: the members of an instance are fixed by its
   struct.
 * `instance._count` is the number of members.
-* `for` each loops and `._exists` do not work on instances.
+* `for each` loops and `._exists` do not work on instances.
 
 ```wrench
 struct Point

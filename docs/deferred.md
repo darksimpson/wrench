@@ -207,3 +207,91 @@ Deferred because it touches the compiler, the VM, the API and the bytecode
 format at once, and no script has hit a collision yet. Only 5 (the new
 opcode) and 8 (the registration return values) change the format or the
 API, so those belong in a release; the rest can land one piece at a time.
+
+## Compiler warnings
+
+The compiler has no warnings: a script either compiles or fails. Many
+cases that compile run in a way the author rarely means (the book lists
+them under "Things that are not errors" and "Common mistakes" in
+`language/errors-limits.md`). The compiler should warn about them.
+
+Design:
+
+* Warning codes go after `WR_warning_enums_follow` in `WRError`; the CLI
+  and the debug host already treat codes past it as not errors.
+* `WRCompileOptions` gets a warning callback (code, file, line, column,
+  message). Without a callback the compiler skips the checks, so firmware
+  that compiles on the device pays next to nothing; a build flag can also
+  leave them out.
+* `wrench c` and `wrench r` print `file:line: warning: ...`, with options
+  to turn warnings off and to treat them as errors.
+* The language server sets the same callback and reports the warnings with
+  severity 2, so the rules live in the compiler only. Its own checks (the
+  calls wrench.json cannot serve) stay as they are.
+
+Group A, the compiler knows for certain (no false positives):
+
+| # | Case | Example | Today |
+|---|---|---|---|
+| A1 | struct without members | `struct R( a ) { }` | `new R` gives 0, not an instance |
+| A2 | struct parameter not used in the body | `struct S( name ) { var x; }` | `s.name` is 0: parameters are not members |
+| A3 | initializer with more values than members | `new Point { 1, 2, 3 }` | the extra values are ignored |
+| A4 | initializer names a member the struct does not have | `new Point { z = 1 }` | `WR_ERR_hash_not_found` at run time |
+| A5 | array size with an initializer | `var a[30] = { 8, 9 };` | the size is ignored, 2 elements |
+| A6 | assignment as a condition | `if ( a = 5 )` | assigns, the condition is true; extra parentheses `if ( (a = 5) )` silence it, as in gcc |
+| A7 | `&`, `\|` or `^` mixed with a comparison without parentheses | `x & 1 == 1` | means `x & (1 == 1)` |
+| A8 | division or modulo by a literal 0 | `x / 0` | 0, unless the host traps it |
+| A9 | integer literal that wraps | `0xFFFFFFFF`, `3000000000` | becomes negative |
+| A10 | `\0NNN` escape above 255 | `"\0491"` | wraps to 235; the escape is decimal |
+| A11 | empty character literal | `''` | 0 |
+| A12 | string plus a character literal | `"ab" + 'c'` | `"ab99"` |
+| A13 | string literal compared with a number literal | `"3" == 3` | always 0 |
+| A14 | float literal as an index | `a[1.7]` | `a[1]` |
+| A15 | empty statement right after `if`, `while` or `for` | `if ( x );` | the block after it always runs |
+| A16 | code after `return`, `break`, `continue` or `goto` in the same block | | never runs |
+| A17 | label no `goto` uses | `found:` | a typo in the `goto` or dead code |
+| A18 | whole number float as a `case` | `case 2.0:` | the int 2 does not match it |
+| A19 | `switch` without a `case` | | unfinished code |
+| A20 | call with more arguments than the script function takes | `area( 1, 2, 3 )` | the extra ones are ignored |
+| A21 | call of a name that is a variable and not a function | `var f = handler; f();` | calls a function named `f`; functions are not values |
+| A22 | local `var` that hides a global of the same name | `var count;` in a function | the function no longer sees the global without `::` |
+| A23 | qualified name under a named enum of the script that the enum does not declare | `Color::PURPLE` with `enum Color { RED, GREEN, BLUE }` | compiles as a library constant, `WR_ERR_library_constant_not_loaded` at run time |
+
+Group B, needs some analysis (a few false positives, behind an option):
+
+| # | Case | Note |
+|---|---|---|
+| B1 | local never read | not in struct bodies, where every `var` is a member |
+| B2 | self assignment `x = x;` | not `var value = value;` in a struct body, the documented idiom |
+| B3 | `\|\|` or `&&` with a literal operand that is not 0 or 1 | `x \|\| "default"` is 1, not the operand as in JavaScript |
+| B4 | a case falls into the next one | off by default, or silenced by a `// falls through` comment; fall through is used on purpose in the book |
+| B5 | `for ( ;; )` or `while ( 1 )` without `break`, `return`, `goto` or `yield` | the host hangs |
+
+Group C, language server only (needs wrench.json or the types it knows):
+
+| # | Case | Note |
+|---|---|---|
+| C1 | script function with the name of a native or library function | the script function wins without a word (also row 9 of "Check hash hits against the text") |
+| C2 | member a struct does not have, on a variable known to hold that struct | reading gives 0, writing stops the script; the server already resolves members per struct |
+| C3 | struct parameter read as a member | `r.sensor` where `sensor` is only a parameter |
+| C4 | library call with more arguments than wrench.json declares | A20 for natives |
+| C5 | qualified name that is neither a named enum of the script nor a library constant of wrench.json | `Colour::RED` (a typo of the enum name) or `io::O_CRAET`; `WR_ERR_library_constant_not_loaded` at run time. The compiler cannot tell, the host registers library constants at run time |
+
+Order: the callback, the CLI options and the language server hookup with
+group A first, then group B behind its option, then group C in the
+language server.
+
+Tests: a compile test in `wrench_cli.cpp` that compiles each case and
+checks the warning code and line (and that clean code gives none), the
+same scripts compiled without a callback, and `lsp_test.js` for the
+severity 2 diagnostics and group C.
+
+Book: a warnings section in `language/errors-limits.md` (the table of
+things that are not errors points to it), the codes in
+`reference/error-codes.md`, the options in `reference/cli.md`, the
+callback in `embedding/api-reference.md`, the diagnostics in
+`vscode/editing.md`, and CHANGELIST.
+
+Deferred because it adds to the compile API and to every front end (CLI,
+language server, the book), and the checks touch most of the parser;
+it is a feature of its own rather than a fix.
