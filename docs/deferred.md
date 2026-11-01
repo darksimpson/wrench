@@ -139,6 +139,68 @@ Plan:
 Deferred because older scripts compiled with `-nostrict` would stop
 compiling; they need a release with the warning first.
 
+## new only for structs, drop export
+
+The rule to reach: functions are called, structs are instantiated. Both
+halves are open today: `new` works on a function, and a struct can be
+called like a function (`P( 7 )` runs the body and gives 0). The details
+are to be settled when this is taken up.
+
+Functions and structs are both units in the compiler, so `new` works on
+any function: it runs the body and keeps its locals as members. Nothing
+needs this that a struct cannot do. `export` exists only for it: the
+linker writes the member map of a unit (`namespaceOffset` in the function
+header) when the program itself uses `new` on the unit, or when the unit
+is a struct or marked `export`. Since 6.0.18 structs are always exported,
+so `export` matters only for `new` on a plain function of an imported
+module, and a module that forgets it fails at run time with
+`WR_ERR_struct_not_exported`. Calls into modules never needed it.
+
+What a struct cannot do today that a function used with `new` can:
+
+* be `private` (`private struct` is a compile error);
+* read globals by their bare name in the body (a struct needs `::name`).
+
+Plan:
+
+* First release: the compiler warns on `new` of a function or unit (A24
+  under "Compiler warnings") and on `export` in front of `function` or
+  `unit`; the book marks both as going away.
+* The release that removes them:
+  * `src/cc/cc.cpp`: `new` of a unit that is not a struct is a compile error
+    when the unit is in the program; `private struct` is allowed (the
+    struct gets the file mangled name like a private function, and `new`
+    in that file finds it first); `export` is dropped from the keywords,
+    or accepted before `struct` only and ignored, so old modules still
+    compile.
+  * `src/cc/link.cpp`: the member map is written for structs only;
+    `exportNamespace` and `m_exportNextUnit` go.
+  * `src/vm/vm.cpp`: `new` of an imported unit without a member map fails
+    with a clearer code than `WR_ERR_struct_not_exported`, or the VM keeps
+    the code under a new meaning ("not a struct"); `wr_instanceStruct()`
+    the same.
+  * `src/wrench.h`: `WR_ERR_unexpected_export_keyword` (23) and
+    `WR_ERR_struct_not_exported` (25) keep their values, documented as
+    reserved or reused, so later codes do not move.
+  * Language server: `new` of a function and `export` reported as errors;
+    the grammar in `tools/vscode-wrench/syntaxes` drops `export`.
+  * Tests: `tests/010_structs.w` uses `new a` on `function a()`; the import
+    test in `wrench_cli.cpp` (`importMe`, `baseMe`) uses `export function`
+    and `export struct`; both move to structs, plus a `private struct`
+    test and compile error cases for `new` of a function.
+  * Book: `language/structure.md` ("Everything is a unit" and the keyword
+    table), `language/import.md` ("Structs and new"), `language/structs.md`
+    (the line on `new` with any function), `language/include.md`
+    (`private struct`), `language/errors-limits.md`,
+    `reference/error-codes.md`, and CHANGELIST as a breaking change, with
+    how to update a script (`function f` used with `new` becomes `struct
+    f`, `export` is removed, a bare global in the body becomes `::name`).
+
+Deferred because scripts and modules that use `new` on a function or
+`export` would stop compiling; they need a release with the warning
+first, and `private struct` has to work before the change so a file can
+still keep a type to itself.
+
 ## Check hash hits against the text
 
 Wrench knows names and keys only by their 32-bit FNV-1a hash (`wr_hashStr`
@@ -256,6 +318,8 @@ Group A, the compiler knows for certain (no false positives):
 | A21 | call of a name that is a variable and not a function | `var f = handler; f();` | calls a function named `f`; functions are not values |
 | A22 | local `var` that hides a global of the same name | `var count;` in a function | the function no longer sees the global without `::` |
 | A23 | qualified name under a named enum of the script that the enum does not declare | `Color::PURPLE` with `enum Color { RED, GREEN, BLUE }` | compiles as a library constant, `WR_ERR_library_constant_not_loaded` at run time |
+| A24 | `new` of a unit declared with `function` or `unit` | `new makeColor` | works, but a struct says what is meant; the step before "new only for structs" below |
+| A25 | call of a struct as a function | `Point( 1, 2 )` | runs the body, gives 0, makes no instance |
 
 Group B, needs some analysis (a few false positives, behind an option):
 
