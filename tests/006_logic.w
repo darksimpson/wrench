@@ -295,3 +295,57 @@ a = 1;
 b = 0;
 if ( a || b ) println("a||b");
 if ( b || a ) println("a||b");
+
+// && and || evaluate their right side only when the left side does not
+// decide the result, and yield 1 or 0; every check below prints only when
+// it fails
+var scLog = "";
+function sct( n ) { scLog += n; return 1; }
+function scf( n ) { scLog += n; return 0; }
+function scChk( got, want, wantLog, name ) { if ( got != want || scLog != wantLog ) { println( "FAIL ", name, " got ", got, " log ", scLog ); } scLog = ""; }
+scChk( sct("a") && sct("b"), 1, "ab", "tt&" );
+scChk( sct("a") && scf("b"), 0, "ab", "tf&" );
+scChk( scf("a") && sct("b"), 0, "a", "ft&" );
+scChk( scf("a") || sct("b"), 1, "ab", "ft|" );
+scChk( sct("a") || sct("b"), 1, "a", "tt|" );
+scChk( scf("a") || scf("b"), 0, "ab", "ff|" );
+scChk( sct("a") || scf("b") && sct("c"), 1, "a", "prec1" );
+scChk( scf("a") && sct("b") || sct("c"), 1, "ac", "prec2" );
+scChk( scf("a") || sct("b") && scf("c"), 0, "abc", "prec3" );
+scChk( sct("a") && sct("b") && sct("c"), 1, "abc", "chain&" );
+scChk( scf("a") || scf("b") || sct("c"), 1, "abc", "chain|" );
+scChk( (scf("a") || sct("b")) && sct("c"), 1, "abc", "paren" );
+scChk( sct("a") && scf("b") ? 5 : 6, 6, "ab", "tern1" );
+scChk( scf("a") ? 1 : sct("b") || sct("c"), 1, "ab", "tern2" );
+scChk( sct("a") ? scf("b") && sct("c") : 9, 0, "ab", "tern3" );
+scChk( !scf("a") && sct("b"), 1, "ab", "not" );
+scChk( 2 && 3, 1, "", "values&" );
+scChk( 0 || 7, 1, "", "values|" );
+scChk( 2.5 && "x", 1, "", "mixed" );
+var scx = scf("a") || sct("b");
+scChk( scx, 1, "ab", "assign" );
+var sci = 0; var scn = 0;
+while ( sci < 5 && sct("w") ) { ++sci; }
+scChk( sci, 5, "wwwww", "while" );
+for( sci = 0; sci < 3 || scf("q"); ++sci ) { scn++; }
+scChk( scn, 3, "q", "for" );
+var sca[] = { 1, 2, 3 };
+var sck = 10;
+if ( sck < sca._count && sca[sck] == 1 ) { println( "FAIL guard" ); }
+if ( sca._count != 3 ) { println( "FAIL grew" ); }
+function scAnd( p, q ) { return p && q; }
+scChk( scAnd(1, 0), 0, "", "fn" );
+scChk( scAnd(1, 2) + 1, 2, "", "arith" );
+
+// logical operators with floats
+if ( !(1.5 && 2.5) || (0.0 || 0.0) ) { println( "logic1" ); }
+
+// comparing an int with a float leaves the int alone
+var ci = 3;
+if ( ci < 2.5 ) {}
+if ( ci != 3 ) { println( "cmp1 ", ci ); }
+var cj = 3;
+if ( cj > 2.5 ) {}
+if ( cj != 3 ) { println( "cmp2" ); }
+function lc() { var q = 4; if ( q < 4.5 ) {} return q; }
+if ( lc() != 4 ) { println( "cmp3" ); }

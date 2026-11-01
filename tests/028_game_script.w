@@ -1,5 +1,9 @@
 /*~ ~*/
 
+// a complete game script as a user sent it: it must compile and run its
+// global code; its functions are left to the host, which this test does not
+// have, so none of them is called
+
 var roadpieces[12][13];
 var is_on[12];
 var car_x = 6;

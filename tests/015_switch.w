@@ -1,4 +1,7 @@
-/*~ ~*/
+/*~
+case0
+after
+~*/
 
 
 var e;
@@ -749,3 +752,56 @@ for( k = 4000000000 ; k < 4000000009; ++k )
 	}
 }
 if ( t != 0x21111111 ) println ("t10");
+
+// code after a loop or a nested break must not fall back into the dispatch;
+// the checks below print only when they fail
+var si = 0;
+function sw( v )
+{
+	switch( v )
+	{
+		case 0:
+			println( "case0" );
+			do { si = si + 1; } while( si < 2 );
+	}
+	println( "after" );
+}
+sw( 0 );
+var sn = 0;
+var sv = 0;
+var scond = 0;
+switch( sv )
+{
+	case 0:
+		sn = sn + 1;
+		if ( scond ) { break; }
+}
+if ( sn != 1 ) { println( "switch2" ); }
+
+// a store right before the next case label is reachable
+var dx = 0;
+var ds = 1;
+switch( ds ) { case 0: dx = 1; case 1: dx = 2; }
+if ( dx != 2 ) { println( "switch3" ); }
+function sdef( s ) { var y = 0; switch( s ) { case 0: y = 100; default: y = 200; } return y; }
+if ( sdef(5) != 200 ) { println( "switch4" ); }
+
+// negative case labels
+var neg = -1;
+var negHit = 0;
+switch( neg ) { case -1: negHit = 1; break; case 1: negHit = 2; break; }
+if ( negHit != 1 ) { println( "case1" ); }
+var negf = -2.5;
+switch( negf ) { case -2.5: negHit = 3; break; case 7: negHit = 4; break; }
+if ( negHit != 3 ) { println( "case2" ); }
+
+// parentheses around a case value
+var cv = 5;
+var cr = 0;
+switch( cv )
+{
+	case (4): cr = 4; break;
+	case ((5)): cr = 5; break;
+	case (-1): cr = -1; break;
+}
+if ( cr != 5 ) { println( "case3 ", cr ); }

@@ -183,3 +183,15 @@ function testNamedEnum()
 
 testNamedEnum();
 
+// every check below prints only when it fails
+
+// enum constants do not replace member names
+enum { ey, ez };
+struct EP { var ey = 20; var ez = 30; };
+var ep = new EP;
+if ( ep.ey != 20 || ep.ez != 30 || ey != 0 || ez != 1 ) { println( "enum1" ); }
+
+// enums with commas, a comma after the last entry is fine
+enum { EA, EB, EC, }
+if ( EC != 2 ) { println( "enum2" ); }
+

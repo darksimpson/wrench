@@ -1,4 +1,4 @@
-// shared helpers for 038_include.w, not a test of its own
+// shared helpers for 027_include.w, not a test of its own
 include "inc_util.w";
 
 private var count = 0;

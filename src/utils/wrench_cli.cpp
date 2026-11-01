@@ -1896,7 +1896,7 @@ bool testCompilerLimits()
 
 // compile errors that were reported wrong or not at all, and the names of
 // included files in the image
-bool testCompilerBookFixes()
+bool testCompileErrorsAndIncludeNames()
 {
 	printf( "test [-][compiler errors and include names]: " );
 	bool ok = true;
@@ -2786,9 +2786,10 @@ static void noteFailure( bool ok, const char*& failed, const char* step )
 	}
 }
 
-// VM bugs found while writing the book, at the API level (the script level
-// ones are in tests/040_vm_book_fixes.w)
-bool testVmBookFixes()
+// VM fixes at the API level: modules, full tables, struct members, images
+// and the host API (the script level checks are in the test scripts of
+// their subject)
+bool testVmModulesAndHostApi()
 {
 	printf( "test [-][vm: modules, full tables, struct members, images, host API]: " );
 	bool ok = true;
@@ -4095,7 +4096,7 @@ int runTests( const char* testDir, int number )
 	wr_loadAllLibs( w );
 	wr_setAllocatedMemoryGCHint( w, 0 );
 
-	// library constants for enum interaction tests (012_enums.c)
+	// library constants for enum interaction tests (012_enums.w)
 	wr_registerLibraryConstant( w, "TestLC::LIBVAL",  (int32_t)100 ); // never overridden by enum
 	wr_registerLibraryConstant( w, "TestLC::BOTH",    (int32_t)200 ); // shadowed by enum after its declaration
 	wr_registerLibraryConstant( w, "TestMix::LIBONLY",(int32_t)77  ); // lib-only member in a mixed namespace
@@ -4342,7 +4343,7 @@ int runTests( const char* testDir, int number )
 	{
 		++failures;
 	}
-	if ( !testVmBookFixes() )
+	if ( !testVmModulesAndHostApi() )
 	{
 		++failures;
 	}
@@ -4358,7 +4359,7 @@ int runTests( const char* testDir, int number )
 	{
 		++failures;
 	}
-	if ( !testCompilerBookFixes() )
+	if ( !testCompileErrorsAndIncludeNames() )
 	{
 		++failures;
 	}
@@ -4562,7 +4563,7 @@ void testHostSeededGlobalValue( WRState* w )
 	// read outside assert(): release builds drop the whole expression
 	WRstr code;
 	WRstr path;
-	path.format( "%s/024_numbers.w", g_testDir.c_str() );
+	path.format( "%s/022_numbers.w", g_testDir.c_str() );
 	if ( !code.fileToBuffer(path) )
 	{
 		// another test folder (wrench t <dir>) may not have it; an assert

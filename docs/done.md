@@ -4,13 +4,10 @@ Finished changes and fixes of the 8.0.0 work, in detail and by scope.
 CHANGELIST lists them for users in short; what is still open is in
 `open.md`, and changes put off to a later release are in `deferred.md`.
 
-Each fix has a regression check: the test scripts `tests/029` to `041`
-(`029_library_fixes.w`, `030_compiler_fixes.w`, `031_vm_fixes.w`,
-`032_audit_fixes.w`, `033_library_audit.w`, `034_short_circuit.w`,
-`036_vm_robustness.w`, `037_strings_and_empty_tables.w`, `038_include.w`,
-`039_compiler_book_fixes.w`, `040_vm_book_fixes.w`,
-`041_library_book_fixes.w`), the internal tests of `wrench t`, the debugger
-suite `[debugger protocol]`, or the tool tests in `tools/test`. The book's
+Each fix has a regression check: in the test script of its subject in
+`tests` (operators, functions, hash tables, strings, the garbage collector
+and so on), the internal tests of `wrench t`, the debugger suite
+`[debugger protocol]`, or the tool tests in `tools/test`. The book's
 `internals/testing.md` describes them. The fixes of the first review are
 listed in CHANGELIST only.
 
@@ -44,8 +41,8 @@ listed in CHANGELIST only.
 * `&&` and `||` short circuit: the right side is parsed into the operator
   node and compiled behind a branch, so `if ( i < a._count && a[i] == x )`
   no longer reads (and grows) `a[i]` out of range. They still yield 1 or 0.
-  `tests/034_short_circuit.w` covers order, values, precedence, ternaries,
-  loops and guards.
+  `tests/006_logic.w` covers order, values, precedence, ternaries, loops
+  and guards.
 * Jumps farther than 16 bits: a jump found too far is recorded by its
   source position and the source compiled again with that jump in a long
   form (`OX_RelativeJump32`, conditional branches reach one placed next to
@@ -105,7 +102,7 @@ listed in CHANGELIST only.
   name the file and its own line (`WR_ERR_include_not_found`,
   `_not_supported`, `_not_at_top_level`, `_too_deep` are new).
   `sys::importCompile` and `wr_compile` have no callback: include fails
-  there. Tests: `tests/038_include.w` (with `tests/include/`), the internal
+  there. Tests: `tests/027_include.w` (with `tests/include/`), the internal
   test `[include and private]`.
 * `private var` / `private function` at the top level: the name is its
   file's own (hash of name and file, like C `static`); code in that file
@@ -199,8 +196,8 @@ listed in CHANGELIST only.
   host-held values from the collector (`wr_keepValue` is new); scheduler
   ids were not per scheduler; `wr_runCommand` ignored runtime errors.
 * The internal test `[vm: callback errors, bad opcodes, copies, stack,
-  threads]` and `tests/036_vm_robustness.w` cover the VM and API changes
-  of that round.
+  threads]` covers the VM and API changes above; the script level ones
+  are in `tests/007_arrays.w`, `011_dicts.w` and `026_gc.w`.
 
 ## Libraries
 

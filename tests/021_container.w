@@ -1,4 +1,17 @@
-/*~ ~*/
+/*~
+5
+6
+5
+5
+10
+30
+1
+7
+4
+0,0,0,0
+0
+3
+~*/
 
 var push[];
 if ( list::count(push) != 0 ) println("list1");
@@ -80,3 +93,53 @@ if ( append._count != 3 ) println("array22 " + append._count );
 var empty[];
 empty._remove( 0 );
 if ( empty._count != 0 ) println("array23 " + empty._count );
+
+// push stores the value, not a reference to the caller's variable
+var L[];
+var x = 5;
+list::push_back( L, x );
+x = 6;
+println( L[0] );
+list::push( L, x );
+x = 7;
+println( L[0] );
+function pushLocal( l )
+{
+	var y = 5;
+	list::push_front( l, y );
+	y = 99;
+}
+var L2[];
+pushLocal( L2 );
+println( L2[0] );
+var Q[];
+var z = 5;
+queue::push( Q, z );
+z = 8;
+println( Q[0] );
+
+// peek returns a copy
+var p[] = { 10, 20, 30 };
+println( list::peek(p) );
+println( queue::peek(p) );
+var s[] = { 1, 2, 3 };
+println( stack::peek(s) );
+println( list::peek({7, 8}) );
+
+// array::clear zero-fills and bounds its count, array::truncate checks its
+// arguments
+var b[] = { 1 };
+array::clear( b, 4 );
+println( array::count(b) );
+println( b[0] + "," + b[1] + "," + b[2] + "," + b[3] );
+array::clear( b, 268435457 );
+println( array::count(b) );
+var tr[] = { 1, 2, 3 };
+array::truncate( tr );
+println( array::count(tr) );
+
+// library functions still replace the variable passed first (prints only
+// when it fails)
+var cleared[] = { 1, 2 };
+array::clear( cleared, 4 );
+if ( cleared._count != 4 ) { println( "arg10 ", cleared._count ); }

@@ -21,32 +21,19 @@
 013_files.w
 014_foreach.w
 015_switch.w
-016_bug9.w
-017_bug12.w
-018_this.w
-019_serialize.w
-020_yield.w
-021_hashes.w
-022_strings.w
-023_container.w
-024_numbers.w
-025_bug54.w
-026_yield_state.w
-027_arithmetic_corners.w
-028_ternary.w
-029_library_fixes.w
-030_compiler_fixes.w
-031_vm_fixes.w
-032_audit_fixes.w
-033_library_audit.w
-034_short_circuit.w
-035_member_reads.w
-036_vm_robustness.w
-037_strings_and_empty_tables.w
-038_include.w
-039_compiler_book_fixes.w
-040_vm_book_fixes.w
-041_library_book_fixes.w
+016_this.w
+017_serialize.w
+018_yield.w
+019_hashes.w
+020_strings.w
+021_container.w
+022_numbers.w
+023_yield_state.w
+024_arithmetic_corners.w
+025_ternary.w
+026_gc.w
+027_include.w
+028_game_script.w
 
 # equality of numbers, strings, arrays, hash tables and structs, through an
 # imported assertion library (unit_test_lib.w, not a test by itself)

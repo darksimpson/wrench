@@ -6,6 +6,13 @@
 5
 8.5
 -4
+8
+1.5708
+1
+12
+ok
+5
+ok
 ~*/
 
 var a;
@@ -306,3 +313,102 @@ if ( sys::isFunction("f2") != 2 ) println("sys3");
 if ( sys::isFunction() != 0 ) println("sys4");
 
 function f2() { }
+
+// math:: takes its arguments in C order
+println( math::pow(2, 3) );
+println( math::atan2(1, 0) );
+println( math::fmod(7, 3) );
+println( math::ldexp(3, 2) );
+
+// std::rand over the full int range, a range of one, and in range
+var r = std::rand( -2147483648, 2147483647 );
+println( "ok" );
+println( std::rand(5, 5) );
+var inRange = 1;
+for( var i = 0; i < 200; ++i )
+{
+	var v = std::rand( 1, 6 );
+	if ( v < 1 || v > 6 )
+	{
+		inRange = 0;
+	}
+}
+if ( inRange )
+{
+	println( "ok" );
+}
+
+// every check below prints only when it fails
+
+// std::srand restarts the sequence of std::rand
+std::srand( 1234 );
+var lbfR1 = std::rand( 1000000 );
+var lbfR2 = std::rand( 1000000 );
+std::srand( 1234 );
+if ( std::rand( 1000000 ) != lbfR1 || std::rand( 1000000 ) != lbfR2 ) { println( "rand1" ); }
+
+// library constants are no functions
+if ( sys::isFunction("io::O_CREAT") == 1 ) { println( "const1" ); }
+
+// sys::isFunction finds the functions of imported modules, before and after
+// their first call, and an empty registry entry left by an earlier call (the
+// second run of this file) is not a function
+if ( sys::isFunction( "lbfImported" ) != 0 ) { println( "isf1 ", sys::isFunction( "lbfImported" ) ); }
+sys::importCompile( "function lbfImported() { return 41; }" );
+if ( sys::isFunction( "lbfImported" ) != 2 ) { println( "isf2 ", sys::isFunction( "lbfImported" ) ); }
+if ( lbfImported() != 41 ) { println( "isf3" ); }
+if ( sys::isFunction( "lbfImported" ) != 2 ) { println( "isf4 ", sys::isFunction( "lbfImported" ) ); }
+function lbfLocal() { return 1; }
+if ( sys::isFunction( "lbfLocal" ) != 2 || sys::isFunction( "println" ) != 1 || sys::isFunction( "str::mid" ) != 1 ) { println( "isf5" ); }
+if ( sys::isFunction( "io::O_CREAT" ) != 0 || sys::isFunction( "lbfNothing" ) != 0 ) { println( "isf6" ); }
+
+// importing invalid bytecode reports -1 and the script keeps running
+if ( sys::importByteCode("this is not bytecode at all") != -1 ) { println( "imp1" ); }
+if ( sys::importByteCode(5) != -1 ) { println( "imp2" ); }
+if ( sys::importByteCode("") != -1 ) { println( "imp3" ); }
+
+// debug printing is always available, it does nothing without a debugger
+debug::print( "x%d", 1 );
+debug::println( "y" );
+
+// msg:: stores ints, floats and strings as they are, refuses containers
+msg::write( "lbfGain", 2.5 );
+if ( msg::read( "lbfGain" ) != 2.5 ) { println( "msg1 ", msg::read( "lbfGain" ) ); }
+if ( msg::write( "lbfName", "probe" ) != 0 ) { println( "msg2" ); }
+var lbfName = msg::read( "lbfName" );
+if ( str::strlen( lbfName ) != 5 || lbfName != "probe" ) { println( "msg3 ", lbfName ); }
+var lbfSource = "abc";
+msg::write( "lbfCopy", lbfSource );
+lbfSource += "d";
+if ( msg::read( "lbfCopy" ) != "abc" ) { println( "msg4 ", msg::read( "lbfCopy" ) ); }
+var lbfArray[] = { 1, 2 };
+if ( msg::write( "lbfArray", lbfArray ) != -1 || msg::peek( "lbfArray" ) ) { println( "msg5" ); }
+var lbfTable = { "a": 1 };
+if ( msg::write( "lbfTable", lbfTable ) != -1 || msg::peek( "lbfTable" ) ) { println( "msg6" ); }
+if ( msg::write( "lbfMissing" ) != -1 || msg::peek( "lbfMissing" ) ) { println( "msg7" ); }
+msg::write( "lbfName", 7 );
+if ( msg::read( "lbfName" ) != 7 ) { println( "msg8" ); }
+msg::write( "lbfName", "again" );
+if ( msg::read( "lbfName", true ) != "again" || msg::peek( "lbfName" ) || msg::read( "lbfName" ) != 0 ) { println( "msg9" ); }
+msg::clear( "lbfCopy" );
+if ( msg::peek( "lbfCopy" ) ) { println( "msg10" ); }
+msg::write( 7, -3 );
+if ( msg::read( 7 ) != -3 ) { println( "msg11" ); }
+msg::clear( 7 );
+msg::write( "lbfGain", "" );
+if ( msg::read( "lbfGain", true ) != "" ) { println( "msg12" ); }
+
+// the clocks run on the desktop
+var lbfStart = time::ms();
+if ( std::time() <= 0 || time::ms() - lbfStart < 0 ) { println( "time1" ); }
+
+// tcp:: reports an invalid socket as an error, not "no data", and the
+// functions that make a socket fail with -1 without their arguments
+if ( sys::isFunction( "tcp::bind" ) )
+{
+	if ( tcp::peek(-1) != -1 ) { println( "tcp1" ); }
+	if ( tcp::peek(-1, 10) != -1 ) { println( "tcp2" ); }
+	if ( tcp::bind() != -1 ) { println( "tcp3" ); }
+	if ( tcp::connect() != -1 || tcp::connect( "" ) != -1 || tcp::connect( "", 80 ) != -1 ) { println( "tcp4" ); }
+	if ( tcp::accept() != -1 || tcp::peek() != -1 ) { println( "tcp5" ); }
+}

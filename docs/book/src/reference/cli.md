@@ -488,14 +488,14 @@ number runs only that entry of the list (and leaves out the debugger
 protocol checks); the two arguments may come in either order.
 
 ```bash
-wrench t tests 34
+wrench t tests 25
 ```
 
 Output (the start):
 
 ```text
-test [34][034_short_circuit.w]: PASS
-test [34][034_short_circuit.w][debug]: PASS
+test [25][025_ternary.w]: PASS
+test [25][025_ternary.w][debug]: PASS
 ```
 
 The scripts run with the test folder as the current directory, and some

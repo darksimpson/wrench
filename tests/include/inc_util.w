@@ -1,4 +1,4 @@
-// included by inc_math.w and by 038_include.w: compiled once
+// included by inc_math.w and by 027_include.w: compiled once
 include "inc_math.w";
 
 private var count = 100;

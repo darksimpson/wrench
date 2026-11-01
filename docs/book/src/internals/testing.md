@@ -67,10 +67,13 @@ has the details.
 
 | Scripts | Cover |
 |---|---|
-| `001` to `028` | the language: operators, parsing, control flow, functions, arrays, structs, hash tables, enums, files, `switch`, `yield`, strings, serialization, number corners |
-| `029` to `033` | regressions of library, compiler and VM fixes |
-| `034` to `038` | short circuit operators, member reads, VM robustness, strings and empty tables, `include` and `private` |
-| `039` to `041` | regressions of the compiler (`new` as an expression, struct members named like parameters, `var a[n]`, nested initializers, enum commas), the VM (parameters as values, reads that do not create, float keys, string order) and the library (`sys::isFunction`, `str::format`, `msg::`, `io::`, `tcp::`) |
+| `001` to `007` | operators, parsing (literals, escapes, comments, empty statements), `if`, functions and their arguments, loops, logic and the short circuit `&&` / `||`, arrays |
+| `008` | values the host hands to the script (containers, raw arrays) |
+| `009` | the library: `math::`, `std::rand`, `sys::`, `msg::`, `time::`, `tcp::`, `debug::` |
+| `010` to `015` | structs and `new`, hash tables, enums, files (`io::`), `for` over containers, `switch` |
+| `016` | a possible future syntax for member functions, in comments |
+| `017` to `025` | serialization, `yield`, member syntax and reads that create nothing, strings and `str::`, `list::` / `queue::` / `stack::` / `array::`, numbers and host-seeded globals, the state of `yield`, arithmetic corners and the printing of numbers, the ternary |
+| `026` to `028` | the garbage collector, `include` and `private`, a complete game script that must compile |
 | `unit_test1.w`, `unit_test2.w` | equality of all value kinds through an imported assertion library (`unit_test_lib.w`), string concatenation with globals |
 
 ### Internal tests
@@ -113,8 +116,8 @@ test [1][001_operations.w][debug]: PASS
 test [2][002_parsing.w]: PASS
 test [2][002_parsing.w][debug]: PASS
 ...
-test [43][unit_test2.w]: PASS
-test [43][unit_test2.w][debug]: PASS
+test [30][unit_test2.w]: PASS
+test [30][unit_test2.w][debug]: PASS
 ...
 test [-][msg:: values and the host mailbox API]: PASS
 test [-][io::getline line ends and the end of the input]: PASS

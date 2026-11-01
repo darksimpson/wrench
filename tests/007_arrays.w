@@ -325,3 +325,59 @@ if ( n[1][1] != 16 ) println("err 23");
 var o = { n, m, l, "hello" };
 if ( o[0][1][1] != 16 ) println("err 24");
 if ( o[3] != "hello" ) println("err 25");
+
+// every check below prints only when it fails
+
+// arrays grow with spare room: appending is linear, and room reused after
+// a truncation is cleared
+var ga[] = { 0 };
+for( var gn = 1; gn < 5000; ++gn )
+{
+	ga[ga._count] = gn;
+}
+if ( ga._count != 5000 || ga[4999] != 4999 || ga[1234] != 1234 ) { println( "grow1 ", ga._count ); }
+array::truncate( ga, 10 );
+ga[20] = 7;
+if ( ga._count != 21 || ga[9] != 9 || ga[10] != 0 || ga[15] != 0 || ga[20] != 7 ) { println( "grow2" ); }
+var gf[] = { 1.5 };
+for( var gfi = 1; gfi < 300; ++gfi ) { gf[gfi] = gfi + 0.5; }
+array::truncate( gf, 2 );
+gf[5] = 9;
+if ( gf._count != 6 || gf[1] != 1.5 || gf[2] != 0 || gf[4] != 0 || gf[5] != 9 ) { println( "grow3" ); }
+
+// an array sized by a bare variable
+var sizeN = 3;
+var sized[sizeN];
+if ( sized._count != 3 ) { println( "size1 ", sized._count ); }
+function sizedLocal( m )
+{
+	var local[m];
+	return local._count;
+}
+if ( sizedLocal( 4 ) != 4 ) { println( "size2" ); }
+
+// nested initializers anywhere in a hash table or an array
+var nh = { "a": { 1, 2 }, "b": 2, "c": { "x": 5 }, "d": 4 };
+if ( nh["a"][1] != 2 || nh.b != 2 || nh.c.x != 5 || nh.d != 4 ) { println( "nested1" ); }
+var nh2 = { "a": { 1 }, };
+if ( nh2.a[0] != 1 ) { println( "nested2" ); }
+var narr = { { 1 }, 2, { 3, { 4 } } };
+if ( narr[0][0] != 1 || narr[1] != 2 || narr[2][1][0] != 4 ) { println( "nested3" ); }
+
+// a float index on an array or a string is the int it truncates to
+var fa[] = { 10, 20, 30 };
+if ( fa[1.7] != 20 || fa[2.2] != 30 ) { println( "float6" ); }
+fa[1.9] = 21;
+fa[0.5] += 1;
+if ( fa[0] != 11 || fa[1] != 21 || fa._count != 3 ) { println( "float7" ); }
+var fs = "abc";
+if ( fs[1.5] != 'b' ) { println( "float8" ); }
+var fx;
+fx[1.5] = 3;
+if ( fx[1.5] != 3 || fx._count != 1 ) { println( "float9" ); }
+
+// _exists on an array or a string: whether the index is in range
+var xa[] = { 1, 2, 3 };
+xa[4] = 5;
+var xs = "abc";
+if ( !xa._exists( 4 ) || xa._exists( 5 ) || xa._exists( -1 ) || !xs._exists( 0 ) || xs._exists( 3 ) ) { println( "exists1" ); }

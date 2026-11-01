@@ -288,7 +288,7 @@ of two different structs are never equal.
 
 There are no member functions and no `this`. Write functions that take the
 instance as their first argument, as `bump( c )` above does.
-`tests/018_this.w` in the repository keeps a possible future syntax for
+`tests/016_this.w` in the repository keeps a possible future syntax for
 member functions in comments; it is not part of the language.
 
 ## Limits

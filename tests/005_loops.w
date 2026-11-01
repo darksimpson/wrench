@@ -376,3 +376,14 @@ function f3()
 		while(1);
 	} while(1);
 }
+
+// for ( ;; ) is a loop without a condition (prints only when it fails)
+var loops = 0;
+for( ;; )
+{
+	if ( ++loops == 3 )
+	{
+		break;
+	}
+}
+if ( loops != 3 ) { println( "for1" ); }

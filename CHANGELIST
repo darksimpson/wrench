@@ -400,9 +400,12 @@ Distribution and tests:
   order
 - optional wrench_config.h next to wrench.h for project settings
 - the test runner counts output mismatches as failures and runs every test a second time
-  with debug code and an attached debug server; new tests 030/031 and a debugger protocol
-  test suite (tools/test has DAP and LSP end to end tests)
-- new tests 032 and 033, a compiler limits test
+  with debug code and an attached debug server; a debugger protocol test suite (tools/test
+  has DAP and LSP end to end tests)
+- a compiler limits test; every fix has a regression check in the test script of its
+  subject (the scripts are grouped by subject: operators, functions, hash tables, strings,
+  the garbage collector, include and so on), so the list is 28 scripts plus the two unit
+  tests
 - GNUmakefile builds the host tools (C++17) alongside the C++98 core
 - tools/bookcheck runs the examples of the book; CI builds the book and attaches it to
   releases (wrench-book.zip)

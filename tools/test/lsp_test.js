@@ -234,9 +234,10 @@ async function testIncludes(lsp) {
 	assert(/^util\.w:4: bad expression/.test(diags.diagnostics[0].message), diags.diagnostics[0].message);
 }
 
-// regression checks for the audit findings
-async function testAuditFixes(lsp) {
-	const docUri = 'file:///c%3A/work/audit.w';
+// globals used bare in functions, members resolved per struct, unit, a global
+// declared in a function, member-like text in comments and strings
+async function testNamesAndMembers(lsp) {
+	const docUri = 'file:///c%3A/work/names.w';
 	const td = { uri: docUri };
 	const lines = [
 		'var count = 5;', // 0
@@ -511,7 +512,7 @@ async function testBlockScope(lsp) {
 		assert.strictEqual(diags.diagnostics[0].range.start.line, 1);
 
 		await testHostProject(lsp);
-		await testAuditFixes(lsp);
+		await testNamesAndMembers(lsp);
 		await testIncludes(lsp);
 		await testBlockScope(lsp);
 

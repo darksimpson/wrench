@@ -138,3 +138,136 @@ if ( hash2.two != 10 ) println("hsh 9" );
 
 
 //a.f( 1 ) == TypeOf<a>::f( a, 1 );
+
+// every check below prints only when it fails
+
+// removed keys stay removed
+var rh = { 1:100, 2:200 };
+rh._remove( 1 );
+if ( rh[1] != 0 ) { println( "remove1" ); }
+
+// _remove gives the container back, so removals chain
+var rm = { "a": 1, "b": 2, "c": 3 };
+rm._remove( "a" )._remove( "b" );
+if ( rm._count != 1 || !rm._exists( "c" ) ) { println( "remove2" ); }
+
+// a hash table counts its entries through growth and removal
+var hc = { "a":1 };
+for( var hci = 0; hci < 100; ++hci )
+{
+	hc[hci] = hci;
+}
+if ( hc._count != 101 ) { println( "count1 ", hc._count ); }
+for( var hcr = 0; hcr < 100; ++hcr )
+{
+	hc._remove( hcr );
+}
+hc._remove( "a" );
+if ( hc._count != 0 ) { println( "count2 ", hc._count ); }
+
+// writing through a member of a table that grows meanwhile
+var gh = { "a" : 1 };
+function grow()
+{
+	for( var gi=0; gi<2000; ++gi )
+	{
+		gh[gi] = "str" + gi;
+	}
+	return 5;
+}
+gh["zz"] = grow();
+if ( gh["zz"] != 5 ) { println( "grow1" ); }
+
+// a hash initializer key may be a variable
+var hk = "key";
+var hkt = { hk : 5, "other" : hk };
+if ( hkt["key"] != 5 || hkt["other"] != "key" || hkt._count != 2 ) { println( "hashkey1" ); }
+
+// the hash of an empty slot (0xABABABAB) works as a key like any other
+var M = -1414812757;
+var h = { "x": 0 };
+h[M] = 5;
+h[7] = 1;
+if ( h[M] != 5 || h._count != 3 || !h._exists(M) ) { println( "nullkey1 ", h._count ); }
+for( var j = 0; j < 200; ++j ) { h[j * 13] = j; }
+if ( h[M] != 5 || h._count != 203 ) { println( "nullkey2 ", h._count ); }
+var k;
+var v;
+var seen = 0;
+for( k, v : h ) { if ( k == M ) { seen = v; } }
+if ( seen != 5 ) { println( "nullkey3" ); }
+var copy = std::deserialize( std::serialize( h ) );
+if ( copy[M] != 5 || copy._count != 203 ) { println( "nullkey4" ); }
+h._remove( M );
+if ( h._exists(M) || h._count != 202 ) { println( "nullkey5" ); }
+
+// float keys work in hash tables, keyed by the float
+var fh = { 1: "one" };
+fh[2.5] = "f";
+fh[3] = "three";
+if ( fh[2.5] != "f" || fh[1] != "one" || fh[3] != "three" || fh._count != 3 ) { println( "float1" ); }
+var fn = { 2.5: 7, 1.25: 8 };
+if ( fn[2.5] != 7 || fn[1.25] != 8 || fn._count != 2 ) { println( "float2" ); }
+fn[2.5] += 3;
+fn[1.25]++;
+if ( fn[2.5] != 10 || fn[1.25] != 9 ) { println( "float3" ); }
+var fk;
+var fv;
+var keySum = 0.0;
+var valueSum = 0;
+for( fk, fv : fn ) { keySum += fk; valueSum += fv; }
+if ( keySum != 3.75 || valueSum != 19 ) { println( "float4 ", keySum, " ", valueSum ); }
+if ( !fn._exists( 2.5 ) || fn._exists( 2.0 ) ) { println( "float5" ); }
+
+// hashing a table that holds itself terminates
+var self = { 1:2 };
+self[5] = self;
+var hs = { };
+hs[self] = 7;
+if ( hs[self] != 7 ) { println( "self1" ); }
+
+// adding two tables yields 0, not a stale stack value
+var ta = { 1:1 };
+var tb = { 2:2 };
+var stale = "stale";
+var tc = ta + tb;
+if ( tc != 0 ) { println( "add1 ", tc ); }
+
+// _exists on a temporary table
+function mkTempTable() { var t = { "k" : "value" }; return t; }
+if ( mkTempTable()._exists("k") != 1 ) { println( "exists1" ); }
+
+// "{ }" is an empty hash table, or an empty array after "var x[] ="; a
+// copy of it is the same container
+var e = { };
+var e2 = e;
+e2["k"] = 1;
+if ( e._count != 1 || e.k != 1 ) { println( "empty1 ", e._count ); }
+
+var x[] = { };
+var x2 = x;
+x2[0] = 3;
+if ( x._count != 1 || x[0] != 3 ) { println( "empty2 ", x._count ); }
+
+var none = { };
+var n = 0;
+var key;
+var val;
+for( key, val : none ) { ++n; }
+if ( n != 0 || none._count != 0 ) { println( "empty3" ); }
+
+// nested empty initializers are tables of their own
+var nest[] = { { }, { } };
+var first = nest[0];
+first["a"] = 1;
+if ( nest[0]._count != 1 || nest[1]._count != 0 ) { println( "empty4" ); }
+var inner = { "t": { } };
+var t = inner.t;
+t[7] = 8;
+if ( inner.t[7] != 8 ) { println( "empty5" ); }
+
+function fresh() { return { }; }
+var f1 = fresh();
+var f2 = fresh();
+f1[1] = 1;
+if ( f2._count != 0 || f1._count != 1 ) { println( "empty6" ); }

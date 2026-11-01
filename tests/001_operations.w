@@ -365,3 +365,128 @@ if ( gn != 30 ) println("gn3");
 foo();
 if ( gn != 40 ) println("gn4");
 if ( ::gn != 40 ) println("gn5");
+
+// globals and parameters on either side of + and -, every check prints only
+// when it fails
+var ga = 10;
+var gb = 20;
+var gc = 30;
+var gd = 40;
+var ge = 50;
+var gf = 600;
+
+function globalsAndParams( p1, p2, p3, p4, p5 )
+{
+	if ( p2 / ge != 4 ) { println( "gp0" ); }
+	if ( gf / p3 != 2 ) { println( "gp1" ); }
+
+	if ( ga + p1 != 110 ) { println( "gp2" ); }
+	if ( gb + p1 != 120 ) { println( "gp3" ); }
+	if ( gc + p1 != 130 ) { println( "gp4" ); }
+	if ( gd + p1 != 140 ) { println( "gp5" ); }
+	if ( ge + p1 != 150 ) { println( "gp6" ); }
+
+	if ( p1 + ga != 110 ) { println( "gp7" ); }
+	if ( p1 + gb != 120 ) { println( "gp8" ); }
+	if ( p1 + gc != 130 ) { println( "gp9" ); }
+	if ( p1 + gd != 140 ) { println( "gp10" ); }
+	if ( p1 + ge != 150 ) { println( "gp11" ); }
+
+	if ( ga + p3 != 310 ) { println( "gp12" ); }
+	if ( gb + p3 != 320 ) { println( "gp13" ); }
+	if ( gc + p3 != 330 ) { println( "gp14" ); }
+	if ( gd + p3 != 340 ) { println( "gp15" ); }
+	if ( ge + p3 != 350 ) { println( "gp16" ); }
+
+	if ( p3 + ga != 310 ) { println( "gp17" ); }
+	if ( p3 + gb != 320 ) { println( "gp18" ); }
+	if ( p3 + gc != 330 ) { println( "gp19" ); }
+	if ( p3 + gd != 340 ) { println( "gp20" ); }
+	if ( p3 + ge != 350 ) { println( "gp21" ); }
+
+	if ( ga - p1 != -90 ) { println( "gm1" ); }
+	if ( gb - p1 != -80 ) { println( "gm2" ); }
+	if ( gc - p1 != -70 ) { println( "gm3" ); }
+	if ( gd - p1 != -60 ) { println( "gm4" ); }
+	if ( ge - p1 != -50 ) { println( "gm5" ); }
+
+	if ( p1 - ga != 90 ) { println( "gm6" ); }
+	if ( p1 - gb != 80 ) { println( "gm7" ); }
+	if ( p1 - gc != 70 ) { println( "gm8" ); }
+	if ( p1 - gd != 60 ) { println( "gm9" ); }
+	if ( p1 - ge != 50 ) { println( "gm10" ); }
+
+	if ( ga - p3 != -290 ) { println( "gm11" ); }
+	if ( gb - p3 != -280 ) { println( "gm12" ); }
+	if ( gc - p3 != -270 ) { println( "gm13" ); }
+	if ( gd - p3 != -260 ) { println( "gm14" ); }
+	if ( ge - p3 != -250 ) { println( "gm15" ); }
+
+	if ( p3 - ga != 290 ) { println( "gm16" ); }
+	if ( p3 - gb != 280 ) { println( "gm17" ); }
+	if ( p3 - gc != 270 ) { println( "gm18" ); }
+	if ( p3 - gd != 260 ) { println( "gm19" ); }
+	if ( p3 - ge != 250 ) { println( "gm20" ); }
+}
+globalsAndParams( 100, 200, 300, 400, 500 );
+
+// stale optimizer cache when appending code
+var g1 = -13;
+if ( (-(g1 + g1) | -32768) != -32742 ) { println( "append1" ); }
+
+// operand order with both operands on the stack
+var sa[] = { 10 };
+var sc[] = { 0, 100 };
+var sb = 0;
+if ( sa[0] - ~sb + sc[1] != 111 ) { println( "swap1" ); }
+var a2 = 7;
+var c2 = -13;
+var b2 = 100000;
+if ( ~a2 >= -9 && c2 - 7 < 700000 - 2 && -9 + b2 < 0 ) { println( "swap2" ); }
+var sx = 3;
+if ( (-1 | 2 * sx & sx == -5) != -1 ) { println( "swap3" ); }
+
+// precedence and associativity
+if ( 1 + 5 % 3 != 3 ) { println( "prec1" ); }
+if ( 10 - 7 % 4 != 7 ) { println( "prec2" ); }
+if ( (6 ^ 3 & 5) != 7 ) { println( "prec3" ); }
+var pa = 10;
+var pb = 0;
+pa += pb = 1;
+if ( pa != 11 || pb != 1 ) { println( "assoc1 ", pa, " ", pb ); }
+var pc = 10;
+var pd = 5;
+pc += pd += 1;
+if ( pc != 16 || pd != 6 ) { println( "assoc2 ", pc, " ", pd ); }
+
+// prefix operators back to back
+var px = 3;
+if ( !!px != 1 || - -px != 3 || ~-px != 2 || -~px != 4 ) { println( "prefix1" ); }
+
+// folding a negation keeps the value
+if ( -(-128) != 128 ) { println( "neg1 ", -(-128) ); }
+if ( -(-32768) != 32768 ) { println( "neg2 ", -(-32768) ); }
+if ( -(-127) != 127 ) { println( "neg3" ); }
+
+// compound assignment to an element must not write the right-hand variable
+var ca[] = { 10, 20 };
+var cy = 3;
+ca[0] -= cy;
+if ( ca[0] != 7 || cy != 3 ) { println( "ca1 ", ca[0], " ", cy ); }
+var cb[] = { 7, 4 };
+ca[0] += cb[1];
+if ( ca[0] != 11 || cb[1] != 4 ) { println( "ca2 ", ca[0], " ", cb[1] ); }
+ca[0] *= cb[1];
+if ( ca[0] != 44 || cb[1] != 4 ) { println( "ca3" ); }
+ca[0] /= cb[1];
+if ( ca[0] != 11 || cb[1] != 4 ) { println( "ca4" ); }
+ca[0] |= cb[1];
+if ( ca[0] != 15 || cb[1] != 4 ) { println( "ca5" ); }
+var ch = { "x" : 1 };
+var ck = 7;
+ch["x"] += ck;
+if ( ch["x"] != 8 || ck != 7 ) { println( "ca6" ); }
+var cfl = 2.5;
+var civ = 2;
+cfl += civ;
+if ( cfl != 4.5 || civ != 2 ) { println( "ca7" ); }

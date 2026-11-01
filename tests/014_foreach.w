@@ -79,3 +79,41 @@ var somArray[] = {"zero", "one", "two" };
 for( var v : somArray ) {
 	println(v);
 }
+
+// every check below prints only when it fails
+
+// continue inside foreach goes to the next element
+var fa[] = { 1, 2, 3 };
+var fv;
+var fs = 0;
+for( fv : fa )
+{
+	if ( fv == 2 )
+	{
+		continue;
+	}
+	fs += fv;
+}
+if ( fs != 4 ) { println( "fe1 ", fs ); }
+
+var fk;
+var fh = { 1:10, 2:20, 3:30 };
+var fks = 0;
+for( fk, fv : fh )
+{
+	if ( fk == 2 )
+	{
+		continue;
+	}
+	fks += fv;
+}
+if ( fks != 40 ) { println( "fe2 ", fks ); }
+
+// the container on a line of its own
+var ft = 0;
+for( var fev :
+	fa )
+{
+	ft = ft + fev;
+}
+if ( ft != 6 ) { println( "foreach1" ); }
