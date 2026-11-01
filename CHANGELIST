@@ -338,7 +338,8 @@ Tools:
 - wrench lsp: Language Server Protocol server (compiler diagnostics, hover, completion,
   signature help, definition, references, rename, outline, folding)
 - tools/vscode-wrench: VS Code extension (grammar, LSP client, debugger integration); its
-  icon is the website's wrench glyph on a navy tile
+  icon is the wrench logo in white on VS Code blue; the book uses the logo as its favicon
+  and in the introduction
 - wrench.json describes the host application (its natives and the standard libraries it
   loads): the language server completes, documents and checks calls against it, the
   local debug target and dbgserver imitate that host (stand-ins for declared natives,

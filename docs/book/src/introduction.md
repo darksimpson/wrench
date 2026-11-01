@@ -1,5 +1,7 @@
 # The Wrench Book
 
+<img class="book-logo" src="images/wrench.png" alt="The wrench logo: a hand holding a wrench with a nut in its jaws">
+
 Wrench is a small scripting language for programs that have little room to
 spare: microcontrollers with a few kilobytes of RAM, firmware that wants
 user programmable behaviour, and desktop applications that want a light,

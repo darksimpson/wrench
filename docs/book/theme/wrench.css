@@ -27,3 +27,23 @@ img.diagram {
 	border-radius: 6px;
 	padding: 8px;
 }
+
+/* the wrench logo next to the opening paragraph of the introduction */
+img.book-logo {
+	float: right;
+	width: 90px;
+	margin: 0 0 0.5em 1.5em;
+}
+
+img.book-logo ~ pre {
+	clear: right;
+}
+
+@media (max-width: 600px) {
+	img.book-logo {
+		float: none;
+		display: block;
+		width: 90px;
+		margin: 0 auto 1em auto;
+	}
+}
