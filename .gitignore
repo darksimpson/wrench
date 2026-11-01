@@ -27,3 +27,5 @@ examples/debug_targets/esp32_idf/main/wrench.h
 # the book example checker (dotnet run --project tools/bookcheck)
 /tools/bookcheck/bin
 /tools/bookcheck/obj
+# local Claude Code settings (preview servers, worktrees)
+/.claude
