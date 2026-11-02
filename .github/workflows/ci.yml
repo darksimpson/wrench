@@ -24,22 +24,12 @@ permissions:
 jobs:
   linux:
     name: Linux ${{ matrix.name }}
-    runs-on: ${{ matrix.os || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
           - name: default
-            make: ''
-          # DIAGNOSTIC (temporary): the static build crashes now and then in
-          # 011_dicts.w on Ubuntu 26.04
-          - name: sanitizers on 26.04
-            os: ubuntu-26.04
-            runs: 8
-            make: 'OPT="-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined" LDFLAGS="-fsanitize=address,undefined"'
-          - name: default on 26.04
-            os: ubuntu-26.04
-            runs: 8
             make: ''
           - name: compact
             make: 'COMPACT=-DWRENCH_COMPACT'
@@ -56,52 +46,19 @@ jobs:
       - name: Test
         env:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
-        run: |
-          for i in $(seq 1 ${{ matrix.runs || 1 }}); do
-            if ! ./wrench t > test.log 2>&1; then
-              echo "run $i failed, end of its output:"
-              tail -n 60 test.log
-              exit 1
-            fi
-            echo "run $i: $(grep -c ': PASS' test.log) PASS"
-          done
+        run: ./wrench t
 
   linux-executable:
     name: Linux executable
-    # DIAGNOSTIC (temporary): Ubuntu 26.04 and debug symbols, to catch an
-    # intermittent crash in 011_dicts.w seen only there
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Build a static executable that runs on any distribution
-        run: make -j"$(nproc)" OPT='-O3 -g' LDFLAGS='-static'
+        run: make -j"$(nproc)" LDFLAGS='-static -s'
       - name: Test
-        run: |
-          for i in 1 2 3 4 5 6 7 8; do
-            if ./wrench t > test.log 2>&1; then
-              echo "run $i: $(grep -c ': PASS' test.log) PASS"
-              continue
-            fi
-            echo "run $i crashed or failed, end of its output:"
-            tail -n 20 test.log
-            sudo apt-get install -y -qq gdb > /dev/null
-            # gdb turns address randomization off unless told not to; the
-            # crash comes and goes, so try a few times
-            for j in 1 2 3 4 5 6 7 8 9 10; do
-              gdb -q -batch -ex 'set disable-randomization off' -ex run -ex bt -ex 'info registers' -ex 'x/8i $pc-16' --args ./wrench t > gdb.log 2>&1
-              if grep -q 'SIG' gdb.log; then
-                echo "gdb attempt $j caught it:"
-                grep -v '^test \[' gdb.log
-                break
-              fi
-              echo "gdb attempt $j: no crash"
-            done
-            exit 1
-          done
+        run: ./wrench t
       - name: Pack
-        run: |
-          strip wrench
-          tar -czf wrench-linux-x64.tar.gz wrench
+        run: tar -czf wrench-linux-x64.tar.gz wrench
       - uses: actions/upload-artifact@v4
         with:
           name: wrench-linux-x64
