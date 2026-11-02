@@ -180,8 +180,10 @@ requests, on tags `v*` and by hand. Its jobs:
 | Job | Does |
 |---|---|
 | Linux (5 configurations) | builds with `make` and runs `./wrench t` in the configurations default, `COMPACT=-DWRENCH_COMPACT`, compact plus `WRENCH_REALLY_COMPACT`, `WRENCH_UNPROTECTED_STACK`, and AddressSanitizer with UndefinedBehaviorSanitizer (any finding fails) |
+| Linux executable | builds a static `wrench` with `make LDFLAGS='-static -s'` (it runs on any distribution), runs `./wrench t` with it and keeps it as the artifact `wrench-linux-x64`, packed in a tar so it stays executable |
 | Single file build | `make dist-check`: generates `dist/wrench.h` and `dist/wrench.cpp`, compiles them as C++98 in six configurations, links and runs `examples/basic.cpp`; on a tag, checks that the tag matches `version.txt` |
-| Windows | builds Release and Debug with MSBuild and `-warnaserror`, runs `wrench t` with both, checks the examples of this book with `tools/bookcheck`, runs `dap_test.js`, `cli_test.js` and `lsp_test.js` with the Release build, `npm ci`, `npm run compile`, the grammar test and `extension_test.js` for the extension, and compiles the single file build with MSVC in three configurations |
+| Windows | builds Release and Debug with MSBuild and `-warnaserror`, runs `wrench t` with both, checks the examples of this book with `tools/bookcheck`, runs `dap_test.js`, `cli_test.js` and `lsp_test.js` with the Release build, `npm ci`, `npm run compile`, the grammar test and `extension_test.js` for the extension, and compiles the single file build with MSVC in three configurations; keeps the tested Release `wrench.exe` as the artifact `wrench-windows-x86` |
+| VS Code extension package | after the two executables passed their tests: bundles both into the extension with `scripts/bundle-exe.js`, packages it with `vsce` and keeps the `.vsix` as the artifact `wrench-vscode` |
 | The Wrench Book | builds this book with mdBook and keeps it as the artifact `wrench-book` |
 | Publish release | on a tag only, after the others passed: attaches the single file build and the zipped book to the GitHub release, see [Releases](releases.md) |
 

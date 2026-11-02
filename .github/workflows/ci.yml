@@ -1,7 +1,10 @@
 # Builds and tests wrench on Linux and Windows, generates the single file
 # build (wrench.h + wrench.cpp) and checks that it compiles on its own.
-# Every run keeps the single file build as the artifact "wrench-single-file"
-# and the built book (docs/book) as "wrench-book"; a pushed tag vX.Y.Z
+# Every run keeps the single file build as the artifact "wrench-single-file",
+# the built book (docs/book) as "wrench-book", the tested executables as
+# "wrench-windows-x86" and "wrench-linux-x64" (a static build, packed in a
+# tar to keep its executable bit) and the VS Code extension with both
+# executables bundled as "wrench-vscode"; a pushed tag vX.Y.Z
 # publishes both as the assets of the GitHub release X.Y.Z (the book as
 # wrench-book.zip, to read offline). A push to any branch runs it.
 
@@ -43,6 +46,22 @@ jobs:
         env:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
         run: ./wrench t
+
+  linux-executable:
+    name: Linux executable
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build a static executable that runs on any distribution
+        run: make -j"$(nproc)" LDFLAGS='-static -s'
+      - name: Test
+        run: ./wrench t
+      - name: Pack
+        run: tar -czf wrench-linux-x64.tar.gz wrench
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wrench-linux-x64
+          path: wrench-linux-x64.tar.gz
 
   single-file:
     name: Single file build
@@ -119,6 +138,40 @@ jobs:
           cl -nologo -W3 -WX -c -Idist dist/wrench.cpp -Fodist/check.obj
           cl -nologo -W3 -WX -c -Idist -DWRENCH_INCLUDE_DEBUG_CODE -DWRENCH_WIN32_TCP -DWRENCH_WIN32_SERIAL -DWRENCH_WIN32_FILE_IO dist/wrench.cpp -Fodist/check.obj
           cl -nologo -W3 -WX -c -Idist -DWRENCH_COMPACT -DWRENCH_REALLY_COMPACT dist/wrench.cpp -Fodist/check.obj
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wrench-windows-x86
+          path: win32/Release/wrench.exe
+
+  vscode-extension:
+    name: VS Code extension package
+    needs: [ linux-executable, windows ]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: actions/download-artifact@v4
+        with:
+          name: wrench-linux-x64
+          path: ${{ runner.temp }}/linux
+      - uses: actions/download-artifact@v4
+        with:
+          name: wrench-windows-x86
+          path: ${{ runner.temp }}/windows
+      - name: Package with both executables
+        working-directory: tools/vscode-wrench
+        run: |
+          tar -xzf "$RUNNER_TEMP/linux/wrench-linux-x64.tar.gz" -C "$RUNNER_TEMP/linux"
+          npm ci
+          npm run compile
+          node scripts/bundle-exe.js "$RUNNER_TEMP/windows/wrench.exe" "$RUNNER_TEMP/linux/wrench"
+          npx vsce package --allow-missing-repository
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wrench-vscode
+          path: tools/vscode-wrench/*.vsix
 
   book:
     name: The Wrench Book
