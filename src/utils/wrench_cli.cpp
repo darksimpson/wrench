@@ -4136,11 +4136,22 @@ int runTests( const char* testDir, int number )
 
 				for( ; (t < code.size()) && (code[t] != '~'); ++t );
 
-				t += 2;
+				// a checkout with CRLF line ends (git autocrlf on Windows)
+				// must expect the same output as one with LF: skip the '~',
+				// the line end or space after it, and drop every '\r'
+				++t;
+				if ( t < code.size() && code[t] == '\r' )
+				{
+					++t;
+				}
+				++t;
 
 				for( ; t<code.size() && (code[t] != '~'); ++t )
 				{
-					expect += code[t];
+					if ( code[t] != '\r' )
+					{
+						expect += code[t];
+					}
 				}
 
 				// pass 1 repeats the test compiled with debug code under an
