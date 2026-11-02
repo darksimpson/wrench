@@ -76,10 +76,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: microsoft/setup-msbuild@v2
+        id: msbuild
+      # Git Bash does not find msbuild through the PATH setup-msbuild sets,
+      # so it is called by the folder setup-msbuild reports
       - name: Build Release and Debug
         run: |
-          msbuild win32/wrench.sln -p:Configuration=Release -p:Platform=x86 -m -v:minimal -warnaserror
-          msbuild win32/wrench.sln -p:Configuration=Debug -p:Platform=x86 -m -v:minimal -warnaserror
+          MSBUILD="$(cygpath -u '${{ steps.msbuild.outputs.msbuildPath }}')/MSBuild.exe"
+          echo "MSBuild: $MSBUILD"
+          "$MSBUILD" win32/wrench.sln -p:Configuration=Release -p:Platform=x86 -m -v:minimal -warnaserror
+          "$MSBUILD" win32/wrench.sln -p:Configuration=Debug -p:Platform=x86 -m -v:minimal -warnaserror
       - name: Test Release
         run: win32/Release/wrench.exe t
       - name: Test Debug
