@@ -64,7 +64,9 @@ jobs:
 
   windows:
     name: Windows
-    runs-on: windows-latest
+    # Visual Studio 2022: the projects use its v143 toolset (windows-latest
+    # has Visual Studio 2026)
+    runs-on: windows-2022
     # bash stops at the first failing command of a step (PowerShell would only
     # report the last one); options use the -x form because Git Bash rewrites
     # arguments starting with / as paths
