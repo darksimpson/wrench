@@ -13,8 +13,10 @@ and debugs with the same client as the console debugger.
 
 ## Installing the extension
 
-The extension is a file `wrench-<version>.vsix`, built from
-`tools/vscode-wrench` in the repository (see
+The extension is a file `wrench-<version>.vsix`. Every release on the
+[Releases page](https://github.com/darksimpson/wrench/releases) has it
+attached, with the `wrench` tool for Windows and Linux bundled. It can also
+be built from `tools/vscode-wrench` in the repository (see
 [Building the extension](building.md)); after a build it is
 `tools/vscode-wrench/wrench-0.1.0.vsix`. It needs VS Code 1.82 or later.
 

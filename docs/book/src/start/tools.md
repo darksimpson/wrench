@@ -37,6 +37,11 @@ source](../internals/building.md) describes them.
 
 ## Building the command line tool
 
+Every release also has the tool built: `wrench-windows-x86.exe` for
+Windows, and `wrench-linux-x64.tar.gz` for Linux, a static build that runs
+on any distribution (`tar -xzf wrench-linux-x64.tar.gz` gives `wrench`).
+To build it yourself:
+
 The tool includes the host side of the debugger and the language server,
 so it needs a C++17 compiler; the library itself stays C++98.
 

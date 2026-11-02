@@ -4,9 +4,10 @@
 # the built book (docs/book) as "wrench-book", the tested executables as
 # "wrench-windows-x86" and "wrench-linux-x64" (a static build, packed in a
 # tar to keep its executable bit) and the VS Code extension with both
-# executables bundled as "wrench-vscode"; a pushed tag vX.Y.Z
-# publishes both as the assets of the GitHub release X.Y.Z (the book as
-# wrench-book.zip, to read offline). A push to any branch runs it.
+# executables bundled as "wrench-vscode"; a pushed tag vX.Y.Z publishes all
+# of them as the assets of the GitHub release X.Y.Z (the book as
+# wrench-book.zip, to read offline, see docs/book/src/internals/releases.md).
+# A push to any branch runs it.
 
 name: CI
 
@@ -195,7 +196,7 @@ jobs:
   release:
     name: Publish release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [ linux, single-file, windows, book ]
+    needs: [ linux, linux-executable, single-file, windows, vscode-extension, book ]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -208,14 +209,28 @@ jobs:
         with:
           name: wrench-book
           path: wrench-book
-      - name: Attach the single file build and the book to the release
+      - uses: actions/download-artifact@v4
+        with:
+          name: wrench-windows-x86
+          path: windows
+      - uses: actions/download-artifact@v4
+        with:
+          name: wrench-linux-x64
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: wrench-vscode
+          path: dist
+      - name: Attach the builds, the executables, the extension and the book to the release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           zip -qr dist/wrench-book.zip wrench-book
+          cp windows/wrench.exe dist/wrench-windows-x86.exe
+          assets=( dist/wrench.h dist/wrench.cpp dist/wrench-windows-x86.exe dist/wrench-linux-x64.tar.gz dist/*.vsix dist/wrench-book.zip )
           if gh release view "${GITHUB_REF_NAME}" > /dev/null 2>&1; then
-            gh release upload "${GITHUB_REF_NAME}" dist/wrench.h dist/wrench.cpp dist/wrench-book.zip --clobber
+            gh release upload "${GITHUB_REF_NAME}" "${assets[@]}" --clobber
           else
-            gh release create "${GITHUB_REF_NAME}" dist/wrench.h dist/wrench.cpp dist/wrench-book.zip --title "${GITHUB_REF_NAME#v}" --generate-notes --verify-tag
+            gh release create "${GITHUB_REF_NAME}" "${assets[@]}" --title "${GITHUB_REF_NAME#v}" --generate-notes --verify-tag
           fi

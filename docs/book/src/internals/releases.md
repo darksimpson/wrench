@@ -116,17 +116,28 @@ job checks that the tag is exactly `v` followed by the contents of
 tag v8.1.0 but wrench.h says 8.0.0
 ```
 
-When every job passed, the job "Publish release" attaches `dist/wrench.h`,
-`dist/wrench.cpp` and this book, built and zipped as `wrench-book.zip` to
-read offline, to the GitHub release of that tag: it creates the release
-(titled with the version, without the `v`, and with generated notes) or,
-when it exists already, replaces its files. Every CI run, tagged or not,
-also keeps the two files as the build artifact `wrench-single-file` and
-the built book as `wrench-book`.
+When every job passed, the job "Publish release" attaches these files to
+the GitHub release of that tag:
+
+| File | What it is |
+|---|---|
+| `wrench.h`, `wrench.cpp` | the single file build |
+| `wrench-windows-x86.exe` | the command line tool for Windows, the tested Release build |
+| `wrench-linux-x64.tar.gz` | the command line tool for Linux, a static build that runs on any distribution |
+| `wrench-<version>.vsix` | the VS Code extension with both executables bundled |
+| `wrench-book.zip` | this book, built, to read offline |
+
+It creates the release (titled with the version, without the `v`, and
+with generated notes) or, when it exists already, replaces its files.
+Every CI run, tagged or not, also keeps the same files as build artifacts:
+`wrench-single-file`, `wrench-windows-x86`, `wrench-linux-x64`,
+`wrench-vscode` and the built book as `wrench-book`.
 
 The VS Code extension is versioned separately (`version` in
-`tools/vscode-wrench/package.json`, now 0.1.0) and is not published by CI;
-see [Building the extension](../vscode/building.md).
+`tools/vscode-wrench/package.json`, now 0.1.0), so the name of the
+`.vsix` carries its own version, not the one of the tag; it is attached to
+the release but not published to the Visual Studio Marketplace. See
+[Building the extension](../vscode/building.md).
 
 ## The CHANGELIST
 

@@ -185,7 +185,7 @@ requests, on tags `v*` and by hand. Its jobs:
 | Windows | builds Release and Debug with MSBuild and `-warnaserror`, runs `wrench t` with both, checks the examples of this book with `tools/bookcheck`, runs `dap_test.js`, `cli_test.js` and `lsp_test.js` with the Release build, `npm ci`, `npm run compile`, the grammar test and `extension_test.js` for the extension, and compiles the single file build with MSVC in three configurations; keeps the tested Release `wrench.exe` as the artifact `wrench-windows-x86` |
 | VS Code extension package | after the two executables passed their tests: bundles both into the extension with `scripts/bundle-exe.js`, packages it with `vsce` and keeps the `.vsix` as the artifact `wrench-vscode` |
 | The Wrench Book | builds this book with mdBook and keeps it as the artifact `wrench-book` |
-| Publish release | on a tag only, after the others passed: attaches the single file build and the zipped book to the GitHub release, see [Releases](releases.md) |
+| Publish release | on a tag only, after the others passed: attaches the single file build, the two executables, the extension and the zipped book to the GitHub release, see [Releases](releases.md) |
 
 The configurations of the Linux job are the `make` lines in
 [Source layout and building from source](building.md#building-on-linux).
