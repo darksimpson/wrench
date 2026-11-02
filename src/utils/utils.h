@@ -445,6 +445,13 @@ WRValue* wr_valueFromConfirmedStruct( WRValue* value, uint32_t hash );
 #define IS_ARRAY(X) ((X)==WR_EX_ARRAY)
 #define IS_ITERATOR(X) ((X)==WR_EX_ITERATOR)
 #define IS_RAW_ARRAY(X) (((X)&EX_TYPE_MASK)==WR_EX_RAW_ARRAY)
+
+// R is what a container member refers to: the value of a raw array or of an
+// array, or the storage block of a hash table. Only a value can read WR_EX in
+// its type byte (the same byte of a block is the low byte of an aligned
+// pointer), so test that before the extra type, which in a block is a byte of
+// that pointer and reads as anything
+#define IS_RAW_ARRAY_TARGET(R) ((R)->type == WR_EX && IS_RAW_ARRAY((R)->xtype))
 #define IS_HASH_TABLE(X) ((X)==WR_EX_HASH_TABLE)
 #define EXPECTS_HASH_INDEX(X) ( ((X)==WR_EX_STRUCT) || ((X)==WR_EX_HASH_TABLE) )
 #define IS_STRUCT(X) ((X) == WR_EX_STRUCT)

@@ -177,6 +177,18 @@ listed in CHANGELIST only.
   unknown struct members; the division trap; `+=` with a string on an
   element of a container (`h["k"] += "b"`) left it unchanged or stored a
   hash (both interpreters, `wr_concatStringToElement`).
+* A member of a hash table could be taken for a character of a raw array.
+  Such a member refers to the table's storage block, not to a value, and
+  `deref()`, `wr_valueToEx()` and `doIndex_I_E()` read the extra type of
+  that block: byte 3 of the pointer that sits where a value has its type
+  bytes. With the heap between `0x20000000` and `0x3FFFFFFF` (a static
+  build on Ubuntu 26.04, now and then) it read as `WR_EX_RAW_ARRAY`, and an
+  assignment to a table member wrote through a garbage pointer
+  (`tests/011_dicts.w` crashed in CI). `IS_RAW_ARRAY_TARGET()` checks the
+  type byte first, as the GC already did: in a block it is the low byte of
+  an aligned pointer and never `WR_EX`. The VM test in `wrench_cli.cpp`
+  builds such a block with a pointer of that kind and reads and writes the
+  member through it.
 
 ## Embedding API
 

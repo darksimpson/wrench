@@ -277,9 +277,9 @@ WRValue& WRValue::deref() const
 	s_temp2.p2 = INIT_AS_INT;
 	unsigned int s = DECODE_ARRAY_ELEMENT_FROM_P2(p2);
 
-	if (IS_RAW_ARRAY(r->xtype))
+	if (IS_RAW_ARRAY_TARGET(r))
 	{
-		s_temp2.ui = (s < (uint32_t)(EX_RAW_ARRAY_SIZE_FROM_P2(r->p2))) ? (uint32_t)(unsigned char)(r->c[s]) : 0;
+		s_temp2.ui =(s < (uint32_t)(EX_RAW_ARRAY_SIZE_FROM_P2(r->p2))) ? (uint32_t)(unsigned char)(r->c[s]) : 0;
 	}
 	else if (vb->m_type == SV_HASH_INTERNAL)
 	{
@@ -416,7 +416,7 @@ void wr_valueToEx( const WRValue* ex, WRValue* value )
 				wr_assign[(V->type<<2)+value->type](V, value);
 			}
 		}
-		else if ( IS_CONTAINER_MEMBER(ex->xtype) && IS_RAW_ARRAY(ex->r->xtype) )
+		else if ( IS_CONTAINER_MEMBER(ex->xtype) && IS_RAW_ARRAY_TARGET(ex->r) )
 		{
 			ex->r->c[s] = value->ui;
 		}

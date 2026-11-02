@@ -170,6 +170,9 @@ VM:
   the largest prime, float operands in %= |= &= ^= <<= >>=, signed overflow in *= ++ --,
   _exists on a temporary, wr_callFunction checks the stack, imports keep the caller's
   time slice, allocation failures no longer leave typed containers without data
+- a member of a hash table could be taken for a character of a raw array when the heap
+  sat at addresses whose byte 3 read as a raw array (seen in static Linux builds): an
+  assignment to it wrote through a garbage pointer
 
 Libraries:
 - sys::isFunction answers 2 for functions of imported modules (it was 0 before their first

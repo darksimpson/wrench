@@ -2715,6 +2715,35 @@ bool testVmRobustness()
 		}
 	}
 
+	// a member of a hash table refers to the table's storage block, whose
+	// pointer field sits where a value has its type bytes: a pointer whose
+	// byte 3 reads as WR_EX_RAW_ARRAY (a heap at 0x20000000 to 0x3FFFFFFF)
+	// must not make the member a character of a raw array
+	{
+		struct
+		{
+			WRGCBase block;
+			WRValue values[2];
+		} table;
+		table.block.m_type = SV_HASH_INTERNAL;
+		table.block.m_flags = 0;
+		table.block.m_mod = 2;
+		table.block.m_referencedTable = (WRGCBase*)(uintptr_t)0x2A000010;
+		table.block.m_nextGC = 0;
+		ok = ok && (WRGCBase*)table.values == &table.block + 1;
+		table.values[0].init( 5 );
+		table.values[1].init( 7 );
+
+		WRValue member;
+		member.vb = &table.block;
+		member.p2 = INIT_AS_CONTAINER_MEMBER | ENCODE_ARRAY_ELEMENT_TO_P2( 1 );
+		ok = ok && member.deref().asInt() == 7;
+
+		WRValue nine( 9 );
+		wr_valueToEx( &member, &nine );
+		ok = ok && table.values[1].asInt() == 9 && table.values[0].asInt() == 5;
+	}
+
 	printf( ok ? "PASS\n" : "FAIL\n" );
 	return ok;
 }

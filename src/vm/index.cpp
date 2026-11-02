@@ -173,7 +173,7 @@ void doIndex_I_X( WRContext* c, WRValue* index, WRValue* value, WRValue* target 
 //------------------------------------------------------------------------------
 void doIndex_I_E( WRContext* c, WRValue* index, WRValue* value, WRValue* target )
 {
-	if ( IS_CONTAINER_MEMBER(value->xtype) && IS_RAW_ARRAY(value->r->xtype) )
+	if ( IS_CONTAINER_MEMBER(value->xtype) && IS_RAW_ARRAY_TARGET(value->r) )
 	{
 		unsigned int s = DECODE_ARRAY_ELEMENT_FROM_P2(value->r->p2);
 

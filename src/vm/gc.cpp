@@ -63,7 +63,7 @@ static void wr_markValue( WRMarkStack& stack, WRValue* s )
 		// block are the low byte of an aligned pointer (never 3). Only then
 		// may the first byte be read as the block type, a raw array's
 		// first byte is part of an arbitrary host pointer
-		if ( s->r->type == WR_EX && IS_RAW_ARRAY(s->r->xtype) )
+		if ( IS_RAW_ARRAY_TARGET(s->r) )
 		{
 			return;
 		}
