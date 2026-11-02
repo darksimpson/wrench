@@ -3,13 +3,13 @@
 # Every run keeps the single file build as the artifact "wrench-single-file"
 # and the built book (docs/book) as "wrench-book"; a pushed tag vX.Y.Z
 # publishes both as the assets of the GitHub release X.Y.Z (the book as
-# wrench-book.zip, to read offline).
+# wrench-book.zip, to read offline). A push to any branch runs it.
 
 name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [ '**' ]
     tags: [ 'v*' ]
   pull_request:
   workflow_dispatch:

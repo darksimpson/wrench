@@ -174,8 +174,8 @@ the scopes of the interesting tokens (`PASS grammar (35 checks)`).
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` runs on every push to `main`, on pull requests,
-on tags `v*` and by hand. Its jobs:
+`.github/workflows/ci.yml` runs on every push to any branch, on pull
+requests, on tags `v*` and by hand. Its jobs:
 
 | Job | Does |
 |---|---|
